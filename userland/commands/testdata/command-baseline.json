@@ -1,0 +1,2063 @@
+{
+  "sourceCommit": "18b4caa42b92488abd0d03a12d597467eb7d83a3",
+  "coverage": {
+    "registry": [
+      {
+        "name": "ar",
+        "completeness": "受限"
+      },
+      {
+        "name": "at",
+        "completeness": "受限"
+      },
+      {
+        "name": "awk",
+        "completeness": "受限"
+      },
+      {
+        "name": "base64",
+        "completeness": "受限"
+      },
+      {
+        "name": "basename",
+        "completeness": "完整"
+      },
+      {
+        "name": "bash",
+        "completeness": "受限"
+      },
+      {
+        "name": "batch",
+        "completeness": "受限"
+      },
+      {
+        "name": "bc",
+        "completeness": "受限"
+      },
+      {
+        "name": "bg",
+        "completeness": "受限"
+      },
+      {
+        "name": "cat",
+        "completeness": "受限"
+      },
+      {
+        "name": "cmp",
+        "completeness": "受限"
+      },
+      {
+        "name": "comm",
+        "completeness": "受限"
+      },
+      {
+        "name": "cp",
+        "completeness": "受限"
+      },
+      {
+        "name": "chgrp",
+        "completeness": "受限"
+      },
+      {
+        "name": "chmod",
+        "completeness": "受限"
+      },
+      {
+        "name": "chown",
+        "completeness": "受限"
+      },
+      {
+        "name": "cksum",
+        "completeness": "受限"
+      },
+      {
+        "name": "crontab",
+        "completeness": "受限"
+      },
+      {
+        "name": "csplit",
+        "completeness": "受限"
+      },
+      {
+        "name": "ctags",
+        "completeness": "受限"
+      },
+      {
+        "name": "cut",
+        "completeness": "完整"
+      },
+      {
+        "name": "date",
+        "completeness": "受限"
+      },
+      {
+        "name": "dd",
+        "completeness": "受限"
+      },
+      {
+        "name": "df",
+        "completeness": "受限"
+      },
+      {
+        "name": "diff",
+        "completeness": "受限"
+      },
+      {
+        "name": "dirname",
+        "completeness": "完整"
+      },
+      {
+        "name": "du",
+        "completeness": "受限"
+      },
+      {
+        "name": "ed",
+        "completeness": "受限"
+      },
+      {
+        "name": "echo",
+        "completeness": "受限"
+      },
+      {
+        "name": "env",
+        "completeness": "完整"
+      },
+      {
+        "name": "ex",
+        "completeness": "受限"
+      },
+      {
+        "name": "expand",
+        "completeness": "受限"
+      },
+      {
+        "name": "expr",
+        "completeness": "受限"
+      },
+      {
+        "name": "false",
+        "completeness": "完整"
+      },
+      {
+        "name": "file",
+        "completeness": "受限"
+      },
+      {
+        "name": "find",
+        "completeness": "受限"
+      },
+      {
+        "name": "fg",
+        "completeness": "受限"
+      },
+      {
+        "name": "fold",
+        "completeness": "受限"
+      },
+      {
+        "name": "getconf",
+        "completeness": "受限"
+      },
+      {
+        "name": "grep",
+        "completeness": "完整"
+      },
+      {
+        "name": "head",
+        "completeness": "完整"
+      },
+      {
+        "name": "kill",
+        "completeness": "受限"
+      },
+      {
+        "name": "jobs",
+        "completeness": "完整"
+      },
+      {
+        "name": "id",
+        "completeness": "受限"
+      },
+      {
+        "name": "iconv",
+        "completeness": "受限"
+      },
+      {
+        "name": "join",
+        "completeness": "受限"
+      },
+      {
+        "name": "link",
+        "completeness": "受限"
+      },
+      {
+        "name": "locale",
+        "completeness": "受限"
+      },
+      {
+        "name": "ln",
+        "completeness": "受限"
+      },
+      {
+        "name": "lp",
+        "completeness": "受限"
+      },
+      {
+        "name": "logname",
+        "completeness": "完整"
+      },
+      {
+        "name": "localedef",
+        "completeness": "受限"
+      },
+      {
+        "name": "logger",
+        "completeness": "受限"
+      },
+      {
+        "name": "ls",
+        "completeness": "受限"
+      },
+      {
+        "name": "m4",
+        "completeness": "受限"
+      },
+      {
+        "name": "make",
+        "completeness": "受限"
+      },
+      {
+        "name": "mailx",
+        "completeness": "受限"
+      },
+      {
+        "name": "man",
+        "completeness": "受限"
+      },
+      {
+        "name": "messages",
+        "completeness": "完整"
+      },
+      {
+        "name": "mesg",
+        "completeness": "受限"
+      },
+      {
+        "name": "mkdir",
+        "completeness": "受限"
+      },
+      {
+        "name": "mkfifo",
+        "completeness": "受限"
+      },
+      {
+        "name": "mktemp",
+        "completeness": "受限"
+      },
+      {
+        "name": "mv",
+        "completeness": "受限"
+      },
+      {
+        "name": "newgrp",
+        "completeness": "受限"
+      },
+      {
+        "name": "nice",
+        "completeness": "受限"
+      },
+      {
+        "name": "more",
+        "completeness": "受限"
+      },
+      {
+        "name": "nl",
+        "completeness": "受限"
+      },
+      {
+        "name": "nm",
+        "completeness": "受限"
+      },
+      {
+        "name": "nohup",
+        "completeness": "完整"
+      },
+      {
+        "name": "patch",
+        "completeness": "受限"
+      },
+      {
+        "name": "pax",
+        "completeness": "受限"
+      },
+      {
+        "name": "pathchk",
+        "completeness": "受限"
+      },
+      {
+        "name": "od",
+        "completeness": "受限"
+      },
+      {
+        "name": "paste",
+        "completeness": "受限"
+      },
+      {
+        "name": "pr",
+        "completeness": "受限"
+      },
+      {
+        "name": "ps",
+        "completeness": "受限"
+      },
+      {
+        "name": "printf",
+        "completeness": "受限"
+      },
+      {
+        "name": "pwd",
+        "completeness": "受限"
+      },
+      {
+        "name": "readlink",
+        "completeness": "受限"
+      },
+      {
+        "name": "renice",
+        "completeness": "受限"
+      },
+      {
+        "name": "rm",
+        "completeness": "受限"
+      },
+      {
+        "name": "rmdir",
+        "completeness": "受限"
+      },
+      {
+        "name": "sed",
+        "completeness": "完整"
+      },
+      {
+        "name": "seq",
+        "completeness": "受限"
+      },
+      {
+        "name": "sh",
+        "completeness": "受限"
+      },
+      {
+        "name": "shasum",
+        "completeness": "受限"
+      },
+      {
+        "name": "sleep",
+        "completeness": "受限"
+      },
+      {
+        "name": "sort",
+        "completeness": "完整"
+      },
+      {
+        "name": "split",
+        "completeness": "受限"
+      },
+      {
+        "name": "strip",
+        "completeness": "受限"
+      },
+      {
+        "name": "stty",
+        "completeness": "受限"
+      },
+      {
+        "name": "strings",
+        "completeness": "受限"
+      },
+      {
+        "name": "sum",
+        "completeness": "受限"
+      },
+      {
+        "name": "tabs",
+        "completeness": "受限"
+      },
+      {
+        "name": "tac",
+        "completeness": "受限"
+      },
+      {
+        "name": "tail",
+        "completeness": "受限"
+      },
+      {
+        "name": "talk",
+        "completeness": "受限"
+      },
+      {
+        "name": "tee",
+        "completeness": "受限"
+      },
+      {
+        "name": "test",
+        "completeness": "受限"
+      },
+      {
+        "name": "time",
+        "completeness": "受限"
+      },
+      {
+        "name": "touch",
+        "completeness": "完整"
+      },
+      {
+        "name": "tr",
+        "completeness": "受限"
+      },
+      {
+        "name": "tput",
+        "completeness": "受限"
+      },
+      {
+        "name": "true",
+        "completeness": "完整"
+      },
+      {
+        "name": "tty",
+        "completeness": "完整"
+      },
+      {
+        "name": "tsort",
+        "completeness": "受限"
+      },
+      {
+        "name": "uname",
+        "completeness": "受限"
+      },
+      {
+        "name": "unexpand",
+        "completeness": "受限"
+      },
+      {
+        "name": "uniq",
+        "completeness": "受限"
+      },
+      {
+        "name": "unlink",
+        "completeness": "受限"
+      },
+      {
+        "name": "uudecode",
+        "completeness": "受限"
+      },
+      {
+        "name": "uuencode",
+        "completeness": "受限"
+      },
+      {
+        "name": "vi",
+        "completeness": "受限"
+      },
+      {
+        "name": "who",
+        "completeness": "受限"
+      },
+      {
+        "name": "wc",
+        "completeness": "完整"
+      },
+      {
+        "name": "write",
+        "completeness": "受限"
+      },
+      {
+        "name": "xargs",
+        "completeness": "受限"
+      },
+      {
+        "name": "yes",
+        "completeness": "完整"
+      }
+    ],
+    "posix": [
+      {
+        "name": "admin",
+        "vsc": false,
+        "disposition": "未计划"
+      },
+      {
+        "name": "alias",
+        "vsc": true,
+        "disposition": "内建"
+      },
+      {
+        "name": "ar",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "asa",
+        "vsc": false,
+        "disposition": "未计划"
+      },
+      {
+        "name": "at",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "awk",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "basename",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "batch",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "bc",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "bg",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "c99",
+        "vsc": false,
+        "disposition": "未计划"
+      },
+      {
+        "name": "cal",
+        "vsc": false,
+        "disposition": "未计划"
+      },
+      {
+        "name": "cat",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "cd",
+        "vsc": true,
+        "disposition": "内建"
+      },
+      {
+        "name": "cflow",
+        "vsc": false,
+        "disposition": "未计划"
+      },
+      {
+        "name": "chgrp",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "chmod",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "chown",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "cksum",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "cmp",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "comm",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "command",
+        "vsc": true,
+        "disposition": "内建"
+      },
+      {
+        "name": "compress",
+        "vsc": false,
+        "disposition": "未计划"
+      },
+      {
+        "name": "cp",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "crontab",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "csplit",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "ctags",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "cut",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "cxref",
+        "vsc": false,
+        "disposition": "未计划"
+      },
+      {
+        "name": "date",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "dd",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "delta",
+        "vsc": false,
+        "disposition": "未计划"
+      },
+      {
+        "name": "df",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "diff",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "dirname",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "du",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "echo",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "ed",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "env",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "ex",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "expand",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "expr",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "false",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "fc",
+        "vsc": true,
+        "disposition": "内建（本仓库提供）"
+      },
+      {
+        "name": "fg",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "file",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "find",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "fold",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "fort77",
+        "vsc": false,
+        "disposition": "未计划"
+      },
+      {
+        "name": "fuser",
+        "vsc": false,
+        "disposition": "未计划"
+      },
+      {
+        "name": "gencat",
+        "vsc": false,
+        "disposition": "未计划"
+      },
+      {
+        "name": "get",
+        "vsc": false,
+        "disposition": "未计划"
+      },
+      {
+        "name": "getconf",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "getopts",
+        "vsc": true,
+        "disposition": "内建"
+      },
+      {
+        "name": "grep",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "hash",
+        "vsc": true,
+        "disposition": "内建（本仓库提供）"
+      },
+      {
+        "name": "head",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "iconv",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "id",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "ipcrm",
+        "vsc": false,
+        "disposition": "未计划"
+      },
+      {
+        "name": "ipcs",
+        "vsc": false,
+        "disposition": "未计划"
+      },
+      {
+        "name": "jobs",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "join",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "kill",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "lex",
+        "vsc": false,
+        "disposition": "未计划"
+      },
+      {
+        "name": "link",
+        "vsc": false,
+        "disposition": "命令"
+      },
+      {
+        "name": "ln",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "locale",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "localedef",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "logger",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "logname",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "lp",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "ls",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "m4",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "mailx",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "make",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "man",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "mesg",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "mkdir",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "mkfifo",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "more",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "mv",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "newgrp",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "nice",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "nl",
+        "vsc": false,
+        "disposition": "命令"
+      },
+      {
+        "name": "nm",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "nohup",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "od",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "paste",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "patch",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "pathchk",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "pax",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "pr",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "printf",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "prs",
+        "vsc": false,
+        "disposition": "未计划"
+      },
+      {
+        "name": "ps",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "pwd",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "qalter",
+        "vsc": false,
+        "disposition": "未计划"
+      },
+      {
+        "name": "qdel",
+        "vsc": false,
+        "disposition": "未计划"
+      },
+      {
+        "name": "qhold",
+        "vsc": false,
+        "disposition": "未计划"
+      },
+      {
+        "name": "qmove",
+        "vsc": false,
+        "disposition": "未计划"
+      },
+      {
+        "name": "qmsg",
+        "vsc": false,
+        "disposition": "未计划"
+      },
+      {
+        "name": "qrerun",
+        "vsc": false,
+        "disposition": "未计划"
+      },
+      {
+        "name": "qrls",
+        "vsc": false,
+        "disposition": "未计划"
+      },
+      {
+        "name": "qselect",
+        "vsc": false,
+        "disposition": "未计划"
+      },
+      {
+        "name": "qsig",
+        "vsc": false,
+        "disposition": "未计划"
+      },
+      {
+        "name": "qstat",
+        "vsc": false,
+        "disposition": "未计划"
+      },
+      {
+        "name": "qsub",
+        "vsc": false,
+        "disposition": "未计划"
+      },
+      {
+        "name": "read",
+        "vsc": true,
+        "disposition": "内建"
+      },
+      {
+        "name": "renice",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "rm",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "rmdel",
+        "vsc": false,
+        "disposition": "未计划"
+      },
+      {
+        "name": "rmdir",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "sact",
+        "vsc": false,
+        "disposition": "未计划"
+      },
+      {
+        "name": "sccs",
+        "vsc": false,
+        "disposition": "未计划"
+      },
+      {
+        "name": "sed",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "sh",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "sleep",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "sort",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "split",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "strings",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "strip",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "stty",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "tabs",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "tail",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "talk",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "tee",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "test",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "time",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "touch",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "tput",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "tr",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "true",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "tsort",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "tty",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "type",
+        "vsc": false,
+        "disposition": "内建"
+      },
+      {
+        "name": "ulimit",
+        "vsc": false,
+        "disposition": "内建未实现"
+      },
+      {
+        "name": "umask",
+        "vsc": true,
+        "disposition": "内建（本仓库提供）"
+      },
+      {
+        "name": "unalias",
+        "vsc": true,
+        "disposition": "内建"
+      },
+      {
+        "name": "uname",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "uncompress",
+        "vsc": false,
+        "disposition": "未计划"
+      },
+      {
+        "name": "unexpand",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "unget",
+        "vsc": false,
+        "disposition": "未计划"
+      },
+      {
+        "name": "uniq",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "unlink",
+        "vsc": false,
+        "disposition": "命令"
+      },
+      {
+        "name": "uucp",
+        "vsc": false,
+        "disposition": "未计划"
+      },
+      {
+        "name": "uudecode",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "uuencode",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "uustat",
+        "vsc": false,
+        "disposition": "未计划"
+      },
+      {
+        "name": "uux",
+        "vsc": false,
+        "disposition": "未计划"
+      },
+      {
+        "name": "val",
+        "vsc": false,
+        "disposition": "未计划"
+      },
+      {
+        "name": "vi",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "wait",
+        "vsc": true,
+        "disposition": "内建（受限）"
+      },
+      {
+        "name": "wc",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "what",
+        "vsc": false,
+        "disposition": "未计划"
+      },
+      {
+        "name": "who",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "write",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "xargs",
+        "vsc": true,
+        "disposition": "命令"
+      },
+      {
+        "name": "yacc",
+        "vsc": false,
+        "disposition": "未计划"
+      },
+      {
+        "name": "zcat",
+        "vsc": false,
+        "disposition": "未计划"
+      }
+    ],
+    "stats": {
+      "dispositions": {
+        "内建": 7,
+        "内建未实现": 1,
+        "内建（受限）": 1,
+        "内建（本仓库提供）": 3,
+        "命令": 109,
+        "未实现（P1）": 0,
+        "未计划": 39,
+        "合计": 160
+      },
+      "posixNames": 160,
+      "vscNames": 116
+    }
+  },
+  "ledger": {
+    "stats": {
+      "vscNames": 116,
+      "registered": 106,
+      "shellBuiltins": 3,
+      "surfaceCounts": {
+        "上游无 applet（shell 或外部提供）": 20,
+        "需改写（上游 import os/time）": 85,
+        "机械（上游未 import os/time）": 11
+      }
+    },
+    "statuses": [
+      {
+        "name": "alias",
+        "surface": "上游无 applet（shell 或外部提供）",
+        "status": "待移植"
+      },
+      {
+        "name": "ar",
+        "surface": "上游无 applet（shell 或外部提供）",
+        "status": "已注册"
+      },
+      {
+        "name": "at",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "awk",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "basename",
+        "surface": "机械（上游未 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "batch",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "bc",
+        "surface": "机械（上游未 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "bg",
+        "surface": "上游无 applet（shell 或外部提供）",
+        "status": "已注册"
+      },
+      {
+        "name": "cat",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "cd",
+        "surface": "上游无 applet（shell 或外部提供）",
+        "status": "待移植"
+      },
+      {
+        "name": "chgrp",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "chmod",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "chown",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "cksum",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "cmp",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "comm",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "command",
+        "surface": "上游无 applet（shell 或外部提供）",
+        "status": "待移植"
+      },
+      {
+        "name": "cp",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "crontab",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "csplit",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "ctags",
+        "surface": "上游无 applet（shell 或外部提供）",
+        "status": "已注册"
+      },
+      {
+        "name": "cut",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "date",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "dd",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "df",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "diff",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "dirname",
+        "surface": "机械（上游未 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "du",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "echo",
+        "surface": "机械（上游未 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "ed",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "env",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "ex",
+        "surface": "上游无 applet（shell 或外部提供）",
+        "status": "已注册"
+      },
+      {
+        "name": "expand",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "expr",
+        "surface": "机械（上游未 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "false",
+        "surface": "机械（上游未 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "fc",
+        "surface": "上游无 applet（shell 或外部提供）",
+        "status": "shell 内建（本仓库提供）"
+      },
+      {
+        "name": "fg",
+        "surface": "上游无 applet（shell 或外部提供）",
+        "status": "已注册"
+      },
+      {
+        "name": "file",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "find",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "fold",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "getconf",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "getopts",
+        "surface": "上游无 applet（shell 或外部提供）",
+        "status": "待移植"
+      },
+      {
+        "name": "grep",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "hash",
+        "surface": "上游无 applet（shell 或外部提供）",
+        "status": "shell 内建（本仓库提供）"
+      },
+      {
+        "name": "head",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "iconv",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "id",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "jobs",
+        "surface": "上游无 applet（shell 或外部提供）",
+        "status": "已注册"
+      },
+      {
+        "name": "join",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "kill",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "ln",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "locale",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "localedef",
+        "surface": "机械（上游未 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "logger",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "logname",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "lp",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "ls",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "m4",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "mailx",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "make",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "man",
+        "surface": "机械（上游未 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "mesg",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "mkdir",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "mkfifo",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "more",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "mv",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "newgrp",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "nice",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "nm",
+        "surface": "上游无 applet（shell 或外部提供）",
+        "status": "已注册"
+      },
+      {
+        "name": "nohup",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "od",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "paste",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "patch",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "pathchk",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "pax",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "pr",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "printf",
+        "surface": "机械（上游未 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "ps",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "pwd",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "read",
+        "surface": "上游无 applet（shell 或外部提供）",
+        "status": "待移植"
+      },
+      {
+        "name": "renice",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "rm",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "rmdir",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "sed",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "sh",
+        "surface": "上游无 applet（shell 或外部提供）",
+        "status": "已注册"
+      },
+      {
+        "name": "sleep",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "sort",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "split",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "strings",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "strip",
+        "surface": "上游无 applet（shell 或外部提供）",
+        "status": "已注册"
+      },
+      {
+        "name": "stty",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "tabs",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "tail",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "talk",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "tee",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "test",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "time",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "touch",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "tput",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "tr",
+        "surface": "机械（上游未 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "true",
+        "surface": "机械（上游未 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "tsort",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "tty",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "umask",
+        "surface": "上游无 applet（shell 或外部提供）",
+        "status": "shell 内建（本仓库提供）"
+      },
+      {
+        "name": "unalias",
+        "surface": "上游无 applet（shell 或外部提供）",
+        "status": "待移植"
+      },
+      {
+        "name": "uname",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "unexpand",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "uniq",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "uudecode",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "uuencode",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "vi",
+        "surface": "上游无 applet（shell 或外部提供）",
+        "status": "已注册"
+      },
+      {
+        "name": "wait",
+        "surface": "上游无 applet（shell 或外部提供）",
+        "status": "待移植"
+      },
+      {
+        "name": "wc",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "who",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "write",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      },
+      {
+        "name": "xargs",
+        "surface": "需改写（上游 import os/time）",
+        "status": "已注册"
+      }
+    ],
+    "unregisteredDispositions": {
+      "alias": "内建",
+      "cd": "内建",
+      "command": "内建",
+      "getopts": "内建",
+      "read": "内建",
+      "unalias": "内建",
+      "wait": "内建（受限）"
+    },
+    "reasonMappings": [
+      {
+        "category": "**已落地**：执行并等待子进程（真实语义）",
+        "names": [
+          "at",
+          "batch",
+          "nice"
+        ],
+        "landed": true
+      },
+      {
+        "category": "**已落地**：多用户与权限",
+        "names": [
+          "chgrp",
+          "chown",
+          "id",
+          "logname",
+          "newgrp",
+          "who"
+        ],
+        "landed": true
+      },
+      {
+        "category": "**已落地**：终端与设备",
+        "names": [
+          "stty"
+        ],
+        "landed": true
+      },
+      {
+        "category": "**已落地**：时钟与日历",
+        "names": [
+          "time"
+        ],
+        "landed": true
+      },
+      {
+        "category": "**已落地**：语言环境数据与宿主设施",
+        "names": [
+          "localedef",
+          "iconv",
+          "locale",
+          "getconf",
+          "file"
+        ],
+        "landed": true
+      },
+      {
+        "category": "**已落地**：系统查询（mailx）",
+        "names": [
+          "mailx"
+        ],
+        "landed": true
+      },
+      {
+        "category": "**已落地**：文件系统容量",
+        "names": [
+          "df"
+        ],
+        "landed": true
+      },
+      {
+        "category": "**已落地**：设备与命名管道",
+        "names": [
+          "mkfifo"
+        ],
+        "landed": true
+      },
+      {
+        "category": "**已落地**：依赖 toolcompat/locale 的 C/POSIX 语义",
+        "names": [
+          "comm",
+          "csplit",
+          "expand",
+          "expr",
+          "fold",
+          "join",
+          "od",
+          "paste",
+          "pr",
+          "strings",
+          "unexpand"
+        ],
+        "landed": true
+      },
+      {
+        "category": "**已落地**：语言环境字节表层",
+        "names": [
+          "csplit",
+          "expr"
+        ],
+        "landed": true
+      },
+      {
+        "category": "**已落地**：编辑器与邮件（声明子集）",
+        "names": [
+          "ed",
+          "ex",
+          "mailx",
+          "vi"
+        ],
+        "landed": true
+      },
+      {
+        "category": "已落地（本轮收尾）",
+        "names": [
+          "nohup"
+        ],
+        "landed": true
+      },
+      {
+        "category": "已落地：模式位回填",
+        "names": [
+          "uudecode"
+        ],
+        "landed": true
+      },
+      {
+        "category": "**已落地**：声明子集",
+        "names": [
+          "du",
+          "dd"
+        ],
+        "landed": true
+      },
+      {
+        "category": "**已落地**：m4",
+        "names": [
+          "m4"
+        ],
+        "landed": true
+      },
+      {
+        "category": "已落地：awk 的声明子集",
+        "names": [
+          "awk"
+        ],
+        "landed": true
+      },
+      {
+        "category": "**已落地**：客体进程表可见",
+        "names": [
+          "ps"
+        ],
+        "landed": true
+      },
+      {
+        "category": "**已落地**：命令层信号投递",
+        "names": [
+          "kill"
+        ],
+        "landed": true
+      },
+      {
+        "category": "**已落地** + 后续可选改进（需单独决策）",
+        "names": [
+          "awk"
+        ],
+        "landed": true
+      }
+    ]
+  }
+}

@@ -1,0 +1,568 @@
+package csplitcmd
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/userland/toolcompat/vfs"
+
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/userland/toolcompat"
+)
+
+func runTool(t *testing.T, dir string, stdin string, args ...string) (stdout, stderr string, code int) {
+	t.Helper()
+	var out, errb bytes.Buffer
+	rc := &toolcompat.RunContext{
+		Ctx:   context.Background(),
+		Dir:   dir,
+		Stdio: toolcompat.Stdio{In: strings.NewReader(stdin), Out: &out, Err: &errb},
+	}
+	code = cmd.Run(rc, args)
+	return out.String(), errb.String(), code
+}
+
+func TestCsplitLineNumber(t *testing.T) {
+	dir := guestDir(t)
+	if err := vfs.WriteFile(filepath.Join(dir, "in"), []byte("a\nb\nc\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, errb, code := runTool(t, dir, "", "-s", "in", "2")
+	if code != 0 || out != "" || errb != "" {
+		t.Fatalf("code=%d out=%q err=%q", code, out, errb)
+	}
+	assertFile(t, dir, "xx00", "a\n")
+	assertFile(t, dir, "xx01", "b\nc\n")
+}
+
+func TestCsplitRegexAndPrefix(t *testing.T) {
+	dir := guestDir(t)
+	stdout, errb, code := runTool(t, dir, "one\ntwo\nthree\n", "-f", "part", "-n", "1", "-", "/two/")
+	if code != 0 || errb != "" {
+		t.Fatalf("code=%d err=%q", code, errb)
+	}
+	if stdout != "4\n10\n" {
+		t.Fatalf("stdout=%q", stdout)
+	}
+	assertFile(t, dir, "part0", "one\n")
+	assertFile(t, dir, "part1", "two\nthree\n")
+}
+
+func TestCsplitRegexpAtAdvertisedLimit(t *testing.T) {
+	dir := guestDir(t)
+	line := strings.Repeat("a", 255)
+	_, errb, code := runTool(t, dir, "short\n"+line+"\n", "-s", "-", `/^a\{255\}$/`)
+	if code != 0 || errb != "" {
+		t.Fatalf("large BRE: code=%d err=%q", code, errb)
+	}
+	assertFile(t, dir, "xx00", "short\n")
+	assertFile(t, dir, "xx01", line+"\n")
+	if _, errb, code := runTool(t, guestDir(t), "a\n", "-s", "-", `/a\{256\}/`); code != 2 || errb == "" {
+		t.Fatalf("above-limit BRE: code=%d err=%q, want diagnostic exit 2", code, errb)
+	}
+}
+
+func TestCsplitRepeatedRegexAdvances(t *testing.T) {
+	dir := guestDir(t)
+	stdout, errb, code := runTool(t, dir, "a\nb\nb\nc\n", "-f", "p", "-n", "1", "-", "/b/", "/b/")
+	if code != 0 || errb != "" {
+		t.Fatalf("code=%d err=%q", code, errb)
+	}
+	if stdout != "2\n2\n4\n" {
+		t.Fatalf("stdout=%q", stdout)
+	}
+	assertFile(t, dir, "p0", "a\n")
+	assertFile(t, dir, "p1", "b\n")
+	assertFile(t, dir, "p2", "b\nc\n")
+}
+
+func TestCsplitRepeatToEOF(t *testing.T) {
+	dir := guestDir(t)
+	stdout, errb, code := runTool(t, dir, "a\ncut\nb\ncut\nc\n", "-s", "-f", "p", "-n", "1", "-", "/cut/", "{*}")
+	if code != 0 || stdout != "" || errb != "" {
+		t.Fatalf("code=%d out=%q err=%q", code, stdout, errb)
+	}
+	assertFile(t, dir, "p0", "a\n")
+	assertFile(t, dir, "p1", "cut\nb\n")
+	assertFile(t, dir, "p2", "cut\nc\n")
+}
+
+func TestCsplitRegexOffsets(t *testing.T) {
+	dir := guestDir(t)
+	stdout, errb, code := runTool(t, dir, "a\nmatch\nb\nc\n", "-s", "-f", "p", "-n", "1", "-", "/match/+1")
+	if code != 0 || stdout != "" || errb != "" {
+		t.Fatalf("code=%d out=%q err=%q", code, stdout, errb)
+	}
+	assertFile(t, dir, "p0", "a\nmatch\n")
+	assertFile(t, dir, "p1", "b\nc\n")
+
+	dir = guestDir(t)
+	stdout, errb, code = runTool(t, dir, "a\nskip\nb\nc\n", "-s", "-f", "q", "-n", "1", "-", "%skip%+1")
+	if code != 0 || stdout != "" || errb != "" {
+		t.Fatalf("code=%d out=%q err=%q", code, stdout, errb)
+	}
+	assertFile(t, dir, "q0", "b\nc\n")
+}
+
+func TestCsplitRegexUnsignedOffset(t *testing.T) {
+	dir := guestDir(t)
+	stdout, errb, code := runTool(t, dir, "a\nmatch\nb\n", "-s", "-", "/match/0")
+	if code != 0 || stdout != "" || errb != "" {
+		t.Fatalf("code=%d out=%q err=%q", code, stdout, errb)
+	}
+	assertFile(t, dir, "xx00", "a\n")
+	assertFile(t, dir, "xx01", "match\nb\n")
+}
+
+func TestCsplitSuffixSuppressRepeatAndElideEmpty(t *testing.T) {
+	dir := guestDir(t)
+	stdout, errb, code := runTool(t, dir, "a\nmatch\nb\nmatch\nc\n", "-q", "-z", "--suppress-matched", "-b", "%03d.out", "-", "/match/", "{1}")
+	if code != 0 || stdout != "" || errb != "" {
+		t.Fatalf("code=%d out=%q err=%q", code, stdout, errb)
+	}
+	assertFile(t, dir, "xx000.out", "a\n")
+	assertFile(t, dir, "xx001.out", "b\n")
+	assertFile(t, dir, "xx002.out", "c\n")
+}
+
+func TestCsplitSuffixIntegerAliases(t *testing.T) {
+	dir := guestDir(t)
+	stdout, errb, code := runTool(t, dir, "a\nb\n", "-s", "-b", "%03i", "-", "2")
+	if code != 0 || stdout != "" || errb != "" {
+		t.Fatalf("code=%d out=%q err=%q", code, stdout, errb)
+	}
+	assertFile(t, dir, "xx000", "a\n")
+	assertFile(t, dir, "xx001", "b\n")
+}
+
+func TestCsplitZeroRepeatIsNoop(t *testing.T) {
+	dir := guestDir(t)
+	stdout, errb, code := runTool(t, dir, "a\nb\nc\n", "-s", "-", "2", "{0}")
+	if code != 0 || stdout != "" || errb != "" {
+		t.Fatalf("code=%d out=%q err=%q", code, stdout, errb)
+	}
+	assertFile(t, dir, "xx00", "a\n")
+	assertFile(t, dir, "xx01", "b\nc\n")
+}
+
+func TestCsplitElidesEmptyInitialPiece(t *testing.T) {
+	dir := guestDir(t)
+	stdout, errb, code := runTool(t, dir, "match\nbody\n", "-s", "-z", "-", "/match/")
+	if code != 0 || stdout != "" || errb != "" {
+		t.Fatalf("code=%d out=%q err=%q", code, stdout, errb)
+	}
+	assertFile(t, dir, "xx00", "match\nbody\n")
+	if _, err := vfs.Stat(filepath.Join(dir, "xx01")); !vfs.NotExist(err) {
+		t.Fatalf("xx01 exists or stat failed unexpectedly: %v", err)
+	}
+}
+
+func TestCsplitErrors(t *testing.T) {
+	_, errb, code := runTool(t, guestDir(t), "", "missing")
+	if code != 2 || !strings.Contains(errb, "missing operand") {
+		t.Fatalf("code=%d err=%q", code, errb)
+	}
+	_, errb, code = runTool(t, guestDir(t), "a\n", "-", "{*}")
+	if code != 2 || !strings.Contains(errb, "missing pattern before repeat count") {
+		t.Fatalf("code=%d err=%q", code, errb)
+	}
+	_, errb, code = runTool(t, guestDir(t), "a\n", "-", "/a/+2")
+	if code != 2 || !strings.Contains(errb, "line number out of range") {
+		t.Fatalf("code=%d err=%q", code, errb)
+	}
+	_, errb, code = runTool(t, guestDir(t), "a\n", "-b", "%s", "-", "/a/")
+	if code != 2 || !strings.Contains(errb, "requires one integer conversion") {
+		t.Fatalf("code=%d err=%q", code, errb)
+	}
+	_, errb, code = runTool(t, guestDir(t), "a\n", "-b", "%d-%d", "-", "/a/")
+	if code != 2 || !strings.Contains(errb, "requires one integer conversion") {
+		t.Fatalf("code=%d err=%q", code, errb)
+	}
+}
+
+func TestCsplitEscapedDelimiterInRegex(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		pattern string
+		input   string
+		files   map[string]string
+	}{
+		{name: "slash form", pattern: `/a\/b/`, input: "foo\na/b\nbar\n", files: map[string]string{"xx00": "foo\n", "xx01": "a/b\nbar\n"}},
+		{name: "percent form", pattern: `%a\%b%`, input: "foo\na%b\nbar\n", files: map[string]string{"xx00": "a%b\nbar\n"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := guestDir(t)
+			if err := vfs.WriteFile(filepath.Join(dir, "in"), []byte(tc.input), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			_, errb, code := runTool(t, dir, "", "-s", "in", tc.pattern)
+			if code != 0 || errb != "" {
+				t.Fatalf("code=%d err=%q", code, errb)
+			}
+			for name, want := range tc.files {
+				assertFile(t, dir, name, want)
+			}
+		})
+	}
+}
+
+func TestCsplitKeepFilesRetainsOutputOnError(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		keep   bool
+		exists bool
+	}{
+		{"default removes created files", false, false},
+		{"keep-files retains created files", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := guestDir(t)
+			if err := vfs.WriteFile(filepath.Join(dir, "in"), []byte("a\nb\nc\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := vfs.Mkdir(filepath.Join(dir, "xx01"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			args := []string{"-s", "in", "2"}
+			if tc.keep {
+				args = append([]string{"-k"}, args...)
+			}
+			_, errb, code := runTool(t, dir, "", args...)
+			if code != 1 || !strings.Contains(errb, "csplit:") {
+				t.Fatalf("code=%d err=%q, want exit 1 with diagnostic", code, errb)
+			}
+			_, err := vfs.Stat(filepath.Join(dir, "xx00"))
+			if tc.exists && err != nil {
+				t.Fatalf("xx00 should be retained under -k: %v", err)
+			}
+			if !tc.exists && !vfs.NotExist(err) {
+				t.Fatalf("xx00 should be removed on error: stat err=%v", err)
+			}
+		})
+	}
+}
+
+func TestCsplitKeepFilesRetainsPiecesBeforeOperandError(t *testing.T) {
+	dir := guestDir(t)
+	if err := vfs.WriteFile(filepath.Join(dir, "in"), []byte("1\n2\n3\n4\n5\n6\n7\n8\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, errb, code := runTool(t, dir, "", "-k", "-s", "in", "3", "5", "7", "99")
+	if code == 0 || !strings.Contains(errb, "line number out of range") {
+		t.Fatalf("code=%d err=%q", code, errb)
+	}
+	for name, want := range map[string]string{
+		"xx00": "1\n2\n",
+		"xx01": "3\n4\n",
+		"xx02": "5\n6\n",
+		"xx03": "7\n8\n",
+	} {
+		assertFile(t, dir, name, want)
+	}
+}
+
+func TestCsplitResolvesAbsoluteAndParentInputOperands(t *testing.T) {
+	root := guestDir(t)
+	if err := vfs.WriteFile(filepath.Join(root, "input"), []byte("one\ntwo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name    string
+		operand func(string) string
+	}{
+		{name: "absolute", operand: func(string) string { return filepath.Join(root, "input") }},
+		{name: "parent-relative", operand: func(string) string { return filepath.Join("..", "input") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := filepath.Join(root, tc.name)
+			if err := vfs.Mkdir(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			_, errb, code := runTool(t, dir, "", "-s", tc.operand(dir), "2")
+			if code != 0 || errb != "" {
+				t.Fatalf("code=%d err=%q", code, errb)
+			}
+			assertFile(t, dir, "xx00", "one\n")
+			assertFile(t, dir, "xx01", "two\n")
+		})
+	}
+}
+
+func assertFile(t *testing.T, dir, name, want string) {
+	t.Helper()
+	got, err := vfs.ReadFile(filepath.Join(dir, name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != want {
+		t.Fatalf("%s=%q want %q", name, got, want)
+	}
+}
+
+func TestCsplitLineNumberRepeatAdvances(t *testing.T) {
+	dir := guestDir(t)
+	if err := vfs.WriteFile(filepath.Join(dir, "in"), []byte("l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, errb, code := runTool(t, dir, "", "in", "3", "{1}")
+	if code != 0 {
+		t.Fatalf("code=%d err=%q", code, errb)
+	}
+	assertFile(t, dir, "xx00", "l1\nl2\n")
+	assertFile(t, dir, "xx01", "l3\nl4\nl5\n")
+	assertFile(t, dir, "xx02", "l6\nl7\nl8\n")
+}
+
+func TestCsplitLineNumberRepeatToEOFCleansUp(t *testing.T) {
+	dir := guestDir(t)
+	if err := vfs.WriteFile(filepath.Join(dir, "in"), []byte("l1\nl2\nl3\nl4\nl5\nl6\nl7\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, errb, code := runTool(t, dir, "", "in", "2", "{*}")
+	if code == 0 || !strings.Contains(errb, "line number out of range") {
+		t.Fatalf("code=%d err=%q", code, errb)
+	}
+	if _, err := vfs.Stat(filepath.Join(dir, "xx00")); !vfs.NotExist(err) {
+		t.Fatalf("xx00 exists or stat failed unexpectedly: %v", err)
+	}
+}
+
+func TestCsplitLineNumberRangeBoundary(t *testing.T) {
+
+	dir := guestDir(t)
+	if err := vfs.WriteFile(filepath.Join(dir, "in"), []byte("l1\nl2\nl3\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, errb, code := runTool(t, dir, "", "-s", "in", "3"); code != 0 || errb != "" {
+		t.Fatalf("N==lines: code=%d err=%q, want success", code, errb)
+	}
+	assertFile(t, dir, "xx00", "l1\nl2\n")
+	assertFile(t, dir, "xx01", "l3\n")
+
+	dir = guestDir(t)
+	if err := vfs.WriteFile(filepath.Join(dir, "in"), []byte("l1\nl2\nl3\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, errb, code := runTool(t, dir, "", "-s", "in", "4")
+	if code == 0 || !strings.Contains(errb, "line number out of range") {
+		t.Fatalf("N==lines+1: code=%d err=%q, want out-of-range diagnostic", code, errb)
+	}
+	if _, err := vfs.Stat(filepath.Join(dir, "xx00")); !vfs.NotExist(err) {
+		t.Fatalf("N==lines+1 must not create xx00: stat err=%v", err)
+	}
+
+	dir = guestDir(t)
+	if err := vfs.WriteFile(filepath.Join(dir, "in"), []byte("l1\nl2\nl3\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, errb, code := runTool(t, dir, "", "-s", "in", "2", "3"); code != 0 || errb != "" {
+		t.Fatalf("2 3: code=%d err=%q", code, errb)
+	}
+	assertFile(t, dir, "xx00", "l1\n")
+	assertFile(t, dir, "xx01", "l2\n")
+	assertFile(t, dir, "xx02", "l3\n")
+}
+
+func TestCsplitLineNumberRepeatOutOfRange(t *testing.T) {
+	dir := guestDir(t)
+	if err := vfs.WriteFile(filepath.Join(dir, "in"), []byte("l1\nl2\nl3\nl4\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, errb, code := runTool(t, dir, "", "in", "3", "{5}")
+	if code != 2 || !strings.Contains(errb, "line number out of range") {
+		t.Fatalf("code=%d err=%q", code, errb)
+	}
+}
+
+func TestCsplitPatternsAreBRE(t *testing.T) {
+	dir := guestDir(t)
+	if err := vfs.WriteFile(filepath.Join(dir, "in"), []byte("aa\nxbbz\ncc\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, errb, code := runTool(t, dir, "", "in", `/xb\{2\}z/`)
+	if code != 0 {
+		t.Fatalf("code=%d err=%q", code, errb)
+	}
+	assertFile(t, dir, "xx00", "aa\n")
+	assertFile(t, dir, "xx01", "xbbz\ncc\n")
+
+	dir2 := guestDir(t)
+	if err := vfs.WriteFile(filepath.Join(dir2, "in"), []byte("aa\nx(y\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, errb, code = runTool(t, dir2, "", "in", "/x(y/")
+	if code != 0 {
+		t.Fatalf("literal paren: code=%d err=%q", code, errb)
+	}
+	assertFile(t, dir2, "xx01", "x(y\n")
+}
+
+func TestCsplitSuppressMatchedLineNumber(t *testing.T) {
+	dir := guestDir(t)
+	if err := vfs.WriteFile(filepath.Join(dir, "in"), []byte("l1\nl2\nl3\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, errb, code := runTool(t, dir, "", "--suppress-matched", "in", "2")
+	if code != 0 {
+		t.Fatalf("code=%d err=%q", code, errb)
+	}
+	assertFile(t, dir, "xx00", "l1\n")
+	assertFile(t, dir, "xx01", "l3\n")
+}
+
+type fakeCsplitCType struct{ closeCalls int }
+
+func (p *fakeCsplitCType) classify(b byte, member bool) (bool, error) { return member, nil }
+func (p *fakeCsplitCType) IsAlpha(b byte) (bool, error) {
+	return p.classify(b, b >= 'A' && b <= 'Z' || b >= 'a' && b <= 'z' || b == 0xe9)
+}
+func (p *fakeCsplitCType) IsAlnum(b byte) (bool, error) {
+	alpha, err := p.IsAlpha(b)
+	return alpha || b >= '0' && b <= '9', err
+}
+func (p *fakeCsplitCType) IsBlank(b byte) (bool, error) { return p.classify(b, b == ' ' || b == '\t') }
+func (p *fakeCsplitCType) IsCntrl(b byte) (bool, error) {
+	return p.classify(b, b < 0x20 || b == 0x7f)
+}
+func (p *fakeCsplitCType) IsDigit(b byte) (bool, error) { return p.classify(b, b >= '0' && b <= '9') }
+func (p *fakeCsplitCType) IsGraph(b byte) (bool, error) { return p.classify(b, b > 0x20 && b != 0x7f) }
+func (p *fakeCsplitCType) IsLower(b byte) (bool, error) {
+	return p.classify(b, b >= 'a' && b <= 'z' || b == 0xe9)
+}
+func (p *fakeCsplitCType) IsPrint(b byte) (bool, error) {
+	return p.classify(b, b >= 0x20 && b != 0x7f)
+}
+func (p *fakeCsplitCType) IsPunct(b byte) (bool, error) { return p.classify(b, b == '.' || b == '!') }
+func (p *fakeCsplitCType) IsSpace(b byte) (bool, error) {
+	return p.classify(b, b == ' ' || b == '\t' || b == '\n')
+}
+func (p *fakeCsplitCType) IsUpper(b byte) (bool, error) { return p.classify(b, b >= 'A' && b <= 'Z') }
+func (p *fakeCsplitCType) IsXDigit(b byte) (bool, error) {
+	return p.classify(b, b >= '0' && b <= '9' || b >= 'a' && b <= 'f' || b >= 'A' && b <= 'F')
+}
+func (p *fakeCsplitCType) ToLower(in []byte) ([]byte, error) {
+	out := append([]byte(nil), in...)
+	for i, b := range out {
+		if b >= 'A' && b <= 'Z' {
+			out[i] = b + 32
+		}
+	}
+	return out, nil
+}
+func (p *fakeCsplitCType) Close() error { p.closeCalls++; return nil }
+
+type fakeCsplitCollate struct{ closeCalls int }
+
+func (p *fakeCsplitCollate) Equivalents(value byte) ([]byte, error) {
+	if value == 0 {
+		return nil, nil
+	}
+	if value == 'e' || value == 0xe9 {
+		return []byte{'e', 0xe9}, nil
+	}
+	return []byte{value}, nil
+}
+func (p *fakeCsplitCollate) EquivalenceClasses() ([]bool, error) {
+	result := make([]bool, 256)
+	for i := 1; i < len(result); i++ {
+		result[i] = true
+	}
+	return result, nil
+}
+func (p *fakeCsplitCollate) CollationWeights() ([]byte, error) {
+	result := make([]byte, 256)
+	for i := range result {
+		result[i] = byte(i)
+	}
+	result[0xe9] = 'e'
+	return result, nil
+}
+func (p *fakeCsplitCollate) CollatingElements() ([]bool, error) {
+	result := make([]bool, 256)
+	for i := 1; i < len(result); i++ {
+		result[i] = true
+	}
+	return result, nil
+}
+func (p *fakeCsplitCollate) Close() error { p.closeCalls++; return nil }
+
+func runCsplitLocale(t *testing.T, env []string, stdin string, args []string, ctypeOpen ctypeOpener, collateOpen collateOpener) (string, string, int) {
+	t.Helper()
+	var out, errb bytes.Buffer
+	rc := &toolcompat.RunContext{
+		Ctx:   context.Background(),
+		Dir:   guestDir(t),
+		Env:   env,
+		Stdio: toolcompat.Stdio{In: strings.NewReader(stdin), Out: &out, Err: &errb},
+	}
+	code := runWithLocales(rc, args, ctypeOpen, collateOpen)
+	return out.String(), errb.String(), code
+}
+
+func TestCsplitLocaleRegexClassesEquivalenceAndRanges(t *testing.T) {
+	var errb bytes.Buffer
+	rc := &toolcompat.RunContext{Env: []string{"LC_ALL=C"}, Stdio: toolcompat.Stdio{Err: &errb}}
+	tables, code := localeRegexpTables(rc, func(string) (ctypeProvider, error) {
+		panic("C locale must not open ctype provider")
+	}, func(string) (collateProvider, error) {
+		panic("C locale must not open collate provider")
+	})
+	if code >= 0 || tables == nil || errb.Len() != 0 {
+		t.Fatalf("C locale tables = (%v,%d,%q), want byte-regexp tables", tables, code, errb.String())
+	}
+	matcher, err := compileMatcher("^.$", tables)
+	if err != nil {
+		t.Fatal(err)
+	}
+	matched, err := matcher.match("é")
+	if err != nil || matched {
+		t.Fatalf("C /^.$/ match for two-byte UTF-8 input = (%v,%v), want false", matched, err)
+	}
+
+	for _, pattern := range []string{"/[[:alpha:]]/", "/[[=e=]]/", "/[d-f]/"} {
+		t.Run(pattern, func(t *testing.T) {
+			ctypeFake := &fakeCsplitCType{}
+			collateFake := &fakeCsplitCollate{}
+			stdout, errb, code := runCsplitLocale(t,
+				[]string{"LC_CTYPE=de_DE.iso88591", "LC_COLLATE=de_DE.iso88591"},
+				string([]byte{'1', '\n', 0xe9, '\n', 'z', '\n'}),
+				[]string{"-s", "-", pattern},
+				func(string) (ctypeProvider, error) { return ctypeFake, nil },
+				func(string) (collateProvider, error) { return collateFake, nil },
+			)
+			if code != 0 || stdout != "" || errb != "" || ctypeFake.closeCalls != 1 || collateFake.closeCalls != 1 {
+				t.Fatalf("csplit %s = (%q,%q,%d), ctypeClose=%d collateClose=%d", pattern, stdout, errb, code, ctypeFake.closeCalls, collateFake.closeCalls)
+			}
+		})
+	}
+}
+
+func TestCsplitLocaleInitFailsBeforeInputOpen(t *testing.T) {
+	want := errors.New("ctype unavailable")
+	_, errb, code := runCsplitLocale(t,
+		[]string{"LC_ALL=de_DE.iso88591"},
+		"",
+		[]string{"missing-input", "/x/"},
+		func(string) (ctypeProvider, error) { return nil, want },
+		func(string) (collateProvider, error) { return nil, errors.New("collator should not open") },
+	)
+	if code != 2 || !strings.Contains(errb, want.Error()) || strings.Contains(errb, "missing-input") {
+		t.Fatalf("locale init failure = (%q,%d), want ctype diagnostic before input open", errb, code)
+	}
+}
+
+func TestCsplitCLocaleBacktrackLimitIsError(t *testing.T) {
+	input := strings.Repeat("a", 500) + "bb\n"
+	_, errb, code := runCsplitLocale(t,
+		[]string{"LC_ALL=C"}, input, []string{"-s", "-", `/\(a*\)b\1/`},
+		func(string) (ctypeProvider, error) { panic("C locale opened ctype provider") },
+		func(string) (collateProvider, error) { panic("C locale opened collate provider") },
+	)
+	if code != 2 || !strings.Contains(errb, "resource limit") {
+		t.Fatalf("csplit bounded matcher = (err %q, code %d), want resource-limit exit 2", errb, code)
+	}
+}

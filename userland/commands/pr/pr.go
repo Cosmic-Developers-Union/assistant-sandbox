@@ -1,0 +1,1148 @@
+package prcmd
+
+import (
+	"bufio"
+	"errors"
+	"fmt"
+	"io"
+	"strconv"
+	"strings"
+
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/userland/toolcompat"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/userland/toolcompat/clock"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/userland/toolcompat/locale"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/userland/toolcompat/vfs"
+)
+
+var cmd = &toolcompat.Tool{
+	Name:     "pr",
+	Synopsis: "Paginate files for printing.",
+	Usage:    "pr [OPTION]... [FILE]...",
+}
+
+func init() { cmd.Run = run; toolcompat.Register(cmd) }
+
+const (
+	linesPerHeader  = 5
+	linesPerTrailer = 5
+)
+
+type options struct {
+	pageLength     int
+	bodyLines      int
+	width          int
+	truncate       bool
+	omitHeader     bool
+	ffBreaks       bool
+	header         string
+	headerSet      bool
+	dateFormat     string
+	doubleSpace    bool
+	numberLines    bool
+	numberSep      string
+	numberWidth    int
+	indent         int
+	noFileWarnings bool
+	expandTabs     bool
+	expandChar     rune
+	expandWidth    int
+	formFeed       bool
+	pageStart      int
+	pageEnd        int
+	firstLineNum   int
+	columns        int
+	across         bool
+	separator      string
+	outputTabs     bool
+	outputTabChar  rune
+	outputTabWidth int
+	merge          bool
+	location       *clock.Location
+}
+
+func run(rc *toolcompat.RunContext, args []string) int {
+	args = protectPlusOperands(args)
+	args = scanColumnOption(args)
+	fs := toolcompat.NewFlags(cmd.Name)
+
+	pageLength := fs.IntP("length", "l", 66, "set page length to PAGE_LENGTH lines (<= 10 implies -t)")
+	width := fs.IntP("width", "w", 72, "set page width to PAGE_WIDTH columns for multi-column output")
+	omitHeader := fs.BoolP("omit-header", "t", false, "omit page headers and trailers, do not pad the last page")
+	omitPagination := fs.BoolP("omit-pagination", "T", false, "like -t, and eliminate input form-feed pagination")
+	headerText := fs.StringP("header", "h", "", "use centered HEADER instead of file name in page header")
+	dateFormat := fs.StringP("date-format", "D", "", "use FORMAT for the header date")
+	doubleSpace := fs.BoolP("double-space", "d", false, "double space the output")
+	numberLines := fs.StringP("number-lines", "n", "", "precede each line with its line number")
+
+	fs.Lookup("number-lines").NoOptDefVal = "\t5"
+	indent := fs.IntP("indent", "o", 0, "offset each line with MARGIN spaces")
+	noFileWarnings := fs.BoolP("no-file-warnings", "r", false, "omit file open warnings")
+	pages := fs.String("pages", "", "print only pages in FIRST[:LAST] range")
+	expandTabs := fs.StringP("expand-tabs", "e", "", "expand input tabs to spaces")
+	fs.Lookup("expand-tabs").NoOptDefVal = "\t8"
+	across := fs.BoolP("across", "a", false, "fill columns across rather than down")
+	columns := fs.Int("columns", 1, "produce COLUMN columns, filled down")
+	fs.IntP("column", "", 1, "alias for --columns")
+	separator := fs.StringP("separator", "s", "", "separate columns by CHAR")
+
+	fs.Lookup("separator").NoOptDefVal = "\t"
+	sepString := fs.StringP("sep-string", "S", "", "separate columns by STRING")
+	merge := fs.BoolP("merge", "m", false, "print files in parallel, one per column")
+	formFeed := fs.BoolP("form-feed", "F", false, "use form feed instead of blank lines to end pages")
+	formFeedLower := fs.BoolP("f", "f", false, "use form feed instead of blank lines to end pages; pause before the first page if standard output is a terminal")
+	pauseFlag := fs.BoolP("p", "p", false, "pause before beginning each page if standard output is a terminal")
+	pageWidth := fs.IntP("page-width", "W", 72, "set page width and truncate lines")
+	firstLineNum := fs.IntP("first-line-number", "N", 1, "start counting line numbers at NUMBER")
+	joinLines := fs.BoolP("join-lines", "J", false, "merge full-length lines (GNU compat, no-op in this subset)")
+	outputTabs := fs.StringP("output-tabs", "i", "", "replace spaces with tabs on output")
+	fs.Lookup("output-tabs").NoOptDefVal = "\t8"
+	operands, code := toolcompat.ParseRequireOrder(rc, cmd, fs, args)
+	if code >= 0 {
+		return code
+	}
+	if fs.Changed("column") {
+		cv, _ := fs.GetInt("column")
+		*columns = cv
+	}
+	if *merge && *across {
+		_, _ = fmt.Fprintln(rc.Err, "pr: cannot specify both printing across and printing in parallel")
+		return 1
+	}
+	if *merge && (fs.Changed("columns") || fs.Changed("column")) {
+		_, _ = fmt.Fprintln(rc.Err, "pr: cannot specify number of columns when printing in parallel")
+		return 1
+	}
+	if *columns <= 0 {
+		return toolcompat.UsageError(rc, cmd, "invalid column count: %d", *columns)
+	}
+	if *columns > *width {
+		return toolcompat.UsageError(rc, cmd, "page width too narrow for %d columns", *columns)
+	}
+	if *pageLength <= 0 {
+		return toolcompat.UsageError(rc, cmd, "invalid page length: %d", *pageLength)
+	}
+	if *width <= 0 {
+		return toolcompat.UsageError(rc, cmd, "invalid page width: %d", *width)
+	}
+	if *pageWidth <= 0 {
+		return toolcompat.UsageError(rc, cmd, "invalid page width: %d", *pageWidth)
+	}
+	if *indent < 0 {
+		return toolcompat.UsageError(rc, cmd, "invalid indent: %d", *indent)
+	}
+	if *firstLineNum < 1 {
+		return toolcompat.UsageError(rc, cmd, "invalid first line number: %d", *firstLineNum)
+	}
+	pageStart, pageEnd, err := parsePages(*pages)
+	if err != nil {
+		return toolcompat.UsageError(rc, cmd, "%v", err)
+	}
+	numberSep, numberWidth, err := parseOptionalCharNumber(*numberLines, '\t', 5)
+	if err != nil {
+		return toolcompat.UsageError(rc, cmd, "invalid number-lines value: %q", *numberLines)
+	}
+	expandChar, expandWidth, err := parseOptionalCharNumber(*expandTabs, '\t', 8)
+	if err != nil {
+		return toolcompat.UsageError(rc, cmd, "invalid expand-tabs value: %q", *expandTabs)
+	}
+	outputTabChar, outputTabWidth, err := parseOptionalCharNumber(*outputTabs, '\t', 8)
+	if err != nil {
+		return toolcompat.UsageError(rc, cmd, "invalid output-tabs value: %q", *outputTabs)
+	}
+
+	o := options{
+		pageLength: *pageLength,
+		width:      *width,
+		header:     *headerText, headerSet: fs.Changed("header"),
+		dateFormat: *dateFormat, doubleSpace: *doubleSpace,
+		numberLines: fs.Changed("number-lines"), numberSep: string(numberSep), numberWidth: numberWidth,
+		indent: *indent, noFileWarnings: *noFileWarnings,
+		expandTabs: fs.Changed("expand-tabs"), expandChar: expandChar, expandWidth: expandWidth,
+		outputTabs: fs.Changed("output-tabs"), outputTabChar: outputTabChar, outputTabWidth: outputTabWidth,
+		formFeed:  *formFeed || *formFeedLower,
+		ffBreaks:  !*omitPagination,
+		pageStart: pageStart, pageEnd: pageEnd,
+		firstLineNum: *firstLineNum,
+		columns:      *columns, across: *across, separator: *separator, merge: *merge,
+	}
+	if *sepString != "" {
+		o.separator = *sepString
+	}
+	_ = joinLines
+	if fs.Changed("page-width") {
+
+		o.width = *pageWidth
+		o.truncate = true
+	}
+	if o.separator != "" && !fs.Changed("width") && !fs.Changed("page-width") {
+		o.width = 512
+	}
+
+	o.omitHeader = *omitHeader || *omitPagination || o.pageLength <= linesPerHeader+linesPerTrailer
+	if o.omitHeader {
+		o.bodyLines = o.pageLength
+	} else {
+		o.bodyLines = o.pageLength - linesPerHeader - linesPerTrailer
+		if err := checkTimeLocale(rc.Env); err != nil {
+			_, _ = fmt.Fprintf(rc.Err, "pr: %v\n", err)
+			return 1
+		}
+
+		o.location = clock.UTC
+	}
+	if o.doubleSpace {
+		o.bodyLines /= 2
+		if o.bodyLines < 1 {
+			o.bodyLines = 1
+		}
+	}
+
+	if o.columns > 1 || o.merge {
+		o.expandTabs = true
+		o.outputTabs = true
+	}
+
+	_ = pauseFlag
+	_ = formFeedLower
+
+	diag := rc.Err
+
+	var files []string
+	seenFile := false
+	for _, op := range operands {
+		protectedPlus := strings.HasPrefix(op, plusOperandSentinel)
+		if protectedPlus {
+			op = strings.TrimPrefix(op, plusOperandSentinel)
+		}
+		if !seenFile && !protectedPlus && strings.HasPrefix(op, "+") {
+			start, end, err := parsePages(op[1:])
+			if err != nil || op == "+" {
+				return toolcompat.UsageError(rc, cmd, "invalid page range: %q", op)
+			}
+			o.pageStart, o.pageEnd = start, end
+			continue
+		}
+		files = append(files, op)
+		seenFile = true
+	}
+	if len(files) == 0 {
+		files = []string{"-"}
+	}
+
+	w := bufio.NewWriter(rc.Out)
+	if o.merge {
+		code := runMerge(rc, diag, files, w, o)
+		return code
+	}
+	exit := 0
+	for _, name := range files {
+		r, closer, label, stamp, err := open(rc, name)
+		if err != nil {
+			if !o.noFileWarnings {
+				_, _ = fmt.Fprintf(diag, "pr: %s: %v\n", name, toolcompat.SysErr(err))
+			}
+			exit = 1
+			continue
+		}
+		if err := printFile(r, w, label, stamp, o); err != nil {
+			if closer != nil {
+				err = errors.Join(err, closer.Close())
+			}
+			_, _ = fmt.Fprintf(diag, "pr: %s: %v\n", name, toolcompat.SysErr(err))
+			exit = 1
+			continue
+		}
+		if closer != nil {
+			if err := closer.Close(); err != nil {
+				_, _ = fmt.Fprintf(diag, "pr: %s: %v\n", name, toolcompat.SysErr(err))
+				exit = 1
+			}
+		}
+	}
+	if err := w.Flush(); err != nil {
+		_, _ = fmt.Fprintf(diag, "pr: write error: %v\n", err)
+		return 1
+	}
+	return exit
+}
+
+func runMerge(rc *toolcompat.RunContext, diag io.Writer, files []string, w *bufio.Writer, o options) int {
+	readers := make([]io.Reader, 0, len(files))
+	closers := make([]io.Closer, 0, len(files))
+	exit := 0
+	for _, name := range files {
+		r, closer, _, _, err := open(rc, name)
+		if err != nil {
+			if !o.noFileWarnings {
+				_, _ = fmt.Fprintf(diag, "pr: %s: %v\n", name, toolcompat.SysErr(err))
+			}
+			exit = 1
+			continue
+		}
+		readers = append(readers, r)
+		if closer != nil {
+			closers = append(closers, closer)
+		}
+	}
+	defer func() {
+		for _, c := range closers {
+			if err := c.Close(); err != nil {
+				_, _ = fmt.Fprintf(diag, "pr: close input: %v\n", toolcompat.SysErr(err))
+				exit = 1
+			}
+		}
+	}()
+	if err := printMerge(rc, readers, w, o); err != nil {
+		_, _ = fmt.Fprintf(diag, "pr: merge: %v\n", toolcompat.SysErr(err))
+		return 1
+	}
+	if err := w.Flush(); err != nil {
+		_, _ = fmt.Fprintf(diag, "pr: write error: %v\n", err)
+		return 1
+	}
+	return exit
+}
+
+const plusOperandSentinel = "\x00pr-protected-plus\x00"
+
+func protectPlusOperands(args []string) []string {
+	out := make([]string, 0, len(args))
+	protected := false
+	for _, arg := range args {
+		if protected && strings.HasPrefix(arg, "+") {
+			out = append(out, plusOperandSentinel+arg)
+			continue
+		}
+		out = append(out, arg)
+		if arg == "--" {
+			protected = true
+		}
+	}
+	return out
+}
+
+func scanColumnOption(args []string) []string {
+	const requiresValue = "-D -N -S -W -h -l -o -w --date-format --first-line-number --header --indent --length --page-width --sep-string --width --pages --columns --column"
+	needValue := map[string]bool{}
+	for _, name := range strings.Fields(requiresValue) {
+		needValue[name] = true
+	}
+	out := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			out = append(out, args[i:]...)
+			break
+		}
+
+		optional := map[byte]string{'s': "separator", 'e': "expand-tabs", 'i': "output-tabs", 'n': "number-lines"}
+		handledOptional := false
+		for pos := 1; pos < len(arg)-1 && arg[0] == '-' && arg[1] != '-'; pos++ {
+			longName, ok := optional[arg[pos]]
+			if !ok {
+				continue
+			}
+			validPrefix := true
+			for _, prefixFlag := range arg[1:pos] {
+				if !strings.ContainsRune("adFfJmrtT", prefixFlag) {
+					validPrefix = false
+					break
+				}
+			}
+			if !validPrefix {
+				continue
+			}
+			if pos > 1 {
+				out = append(out, arg[:pos])
+			}
+			out = append(out, "--"+longName+"="+arg[pos+1:])
+			handledOptional = true
+			break
+		}
+		if handledOptional {
+			continue
+		}
+		if i > 0 && needValue[args[i-1]] {
+			out = append(out, arg)
+			continue
+		}
+
+		if strings.HasPrefix(arg, "+") && len(arg) > 1 {
+			if _, _, err := parsePages(arg[1:]); err == nil {
+				out = append(out, "--pages="+arg[1:])
+				continue
+			}
+		}
+		if arg == "-" || (!strings.HasPrefix(arg, "-") && !strings.HasPrefix(arg, "+")) {
+			out = append(out, args[i:]...)
+			break
+		}
+		if len(arg) > 1 && arg[0] == '-' && strings.Trim(arg[1:], "0123456789") == "" {
+			out = append(out, "--columns="+arg[1:])
+			continue
+		}
+		if len(arg) > 2 && arg[0] == '-' && arg[1] >= '0' && arg[1] <= '9' {
+			j := 1
+			for j < len(arg) && arg[j] >= '0' && arg[j] <= '9' {
+				j++
+			}
+			if j < len(arg) {
+				rest := arg[j:]
+				validRest := true
+				for _, r := range rest {
+					if !strings.ContainsRune("adFfJmrtT", r) {
+						validRest = false
+						break
+					}
+				}
+				if validRest {
+					out = append(out, "--columns="+arg[1:j], "-"+rest)
+					continue
+				}
+			}
+		}
+		out = append(out, arg)
+	}
+	return out
+}
+
+func open(rc *toolcompat.RunContext, name string) (io.Reader, io.Closer, string, clock.Time, error) {
+	now, err := clock.Now(rc.Ctx)
+	if err != nil {
+		return nil, nil, "", clock.Time{}, err
+	}
+	if name == "-" {
+		if rc.In == nil {
+			return strings.NewReader(""), nil, "", now, nil
+		}
+		return rc.In, nil, "", now, nil
+	}
+	f, err := vfs.Open(name)
+	if err != nil {
+		return nil, nil, "", clock.Time{}, err
+	}
+	stamp := now
+	if st, err := f.Stat(); err == nil {
+		modified := st.ModTime()
+		stamp = clock.Unix(modified.Unix(), int64(modified.Nanosecond()))
+	}
+	return f, f, name, stamp, nil
+}
+
+func printFile(r io.Reader, w *bufio.Writer, label string, stamp clock.Time, o options) error {
+
+	if o.columns == 1 {
+		return printSingleColumn(r, w, label, stamp, o)
+	}
+
+	return printColumnsStream(r, w, label, stamp, o)
+}
+
+func printColumnsStream(r io.Reader, w *bufio.Writer, label string, stamp clock.Time, o options) error {
+	headerLabel := label
+	if o.headerSet {
+		headerLabel = o.header
+	}
+	physPerLine := 1
+	if o.doubleSpace {
+		physPerLine = 2
+	}
+	page, lineNo := 1, o.firstLineNum
+	pageSize := o.bodyLines * o.columns
+	lines := make([]string, 0, pageSize)
+	segmentHadData := false
+	var pendingBreaks []bool
+	pendingEmptySegments := 0
+
+	emit := func(chunk []string) error {
+		if err := printColumnChunk(w, chunk, page, &lineNo, headerLabel, stamp, o, physPerLine); err != nil {
+			return err
+		}
+		page++
+		return w.Flush()
+	}
+	resolveBreaks := func() error {
+		if len(pendingBreaks) == 0 {
+			return nil
+		}
+		if o.omitHeader {
+			for _, visible := range pendingBreaks {
+				if visible {
+					if _, err := w.WriteString("\f"); err != nil {
+						return err
+					}
+				}
+			}
+		} else {
+			for i := 0; i < pendingEmptySegments; i++ {
+				if err := emit(nil); err != nil {
+					return err
+				}
+			}
+		}
+		pendingBreaks = pendingBreaks[:0]
+		pendingEmptySegments = 0
+		return w.Flush()
+	}
+	addLine := func(line string) error {
+		if err := resolveBreaks(); err != nil {
+			return err
+		}
+		segmentHadData = true
+		lines = append(lines, line)
+		if len(lines) == pageSize {
+			if err := emit(lines); err != nil {
+				return err
+			}
+			lines = lines[:0]
+		}
+		return nil
+	}
+	endSegment := func() error {
+		if len(lines) > 0 {
+			if err := emit(lines); err != nil {
+				return err
+			}
+			lines = lines[:0]
+		} else if !segmentHadData {
+			if o.omitHeader {
+				page++
+			} else {
+				pendingEmptySegments++
+			}
+		}
+		segmentHadData = false
+		pendingBreaks = append(pendingBreaks, inPageRange(page-1, o))
+		return nil
+	}
+
+	br := bufio.NewReader(r)
+	for {
+		line, err := br.ReadString('\n')
+		if len(line) > 0 {
+			if o.expandTabs {
+				line = expandChars(line, o.expandChar, o.expandWidth)
+			}
+			frags := strings.Split(line, "\f")
+			for i, frag := range frags {
+				if i < len(frags)-1 {
+					if frag != "" {
+						if err := addLine(frag + "\n"); err != nil {
+							return err
+						}
+					}
+					if o.ffBreaks {
+						if err := endSegment(); err != nil {
+							return err
+						}
+					}
+				} else if frag != "" {
+					if err := addLine(frag); err != nil {
+						return err
+					}
+				}
+			}
+		}
+		if err == io.EOF {
+			if len(lines) > 0 {
+				return emit(lines)
+			}
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
+}
+
+func printSingleColumn(r io.Reader, w *bufio.Writer, label string, stamp clock.Time, o options) error {
+	headerLabel := label
+	if o.headerSet {
+		headerLabel = o.header
+	}
+	physPerLine := 1
+	if o.doubleSpace {
+		physPerLine = 2
+	}
+	physBudget := o.bodyLines * physPerLine
+	page, lineNo := 1, o.firstLineNum
+	lines := make([]string, 0, o.bodyLines)
+	segmentHadData := false
+	pendingBreaks, pendingEmptySegments := 0, 0
+
+	emitPage := func(chunk []string) error {
+		emit := inPageRange(page, o)
+		if emit && !o.omitHeader {
+			if _, err := fmt.Fprintf(w, "\n\n%s\n\n\n", headerLine(headerLabel, stamp, page, o)); err != nil {
+				return err
+			}
+		}
+		for _, line := range chunk {
+			if emit {
+				if _, err := w.WriteString(tabifyLine(formatLine(line, lineNo, o), o)); err != nil {
+					return err
+				}
+				if o.doubleSpace {
+					if _, err := w.WriteString("\n"); err != nil {
+						return err
+					}
+				}
+			}
+			lineNo++
+		}
+		if emit && !o.omitHeader {
+			if o.formFeed {
+				if _, err := w.WriteString("\f"); err != nil {
+					return err
+				}
+			} else {
+				pad := physBudget - len(chunk)*physPerLine + linesPerTrailer
+				if _, err := w.WriteString(strings.Repeat("\n", pad)); err != nil {
+					return err
+				}
+			}
+		}
+		page++
+
+		return w.Flush()
+	}
+	resolveBreaks := func() error {
+		if pendingBreaks == 0 {
+			return nil
+		}
+		if o.omitHeader {
+			if inPageRange(page-1+pendingEmptySegments, o) {
+				if _, err := w.WriteString(strings.Repeat("\f", pendingBreaks)); err != nil {
+					return err
+				}
+			}
+		} else {
+			for i := 0; i < pendingEmptySegments; i++ {
+				if err := emitPage(nil); err != nil {
+					return err
+				}
+			}
+		}
+		pendingBreaks, pendingEmptySegments = 0, 0
+		return w.Flush()
+	}
+	addLine := func(line string) error {
+		if err := resolveBreaks(); err != nil {
+			return err
+		}
+		segmentHadData = true
+		lines = append(lines, line)
+		if len(lines) == o.bodyLines {
+			if err := emitPage(lines); err != nil {
+				return err
+			}
+			lines = lines[:0]
+		}
+		return nil
+	}
+	endSegment := func() error {
+		if len(lines) > 0 {
+			if err := emitPage(lines); err != nil {
+				return err
+			}
+			lines = lines[:0]
+		} else if !segmentHadData {
+			pendingEmptySegments++
+		}
+		segmentHadData = false
+		pendingBreaks++
+		return nil
+	}
+
+	br := bufio.NewReader(r)
+	for {
+		line, err := br.ReadString('\n')
+		if len(line) > 0 {
+			if o.expandTabs {
+				line = expandChars(line, o.expandChar, o.expandWidth)
+			}
+			frags := strings.Split(line, "\f")
+			for i, frag := range frags {
+				if i < len(frags)-1 {
+					if frag != "" {
+						if err := addLine(frag + "\n"); err != nil {
+							return err
+						}
+					}
+					if o.ffBreaks {
+						if err := endSegment(); err != nil {
+							return err
+						}
+					}
+				} else if frag != "" {
+					if err := addLine(frag); err != nil {
+						return err
+					}
+				}
+			}
+		}
+		if err == io.EOF {
+			if len(lines) > 0 {
+				return emitPage(lines)
+			}
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
+}
+
+func printMerge(rc *toolcompat.RunContext, readers []io.Reader, w *bufio.Writer, o options) error {
+	pages := make([][][]string, len(readers))
+	pageCount := 0
+	for i, r := range readers {
+		segments, err := readSegments(r, o)
+		if err != nil {
+			return err
+		}
+		pages[i] = mergePages(segments, o)
+		if len(pages[i]) > pageCount {
+			pageCount = len(pages[i])
+		}
+	}
+	if pageCount == 0 {
+		return nil
+	}
+	now, err := clock.Now(rc.Ctx)
+	if err != nil {
+		return err
+	}
+	stamp, label := now, ""
+	if o.headerSet {
+		label = o.header
+	}
+	physPerLine := 1
+	if o.doubleSpace {
+		physPerLine = 2
+	}
+	physBudget := o.bodyLines * physPerLine
+	lineNo := o.firstLineNum
+	for page := 1; page <= pageCount; page++ {
+		emit := inPageRange(page, o)
+		if emit && !o.omitHeader {
+			if _, err := fmt.Fprintf(w, "\n\n%s\n\n\n", headerLine(label, stamp, page, o)); err != nil {
+				return err
+			}
+		}
+		rows := 0
+		for _, inputPages := range pages {
+			if page <= len(inputPages) && len(inputPages[page-1]) > rows {
+				rows = len(inputPages[page-1])
+			}
+		}
+		for row := 0; row < rows; row++ {
+			if emit {
+				line := mergeLine(pages, page-1, row, o)
+				if o.numberLines {
+					line = formatLine(line, lineNo, o)
+				}
+				line = tabifyLine(line, o)
+				if _, err := w.WriteString(line); err != nil {
+					return err
+				}
+				if o.doubleSpace {
+					if _, err := w.WriteString("\n"); err != nil {
+						return err
+					}
+				}
+			}
+			lineNo++
+		}
+		if emit && !o.omitHeader {
+			if o.formFeed {
+				if _, err := w.WriteString("\f"); err != nil {
+					return err
+				}
+			} else if _, err := w.WriteString(strings.Repeat("\n", physBudget-rows*physPerLine+linesPerTrailer)); err != nil {
+				return err
+			}
+		}
+		if emit {
+
+			if err := w.Flush(); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func mergePages(segments [][]string, o options) [][]string {
+	if !o.ffBreaks {
+		var all []string
+		for _, segment := range segments {
+			all = append(all, segment...)
+		}
+		segments = [][]string{all}
+	}
+	for len(segments) > 1 && len(segments[len(segments)-1]) == 0 {
+		segments = segments[:len(segments)-1]
+	}
+	if len(segments) == 1 && len(segments[0]) == 0 {
+		return nil
+	}
+	var pages [][]string
+	for _, segment := range segments {
+		pages = append(pages, chunkLines(segment, o.bodyLines)...)
+	}
+	return pages
+}
+
+func mergeLine(pages [][][]string, page, row int, o options) string {
+	columns := len(pages)
+	availableWidth := o.width
+	if o.numberLines {
+		availableWidth -= o.numberWidth + len(o.numberSep)
+	}
+	columnWidth := availableWidth / columns
+	if columnWidth < 1 {
+		columnWidth = 1
+	}
+	var b strings.Builder
+	for col, inputPages := range pages {
+		line := ""
+		if page < len(inputPages) && row < len(inputPages[page]) {
+			line = strings.TrimSuffix(inputPages[page][row], "\n")
+		}
+		limit := columnWidth
+		if columns > 1 && o.separator == "" {
+			limit--
+		}
+		if limit < 0 {
+			limit = 0
+		}
+		if len(line) > limit {
+			line = line[:limit]
+		}
+		b.WriteString(line)
+		if col < columns-1 {
+			if o.separator != "" {
+				b.WriteString(o.separator)
+				continue
+			}
+			padTo := (col + 1) * columnWidth
+			writeMergePadding(&b, col*columnWidth+len(line), padTo)
+		}
+	}
+	return b.String() + "\n"
+}
+
+func writeMergePadding(b *strings.Builder, pos, target int) {
+	for pos < target {
+		nextTab := pos + 8 - pos%8
+		if nextTab <= target {
+			b.WriteByte('\t')
+			pos = nextTab
+		} else {
+			b.WriteByte(' ')
+			pos++
+		}
+	}
+}
+func printColumnChunk(w *bufio.Writer, chunk []string, page int, lineNo *int, headerLabel string, stamp clock.Time, o options, physPerLine int) error {
+	emit := inPageRange(page, o)
+	if emit && !o.omitHeader {
+		if _, err := fmt.Fprintf(w, "\n\n%s\n\n\n", headerLine(headerLabel, stamp, page, o)); err != nil {
+			return err
+		}
+	}
+	rows := (len(chunk) + o.columns - 1) / o.columns
+	contentWidth := o.width
+	if o.separator != "" {
+		contentWidth -= (o.columns - 1) * len(o.separator)
+	}
+	columnWidth := contentWidth / o.columns
+	if columnWidth < 1 {
+		columnWidth = 1
+	}
+	formatted := make([]string, len(chunk))
+	cellOptions := o
+	cellOptions.indent = 0
+	for i, inputLine := range chunk {
+		line := formatLine(inputLine, *lineNo+i, cellOptions)
+		line = strings.TrimSuffix(line, "\n")
+		if len(line) > columnWidth {
+			line = line[:columnWidth]
+		}
+		formatted[i] = line
+	}
+	*lineNo += len(chunk)
+	for row := 0; row < rows; row++ {
+		if !emit {
+			continue
+		}
+		var rowText strings.Builder
+		rowText.WriteString(strings.Repeat(" ", o.indent))
+		for col := 0; col < o.columns; col++ {
+			index := row + col*rows
+			if o.across {
+				index = row*o.columns + col
+			}
+			if index >= len(formatted) {
+				continue
+			}
+			line := formatted[index]
+			nextIndex := index + rows
+			if o.across {
+				nextIndex = index + 1
+			}
+			if o.separator == "" && col < o.columns-1 && nextIndex < len(formatted) && len(line) >= columnWidth {
+				line = line[:columnWidth-1]
+			}
+			if col > 0 {
+				rowText.WriteString(o.separator)
+			}
+			if o.separator == "" && col < o.columns-1 && nextIndex < len(formatted) {
+				line += strings.Repeat(" ", columnWidth-len(line))
+			}
+			rowText.WriteString(line)
+		}
+		if _, err := w.WriteString(tabifyLine(rowText.String()+"\n", o)); err != nil {
+			return err
+		}
+		if o.doubleSpace {
+			if _, err := w.WriteString("\n"); err != nil {
+				return err
+			}
+		}
+	}
+	if emit && !o.omitHeader {
+		if o.formFeed {
+			_, err := w.WriteString("\f")
+			return err
+		}
+		_, err := w.WriteString(strings.Repeat("\n", (o.bodyLines-rows)*physPerLine+linesPerTrailer))
+		return err
+	}
+	return nil
+}
+
+func headerLine(label string, stamp clock.Time, page int, o options) string {
+	if o.location != nil {
+		stamp = stamp.In(o.location)
+	}
+	date := fmt.Sprintf("%s %04d", formatMonthDayTime(stamp), stamp.Year())
+	if o.dateFormat != "" {
+		date = stamp.Format(strftimeLayout(o.dateFormat))
+	}
+	return strings.Repeat(" ", o.indent) + fmt.Sprintf("%s %s Page %d", date, label, page)
+}
+
+func formatLine(line string, lineNo int, o options) string {
+	hasNL := strings.HasSuffix(line, "\n")
+	line = strings.TrimSuffix(line, "\n")
+	if o.numberLines {
+		line = fmt.Sprintf("%*d%s%s", o.numberWidth, lineNo, o.numberSep, line)
+	}
+	if o.truncate && len(line) > o.width {
+		line = line[:o.width]
+	}
+	if o.indent > 0 {
+		line = strings.Repeat(" ", o.indent) + line
+	}
+	if hasNL {
+		line += "\n"
+	}
+	return line
+}
+
+func tabifyLine(line string, o options) string {
+	if !o.outputTabs {
+		return line
+	}
+	hasNL := strings.HasSuffix(line, "\n")
+	line = strings.TrimSuffix(line, "\n")
+	var b strings.Builder
+	col, pending := 0, 0
+	flushSpaces := func() {
+		for pending > 0 {
+			next := o.outputTabWidth - col%o.outputTabWidth
+			if pending >= next {
+				b.WriteRune(o.outputTabChar)
+				col += next
+				pending -= next
+			} else {
+				b.WriteByte(' ')
+				col++
+				pending--
+			}
+		}
+	}
+	for _, r := range line {
+		if r == ' ' {
+			pending++
+			continue
+		}
+		flushSpaces()
+		b.WriteRune(r)
+		if r == o.outputTabChar {
+			col += o.outputTabWidth - col%o.outputTabWidth
+		} else {
+			col++
+		}
+	}
+	flushSpaces()
+	if hasNL {
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+func readSegments(r io.Reader, o options) ([][]string, error) {
+	br := bufio.NewReader(r)
+	segments := [][]string{nil}
+	for {
+		line, err := br.ReadString('\n')
+		if len(line) > 0 {
+			if o.expandTabs {
+				line = expandChars(line, o.expandChar, o.expandWidth)
+			}
+			if strings.ContainsRune(line, '\f') {
+				frags := strings.Split(line, "\f")
+				for i, frag := range frags {
+					if i < len(frags)-1 {
+						if frag != "" {
+							segments[len(segments)-1] = append(segments[len(segments)-1], frag+"\n")
+						}
+						segments = append(segments, nil)
+					} else if frag != "" {
+						segments[len(segments)-1] = append(segments[len(segments)-1], frag)
+					}
+				}
+			} else {
+				segments[len(segments)-1] = append(segments[len(segments)-1], line)
+			}
+		}
+		if err == io.EOF {
+			return segments, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+}
+
+func chunkLines(lines []string, size int) [][]string {
+	if len(lines) == 0 {
+		return [][]string{nil}
+	}
+	var out [][]string
+	for i := 0; i < len(lines); i += size {
+		end := i + size
+		if end > len(lines) {
+			end = len(lines)
+		}
+		out = append(out, lines[i:end])
+	}
+	return out
+}
+
+func parsePages(s string) (int, int, error) {
+	if s == "" {
+		return 1, 0, nil
+	}
+	parts := strings.SplitN(s, ":", 2)
+	start, err := strconv.Atoi(parts[0])
+	if err != nil || start <= 0 {
+		return 0, 0, fmt.Errorf("invalid page range: %q", s)
+	}
+	end := start
+	if len(parts) == 2 {
+		if parts[1] == "" {
+			end = 0
+		} else if end, err = strconv.Atoi(parts[1]); err != nil || end < start {
+			return 0, 0, fmt.Errorf("invalid page range: %q", s)
+		}
+	}
+	return start, end, nil
+}
+
+func inPageRange(page int, o options) bool {
+	return page >= o.pageStart && (o.pageEnd == 0 || page <= o.pageEnd)
+}
+
+func parseOptionalCharNumber(spec string, defaultChar rune, defaultNumber int) (rune, int, error) {
+	if spec == "" {
+		return defaultChar, defaultNumber, nil
+	}
+	runes := []rune(spec)
+	char := defaultChar
+	digits := spec
+	if runes[0] < '0' || runes[0] > '9' {
+		char = runes[0]
+		digits = string(runes[1:])
+	}
+	if digits == "" {
+		return char, defaultNumber, nil
+	}
+	for _, r := range digits {
+		if r < '0' || r > '9' {
+			return 0, 0, fmt.Errorf("not decimal")
+		}
+	}
+	n, err := strconv.Atoi(digits)
+	if err != nil || n < 0 {
+		return 0, 0, fmt.Errorf("not positive")
+	}
+	if n == 0 {
+		n = defaultNumber
+	}
+	return char, n, nil
+}
+
+func expandChars(s string, expandChar rune, width int) string {
+	var b strings.Builder
+	col := 0
+	for _, r := range s {
+		if r == expandChar {
+			spaces := width - col%width
+			b.WriteString(strings.Repeat(" ", spaces))
+			col += spaces
+			continue
+		}
+		b.WriteRune(r)
+		if r == '\n' {
+			col = 0
+		} else {
+			col++
+		}
+	}
+	return b.String()
+}
+
+func strftimeLayout(format string) string {
+	replacements := []struct{ old, new string }{
+		{"%Y", "2006"}, {"%y", "06"}, {"%m", "01"}, {"%d", "02"},
+		{"%H", "15"}, {"%M", "04"}, {"%S", "05"}, {"%b", "Jan"},
+		{"%B", "January"}, {"%a", "Mon"}, {"%A", "Monday"},
+	}
+	for _, r := range replacements {
+		format = strings.ReplaceAll(format, r.old, r.new)
+	}
+	return format
+}
+
+func formatMonthDayTime(t clock.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.Format("Jan _2 15:04")
+}
+
+func checkTimeLocale(env []string) error {
+	name := locale.Resolve(env, locale.Time)
+	base, codeset, _ := strings.Cut(name, ".")
+	codeset = strings.ToUpper(strings.NewReplacer("-", "", "_", "").Replace(codeset))
+	if base == "C" || base == "POSIX" {
+		if codeset == "" || codeset == "UTF8" {
+			return nil
+		}
+	}
+	return fmt.Errorf("LC_TIME %q 不可用：客体只有 C/POSIX 时间名称", name)
+}

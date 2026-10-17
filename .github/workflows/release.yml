@@ -1,0 +1,36 @@
+name: Release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      GOFLAGS: -p=2
+      GOMEMLIMIT: 768MiB
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build guest and CLI
+        shell: bash
+        run: |
+          make guest
+          mkdir -p dist
+          cp assistant-bash.wasm.gz dist/
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+            output="dist/assistant-sandbox-${target%/*}-${target#*/}"
+            if [[ "$target" == windows/* ]]; then output="${output}.exe"; fi
+            CGO_ENABLED=0 GOOS="${target%/*}" GOARCH="${target#*/}" go build -trimpath -o "$output" ./cmd/assistant-sandbox
+          done
+          cd dist
+          sha256sum * > SHA256SUMS
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: gh release create "$RELEASE_TAG" dist/* --verify-tag --generate-notes

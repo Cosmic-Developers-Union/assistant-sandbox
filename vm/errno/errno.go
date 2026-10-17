@@ -1,0 +1,153 @@
+package errno
+
+import (
+	"fmt"
+	"slices"
+)
+
+type Code string
+
+const (
+	NotImplemented     Code = "ENOSYS：接口尚未实现"
+	NotSupported       Code = "ENOTSUP：能力明确不支持"
+	NetworkUnreachable Code = "ENETUNREACH：网络不可达"
+	Invalid            Code = "EINVAL：参数无效"
+	NoProcess          Code = "ESRCH：进程不存在"
+	NoChild            Code = "ECHILD：没有对应子进程"
+	Busy               Code = "EBUSY：状态不允许此操作"
+	Limit              Code = "EAGAIN：资源预算已耗尽"
+	NotFound           Code = "ENOENT：可执行程序不存在"
+
+	Permission   Code = "EACCES：权限不足"
+	Exist        Code = "EEXIST：目标已存在"
+	NotDirectory Code = "ENOTDIR：路径前缀不是目录"
+	IsDirectory  Code = "EISDIR：目标是目录"
+	NotEmpty     Code = "ENOTEMPTY：目录非空"
+	BadHandle    Code = "EBADF：描述符无效"
+	BrokenPipe   Code = "EPIPE：管道对端已关闭"
+	NameTooLong  Code = "ENAMETOOLONG：客体路径超长"
+	ReadOnlyFS   Code = "EROFS：存储只读"
+	LinkLoop     Code = "ELOOP：符号链接解析过深"
+	NoDevice     Code = "ENXIO：设备不存在或没有控制终端"
+	NoSpace      Code = "ENOSPC：客体存储预算耗尽"
+
+	CrossDevice Code = "EXDEV：跨挂载操作不被支持"
+	Cancelled   Code = "ECANCELED：操作被取消"
+	Interrupted Code = "EINTR：等待被信号打断"
+	WouldBlock  Code = "EWOULDBLOCK：非阻塞操作暂不可用"
+	Range       Code = "ERANGE：结果超出客体表示范围"
+	Overflow    Code = "EOVERFLOW：数值溢出"
+	TimedOut    Code = "ETIMEDOUT：等待超时"
+	NoExec      Code = "ENOEXEC：文件不是可执行格式"
+
+	Version Code = "EPROTO：版本不匹配或数据校验失败"
+
+	Fault Code = "EFAULT：客体地址或长度非法"
+
+	IO Code = "EIO：描述符读写失败"
+
+	Seek Code = "ESPIPE：描述符不支持定位"
+)
+
+var declared = []Code{
+	NotImplemented, NotSupported, NetworkUnreachable, Invalid, NoProcess, NoChild, Busy, Limit, NotFound,
+	Permission, Exist, NotDirectory, IsDirectory, NotEmpty, BadHandle, BrokenPipe, NameTooLong, ReadOnlyFS,
+	LinkLoop, NoDevice, NoSpace, CrossDevice, Cancelled, Interrupted, WouldBlock, Range, Overflow, TimedOut,
+	NoExec, Version, Fault, IO, Seek,
+}
+
+func Codes() []Code { return slices.Clone(declared) }
+
+func (c Code) Error() string { return string(c) }
+
+const wasiABIVersion = "abi-wasi-1"
+
+var wasiNumbers = map[Code]uint16{
+	Invalid:            28,
+	NoProcess:          71,
+	NoChild:            12,
+	Busy:               10,
+	Limit:              6,
+	NotFound:           44,
+	NotImplemented:     52,
+	NotSupported:       58,
+	NetworkUnreachable: 40,
+	Permission:         2,
+	Exist:              20,
+	NotDirectory:       54,
+	IsDirectory:        31,
+	NotEmpty:           55,
+	CrossDevice:        18,
+
+	Fault:       21,
+	IO:          29,
+	BadHandle:   8,
+	BrokenPipe:  64,
+	NameTooLong: 37,
+	ReadOnlyFS:  69,
+	LinkLoop:    32,
+	NoDevice:    60,
+	NoSpace:     51,
+	Cancelled:   11,
+	Interrupted: 27,
+	WouldBlock:  6,
+	Range:       68,
+	Overflow:    61,
+	TimedOut:    73,
+	NoExec:      45,
+	Version:     71,
+}
+
+func WASI(code Code) (uint16, string) {
+	if n, ok := wasiNumbers[code]; ok {
+		return n, wasiABIVersion
+	}
+	return wasiNumbers[NotImplemented], wasiABIVersion
+}
+
+const linuxABIVersion = "abi-linux-asm-generic"
+
+var linuxNumbers = map[Code]int32{
+	Fault:              14,
+	Permission:         13,
+	NotFound:           2,
+	NoProcess:          3,
+	Interrupted:        4,
+	IO:                 5,
+	Seek:               29,
+	NoDevice:           6,
+	NoExec:             8,
+	BadHandle:          9,
+	NoChild:            10,
+	Limit:              11,
+	WouldBlock:         11,
+	Busy:               16,
+	Exist:              17,
+	CrossDevice:        18,
+	NotDirectory:       20,
+	IsDirectory:        21,
+	Invalid:            22,
+	NoSpace:            28,
+	ReadOnlyFS:         30,
+	BrokenPipe:         32,
+	Range:              34,
+	NameTooLong:        36,
+	NotImplemented:     38,
+	NotEmpty:           39,
+	LinkLoop:           40,
+	Version:            71,
+	Overflow:           75,
+	NotSupported:       95,
+	NetworkUnreachable: 101,
+	TimedOut:           110,
+	Cancelled:          125,
+}
+
+func Linux(code Code) (int32, string) {
+	if number, ok := linuxNumbers[code]; ok {
+		return number, linuxABIVersion
+	}
+	return linuxNumbers[NotImplemented], linuxABIVersion
+}
+
+func Wrap(err error, context string) error { return fmt.Errorf("%s: %w", context, err) }

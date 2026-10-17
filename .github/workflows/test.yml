@@ -1,0 +1,45 @@
+name: Test
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      GOFLAGS: -p=2
+      GOMEMLIMIT: 768MiB
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Verify source boundary
+        shell: bash
+        run: |
+          test -z "$(git ls-files -- assistant-bash.wasm assistant-bash.wasm.gz)"
+          go mod tidy -diff
+          go build ./...
+      - name: Build WASI guest
+        run: make guest
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.14.0
+          verify: true
+          args: ./...
+      - name: Test
+        shell: bash
+        run: |
+          ulimit -d 1048576
+          go test ./...
+      - name: POSIX development checks
+        run: make -C test/posix gate
+      - name: Build CLI
+        run: go build -trimpath -o assistant-sandbox ./cmd/assistant-sandbox
+      - name: Verify CLI
+        run: ./assistant-sandbox --module assistant-bash.wasm.gz -c 'printf sandbox-ok'

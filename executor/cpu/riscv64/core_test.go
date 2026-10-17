@@ -1,0 +1,1180 @@
+package riscv64
+
+import (
+	"context"
+	"encoding/binary"
+	"errors"
+	"testing"
+
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/executor/cpu"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
+)
+
+type sparse struct {
+	pages    map[uint64][]byte
+	pageSize uint64
+
+	faults int
+}
+
+func newSparse() *sparse { return &sparse{pages: map[uint64][]byte{}, pageSize: 4096} }
+
+func (s *sparse) page(address uint64) []byte {
+	base := address / s.pageSize * s.pageSize
+	page, ok := s.pages[base]
+	if !ok {
+		page = make([]byte, s.pageSize)
+		s.pages[base] = page
+	}
+	return page
+}
+
+func (s *sparse) Read(_ context.Context, address uint64, buffer []byte) error {
+	if len(buffer) == 0 {
+		return nil
+	}
+
+	if address/s.pageSize != (address+uint64(len(buffer))-1)/s.pageSize {
+		s.faults++
+		return errno.Range
+	}
+	page := s.page(address)
+	offset := address % s.pageSize
+	copy(buffer, page[offset:offset+uint64(len(buffer))])
+	return nil
+}
+
+func (s *sparse) Write(_ context.Context, address uint64, buffer []byte) error {
+	if len(buffer) == 0 {
+		return nil
+	}
+	if address/s.pageSize != (address+uint64(len(buffer))-1)/s.pageSize {
+		s.faults++
+		return errno.Range
+	}
+	page := s.page(address)
+	offset := address % s.pageSize
+	copy(page[offset:offset+uint64(len(buffer))], buffer)
+	return nil
+}
+
+func (s *sparse) load(t *testing.T, base uint64, instructions ...uint32) {
+	t.Helper()
+	for index, instruction := range instructions {
+		var encoded [4]byte
+		binary.LittleEndian.PutUint32(encoded[:], instruction)
+		if err := s.Write(context.Background(), base+uint64(index)*4, encoded[:]); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+type counter struct {
+	charged uint64
+	limit   uint64
+}
+
+func (c *counter) Charge(instructions uint64) error {
+	if c.limit > 0 && c.charged+instructions > c.limit {
+		return errno.Wrap(errno.Limit, "指令预算耗尽")
+	}
+	c.charged += instructions
+	return nil
+}
+
+type canceller struct{ cancelled bool }
+
+func (c *canceller) Cancelled() bool { return c.cancelled }
+
+const (
+	insAddi5 = 0x00500093
+
+	insAddi7 = 0x00700113
+
+	insAdd = 0x002081B3
+
+	insSub = 0x40110233
+
+	insStoreWord = 0x00302023
+
+	insLoadWord = 0x00002283
+
+	insBranchTaken = 0x00000463
+
+	insBranchNotTaken = 0x00001463
+
+	insJump = 0x0080006F
+
+	insEbreak = 0x00100073
+
+	insEcall = 0x00000073
+
+	insLui = 0x12345337
+
+	insFence = 0x0FF0000F
+
+	insFenceI = 0x0000100F
+
+	insCSR = 0x00001073
+
+	insIllegalLoad = 0x00007283
+
+	insCompressed = 0x00000001
+)
+
+func newPort(t *testing.T, memory *sparse, base uint64) *Core {
+	t.Helper()
+	port, err := New(cpu.Config{Memory: memory, Entry: base})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return port
+}
+
+func run(t *testing.T, port *Core, count int) []cpu.Outcome {
+	t.Helper()
+	outcomes := make([]cpu.Outcome, 0, count)
+	for index := 0; index < count; index++ {
+		outcome, err := port.Step(context.Background())
+		if err != nil {
+			t.Fatalf("第 %d 步失败: %v", index, err)
+		}
+		outcomes = append(outcomes, outcome)
+		if outcome != cpu.Continued {
+			break
+		}
+	}
+	return outcomes
+}
+
+func TestFixedInstructionVectorsArithmetic(t *testing.T) {
+	memory := newSparse()
+	memory.load(t, 0, insAddi5, insAddi7, insAdd, insSub)
+	port := newPort(t, memory, 0)
+	run(t, port, 4)
+
+	for index, want := range map[int]uint64{1: 5, 2: 7, 3: 12, 4: 2} {
+		got, err := port.ReadRegister(index)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Errorf("x%d=%d want %d", index, got, want)
+		}
+	}
+
+	state, err := port.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Registers[0] != 0 {
+		t.Fatalf("x0=%d 必须恒为 0", state.Registers[0])
+	}
+
+	if state.PC != 16 {
+		t.Fatalf("PC=%d want 16", state.PC)
+	}
+}
+
+func TestLoadStoreRoundTrip(t *testing.T) {
+	memory := newSparse()
+	memory.load(t, 0, insAddi5, insAddi7, insAdd, insStoreWord, insLoadWord)
+	port := newPort(t, memory, 0)
+	run(t, port, 5)
+	got, err := port.ReadRegister(5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 12 {
+		t.Fatalf("x5=%d want 12", got)
+	}
+
+	var raw [4]byte
+	if err := memory.Read(context.Background(), 0, raw[:]); err != nil {
+		t.Fatal(err)
+	}
+	if value := binary.LittleEndian.Uint32(raw[:]); value != 12 {
+		t.Fatalf("内存=%d want 12", value)
+	}
+}
+
+func TestBranchesAndJumps(t *testing.T) {
+
+	memory := newSparse()
+	memory.load(t, 0, insAddi5, insBranchTaken, insAddi7, insAddi7)
+	port := newPort(t, memory, 0)
+
+	run(t, port, 2)
+	state, err := port.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if state.PC != 12 {
+		t.Fatalf("分支后 PC=%d want 12", state.PC)
+	}
+	if state.Registers[2] != 0 {
+		t.Fatalf("被跳过的 addi 不应执行: x2=%d", state.Registers[2])
+	}
+
+	memory2 := newSparse()
+	memory2.load(t, 0, insBranchNotTaken, insAddi5)
+	port2 := newPort(t, memory2, 0)
+	run(t, port2, 2)
+	state2, err := port2.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state2.Registers[1] != 5 {
+		t.Fatalf("未跳转时下一条应执行: x1=%d", state2.Registers[1])
+	}
+
+	memory3 := newSparse()
+	memory3.load(t, 0, insJump, insAddi5, insAddi7)
+	port3 := newPort(t, memory3, 0)
+
+	run(t, port3, 1)
+	state3, err := port3.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state3.PC != 8 || state3.Registers[1] != 0 {
+		t.Fatalf("JAL 后 PC=%d x1=%d", state3.PC, state3.Registers[1])
+	}
+}
+
+func TestTrapKindsAreDistinguished(t *testing.T) {
+	ctx := context.Background()
+
+	for _, tc := range []struct {
+		label       string
+		instruction uint32
+	}{
+		{"fence.i", insFenceI},
+		{"csrrw", insCSR},
+	} {
+		memory := newSparse()
+		memory.load(t, 0, tc.instruction)
+		port := newPort(t, memory, 0)
+		_, err := port.Step(ctx)
+		var trap cpu.Trap
+		if !errors.As(err, &trap) {
+			t.Fatalf("%s: 应产生 trap: %v", tc.label, err)
+		}
+		if trap.Kind != cpu.TrapNotImplemented {
+			t.Errorf("%s: 类别=%v want not-implemented", tc.label, trap.Kind)
+		}
+	}
+
+	memory := newSparse()
+	memory.load(t, 0, insIllegalLoad)
+	port := newPort(t, memory, 0)
+	_, err := port.Step(ctx)
+	var trap cpu.Trap
+	if !errors.As(err, &trap) {
+		t.Fatalf("非法加载应产生 trap: %v", err)
+	}
+	if trap.Kind != cpu.TrapIllegalInstruction {
+		t.Fatalf("类别=%v want illegal-instruction", trap.Kind)
+	}
+	if trap.Instruction != insIllegalLoad || trap.Address != 0 {
+		t.Fatalf("trap 应带原始指令与地址: %+v", trap)
+	}
+
+	memory2 := newSparse()
+	memory2.load(t, 0, insFence, insAddi5)
+	port2 := newPort(t, memory2, 0)
+	if _, err := port2.Step(ctx); err != nil {
+		t.Fatalf("fence 应为空操作: %v", err)
+	}
+}
+
+func TestEcallIsReportedNotTranslated(t *testing.T) {
+	ctx := context.Background()
+	memory := newSparse()
+	memory.load(t, 0, insEcall)
+	port := newPort(t, memory, 0)
+
+	state, err := port.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Registers[17] = 93
+	state.Registers[10] = 0
+	if err := port.Reset(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	_, err = port.Step(ctx)
+	var trap cpu.Trap
+	if !errors.As(err, &trap) {
+		t.Fatalf("ECALL 应产生 trap: %v", err)
+	}
+	if trap.Kind != cpu.TrapEcall {
+		t.Fatalf("类别=%v want ecall", trap.Kind)
+	}
+
+	if trap.Detail>>32 != 93 {
+		t.Fatalf("Detail 应携带 a7=93: %+v", trap)
+	}
+
+	memory2 := newSparse()
+	memory2.load(t, 0, insEbreak)
+	port2 := newPort(t, memory2, 0)
+	_, err = port2.Step(ctx)
+	if !errors.As(err, &trap) || trap.Kind != cpu.TrapBreakpoint {
+		t.Fatalf("EBREAK 类别=%v want breakpoint", err)
+	}
+}
+
+func TestMemoryFaultIsTrapped(t *testing.T) {
+	ctx := context.Background()
+
+	memory := newSparse()
+	memory.load(t, 0, 0x0000A283)
+	port := newPort(t, memory, 0)
+	state, err := port.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	state.Registers[1] = 4094
+	if err := port.Reset(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	_, err = port.Step(ctx)
+	var trap cpu.Trap
+	if !errors.As(err, &trap) {
+		t.Fatalf("越界访存应产生 trap: %v", err)
+	}
+	if trap.Kind != cpu.TrapMemoryFault {
+		t.Fatalf("类别=%v want memory-fault", trap.Kind)
+	}
+	if trap.Detail != 4094 {
+		t.Fatalf("trap 应带访存地址: %+v", trap)
+	}
+
+	if !errors.Is(err, errno.Range) {
+		t.Fatalf("trap 应保留底层错误身份: %v", err)
+	}
+
+	port2 := newPort(t, memory, 4094)
+	if _, err := port2.Step(ctx); !errors.As(err, &trap) || trap.Kind != cpu.TrapMemoryFault {
+		t.Fatalf("取指跨页应产生访存 trap: %v", err)
+	}
+}
+
+func TestCancellationAtInstructionBoundary(t *testing.T) {
+	ctx := context.Background()
+	memory := newSparse()
+	memory.load(t, 0, insAddi5, insAddi7)
+	stop := &canceller{}
+	port, err := New(cpu.Config{Memory: memory, Entry: 0, Canceller: stop})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := port.Step(ctx); err != nil {
+		t.Fatal(err)
+	}
+	stop.cancelled = true
+	_, err = port.Step(ctx)
+	if !errors.Is(err, errno.Cancelled) {
+		t.Fatalf("取消后应报 ECANCELED: %v", err)
+	}
+
+	state, err := port.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Registers[2] != 0 || state.PC != 4 {
+		t.Fatalf("取消后状态不应前进: PC=%d x2=%d", state.PC, state.Registers[2])
+	}
+}
+
+func TestMeterChargesPerInstruction(t *testing.T) {
+	ctx := context.Background()
+	memory := newSparse()
+	memory.load(t, 0, insAddi5, insAddi7, insAdd, insSub)
+	meter := &counter{limit: 3}
+	port, err := New(cpu.Config{Memory: memory, Entry: 0, Meter: meter})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 3; index++ {
+		if _, err := port.Step(ctx); err != nil {
+			t.Fatalf("第 %d 步应成功: %v", index, err)
+		}
+	}
+	if meter.charged != 3 {
+		t.Fatalf("计量=%d want 3", meter.charged)
+	}
+	_, err = port.Step(ctx)
+	if !errors.Is(err, errno.Limit) {
+		t.Fatalf("预算耗尽应报 EAGAIN: %v", err)
+	}
+
+	state, err := port.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Registers[4] != 0 {
+		t.Fatalf("被拒绝的指令不应执行: x4=%d", state.Registers[4])
+	}
+}
+
+func TestArchitectureIsDeterministic(t *testing.T) {
+	program := []uint32{insAddi5, insAddi7, insAdd, insStoreWord, insLoadWord, insLui, insFence}
+	runOnce := func() ([numRegs]uint64, uint64) {
+		memory := newSparse()
+		memory.load(t, 0, program...)
+		port := newPort(t, memory, 0)
+		run(t, port, len(program))
+		state, err := port.State(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		var registers [numRegs]uint64
+		copy(registers[:], state.Registers)
+		return registers, state.PC
+	}
+	firstRegisters, firstPC := runOnce()
+	secondRegisters, secondPC := runOnce()
+	if firstRegisters != secondRegisters || firstPC != secondPC {
+		t.Fatal("同一程序两次执行结果不同")
+	}
+
+	if firstRegisters[6] != 0x12345000 {
+		t.Fatalf("x6=%#x want 0x12345000", firstRegisters[6])
+	}
+}
+
+func TestConstructionAndStateValidation(t *testing.T) {
+	if _, err := New(cpu.Config{}); !errors.Is(err, errno.Invalid) {
+		t.Fatalf("缺内存应报 EINVAL: %v", err)
+	}
+	memory := newSparse()
+	port := newPort(t, memory, 0)
+
+	if _, err := port.ReadRegister(32); !errors.Is(err, errno.Invalid) {
+		t.Fatalf("越界寄存器应报 EINVAL: %v", err)
+	}
+	if _, err := port.ReadRegister(-1); !errors.Is(err, errno.Invalid) {
+		t.Fatalf("负寄存器应报 EINVAL: %v", err)
+	}
+
+	word := port.WordSize()
+	if word.Bits != 64 || word.Bytes != 8 || !word.LittleEndian {
+		t.Fatalf("字长=%+v", word)
+	}
+
+	state, err := port.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Registers[1] = 999
+	again, err := port.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Registers[1] == 999 {
+		t.Fatal("State 必须返回副本")
+	}
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := port.Reset(cancelled, cpu.Machine{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("取消应报取消: %v", err)
+	}
+	if _, err := port.State(cancelled); !errors.Is(err, context.Canceled) {
+		t.Fatalf("取消应报取消: %v", err)
+	}
+}
+
+func TestResetKeepsFullWidth(t *testing.T) {
+	memory := newSparse()
+	port := newPort(t, memory, 0)
+	err := port.Reset(context.Background(), cpu.Machine{
+		PC:        0x1000,
+		Registers: []uint64{0xDEADBEEF, 0xFFFFFFFF_FFFFFFFF, 0},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := port.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.PC != 0x1000 {
+		t.Fatalf("PC=%#x", state.PC)
+	}
+	if state.Registers[0] != 0 {
+		t.Fatalf("x0=%d 必须为 0", state.Registers[0])
+	}
+	if state.Registers[1] != 0xFFFFFFFF_FFFFFFFF {
+		t.Fatalf("x1=%#x 必须原样保留 64 位", state.Registers[1])
+	}
+}
+
+func TestSignExtendBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		value uint64
+		width uint
+		want  uint64
+	}{
+		{0x000, 12, 0},
+		{0x7FF, 12, 2047},
+		{0x800, 12, 0xFFFFFFFFFFFFF800},
+		{0xFFF, 12, 0xFFFFFFFFFFFFFFFF},
+		{0x1FFE, 13, 0xFFFFFFFFFFFFFFFE},
+		{0x0FFE, 13, 0x0FFE},
+		{0x1FFFFF, 21, 0xFFFFFFFFFFFFFFFF},
+		{0x100000, 21, 0xFFFFFFFFFFF00000},
+	} {
+		if got := signExtend(tc.value, tc.width); got != tc.want {
+			t.Errorf("signExtend(%#x,%d)=%d want %d", tc.value, tc.width, got, tc.want)
+		}
+	}
+}
+
+const (
+	insXori  = 0x00F0C193
+	insOri   = 0x0300E193
+	insAndi  = 0x00F0F193
+	insSlti  = 0x0050A193
+	insSltiu = 0x0050B193
+	insSlli  = 0x00409193
+	insSrli  = 0x0020D193
+	insSrai  = 0x4020D193
+	insSll   = 0x002091B3
+	insSlt   = 0x0020A1B3
+	insSltu  = 0x0020B1B3
+	insXor   = 0x0020C1B3
+	insSrl   = 0x0020D1B3
+	insSra   = 0x4020D1B3
+	insOr    = 0x0020E1B3
+	insAnd   = 0x0020F1B3
+	insLb    = 0x00008183
+	insLh    = 0x00009183
+	insLbu   = 0x0000C183
+	insLhu   = 0x0000D183
+	insSb    = 0x00208023
+	insSh    = 0x00209023
+	insJalr  = 0x000081E7
+	insAuipc = 0x01000217
+	insBlt   = 0x0020C463
+	insBge   = 0x0020D463
+	insBltu  = 0x0020E463
+	insBgeu  = 0x0020F463
+
+	insIllegalShift = 0x40109193
+
+	insIllegalJalr = 0x000091E7
+
+	insIllegalSystem = 0x00200073
+)
+
+func executeOne(t *testing.T, instruction uint32, setup func(*cpu.Machine)) (cpu.Machine, error) {
+	t.Helper()
+	memory := newSparse()
+	memory.load(t, 0, instruction)
+	port := newPort(t, memory, 0)
+	ctx := context.Background()
+	state, err := port.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if setup != nil {
+		setup(&state)
+	}
+	if err := port.Reset(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	_, stepErr := port.Step(ctx)
+	after, err := port.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return after, stepErr
+}
+
+func TestOpImmVectors(t *testing.T) {
+	setup := func(state *cpu.Machine) { state.Registers[1] = 0xFF }
+	for _, tc := range []struct {
+		label       string
+		instruction uint32
+		want        uint64
+	}{
+		{"xori", insXori, 0xF0},
+		{"ori", insOri, 0xFF},
+		{"andi", insAndi, 0x0F},
+		{"slti 255<5 假", insSlti, 0},
+		{"sltiu 255<5 假", insSltiu, 0},
+		{"slli 255<<4", insSlli, 0xFF0},
+		{"srli 255>>2", insSrli, 0x3F},
+		{"srai 255>>2", insSrai, 0x3F},
+	} {
+		state, err := executeOne(t, tc.instruction, setup)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.label, err)
+		}
+		if state.Registers[3] != tc.want {
+			t.Errorf("%s: x3=%#x want %#x", tc.label, state.Registers[3], tc.want)
+		}
+	}
+
+	negative := func(state *cpu.Machine) { state.Registers[1] = 0xFFFFFFFFFFFFFFF0 }
+	arithmetic, err := executeOne(t, insSrai, negative)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if arithmetic.Registers[3] != 0xFFFFFFFFFFFFFFFC {
+		t.Errorf("srai 负数: x3=%#x want 0xFFFFFFFFFFFFFFFC", arithmetic.Registers[3])
+	}
+	logical, err := executeOne(t, insSrli, negative)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if logical.Registers[3] != 0x3FFFFFFFFFFFFFFC {
+		t.Errorf("srli 负数: x3=%#x want 0x3FFFFFFFFFFFFFFC", logical.Registers[3])
+	}
+
+	minusOne := func(state *cpu.Machine) { state.Registers[1] = 0xFFFFFFFFFFFFFFFF }
+	signed, err := executeOne(t, insSlti, minusOne)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if signed.Registers[3] != 1 {
+		t.Errorf("slti -1<5 应为真: x3=%d", signed.Registers[3])
+	}
+	unsigned, err := executeOne(t, insSltiu, minusOne)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unsigned.Registers[3] != 0 {
+		t.Errorf("sltiu 0xFFFFFFFFFFFFFFFF<5 应为假: x3=%d", unsigned.Registers[3])
+	}
+}
+
+func TestRegisterRegisterVectors(t *testing.T) {
+
+	setup := func(state *cpu.Machine) {
+		state.Registers[1] = 0xF0
+		state.Registers[2] = 3
+	}
+	for _, tc := range []struct {
+		label       string
+		instruction uint32
+		want        uint64
+	}{
+		{"sll", insSll, 0x780},
+		{"slt 240<3 假", insSlt, 0},
+		{"sltu 240<3 假", insSltu, 0},
+		{"xor", insXor, 0xF3},
+		{"srl", insSrl, 0x1E},
+		{"sra", insSra, 0x1E},
+		{"or", insOr, 0xF3},
+		{"and", insAnd, 0},
+	} {
+		state, err := executeOne(t, tc.instruction, setup)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.label, err)
+		}
+		if state.Registers[3] != tc.want {
+			t.Errorf("%s: x3=%#x want %#x", tc.label, state.Registers[3], tc.want)
+		}
+	}
+
+	less := func(state *cpu.Machine) {
+		state.Registers[1] = 3
+		state.Registers[2] = 240
+	}
+	for _, tc := range []struct {
+		label       string
+		instruction uint32
+	}{
+		{"slt 3<240", insSlt},
+		{"sltu 3<240", insSltu},
+	} {
+		state, err := executeOne(t, tc.instruction, less)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.label, err)
+		}
+		if state.Registers[3] != 1 {
+			t.Errorf("%s: x3=%d want 1", tc.label, state.Registers[3])
+		}
+	}
+}
+
+func TestLoadStoreWidthsAndSignExtension(t *testing.T) {
+	ctx := context.Background()
+
+	memory := newSparse()
+	memory.load(t, 0,
+		0x08000113,
+		insSb,
+		insLb,
+	)
+	port := newPort(t, memory, 0)
+	state, err := port.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Registers[1] = 0x1000
+	if err := port.Reset(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	run(t, port, 3)
+
+	signed, err := port.ReadRegister(3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if signed != 0xFFFFFFFFFFFFFF80 {
+		t.Fatalf("lb: x3=%#x want 0xFFFFFFFFFFFFFF80", signed)
+	}
+
+	memory2 := newSparse()
+	memory2.load(t, 0,
+		0x08000113,
+		insSb,
+		insLbu,
+	)
+	port2 := newPort(t, memory2, 0)
+	state2, err := port2.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state2.Registers[1] = 0x1000
+	if err := port2.Reset(ctx, state2); err != nil {
+		t.Fatal(err)
+	}
+	run(t, port2, 3)
+	unsigned, err := port2.ReadRegister(3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unsigned != 0x80 {
+		t.Fatalf("lbu: x3=%#x want 0x80", unsigned)
+	}
+
+	memory3 := newSparse()
+	memory3.load(t, 0,
+		0x80000137,
+		insSh,
+		insLhu,
+	)
+	port3 := newPort(t, memory3, 0)
+	state3, err := port3.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state3.Registers[1] = 0x1000
+	if err := port3.Reset(ctx, state3); err != nil {
+		t.Fatal(err)
+	}
+	run(t, port3, 3)
+	half, err := port3.ReadRegister(3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if half != 0 {
+		t.Fatalf("lhu 低 16 位应为 0: x3=%#x", half)
+	}
+
+	memory4 := newSparse()
+	memory4.load(t, 0,
+		0x00008137,
+		insSh,
+		insLh,
+	)
+	port4 := newPort(t, memory4, 0)
+	state4, err := port4.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state4.Registers[1] = 0x1000
+	if err := port4.Reset(ctx, state4); err != nil {
+		t.Fatal(err)
+	}
+	run(t, port4, 3)
+	signedHalf, err := port4.ReadRegister(3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if signedHalf != 0xFFFFFFFFFFFF8000 {
+		t.Fatalf("lh: x3=%#x want 0xFFFFFFFFFFFF8000", signedHalf)
+	}
+}
+
+func TestJalrAndAuipc(t *testing.T) {
+
+	state, err := executeOne(t, insJalr, func(state *cpu.Machine) { state.Registers[1] = 0x2000 })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.PC != 0x2000 || state.Registers[3] != 4 {
+		t.Fatalf("jalr: PC=%#x x3=%d", state.PC, state.Registers[3])
+	}
+
+	auipc, err := executeOne(t, insAuipc, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if auipc.Registers[4] != 0x01000000 {
+		t.Fatalf("auipc: x4=%#x want 0x01000000", auipc.Registers[4])
+	}
+
+	if _, err := executeOne(t, insIllegalJalr, func(state *cpu.Machine) { state.Registers[1] = 0x2000 }); err == nil {
+		t.Fatal("非法 jalr 应 trap")
+	}
+}
+
+func TestBranchSignednessVectors(t *testing.T) {
+
+	setup := func(state *cpu.Machine) {
+		state.Registers[1] = 0xFFFFFFFFFFFFFFFF
+		state.Registers[2] = 1
+	}
+	for _, tc := range []struct {
+		label       string
+		instruction uint32
+		taken       bool
+	}{
+		{"blt -1<1 真", insBlt, true},
+		{"bge -1>=1 假", insBge, false},
+		{"bltu 0xFFFFFFFFFFFFFFFF<1 假", insBltu, false},
+		{"bgeu 0xFFFFFFFFFFFFFFFF>=1 真", insBgeu, true},
+	} {
+		state, err := executeOne(t, tc.instruction, setup)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.label, err)
+		}
+
+		wantPC := uint64(4)
+		if tc.taken {
+			wantPC = 8
+		}
+		if state.PC != wantPC {
+			t.Errorf("%s: PC=%d want %d", tc.label, state.PC, wantPC)
+		}
+	}
+}
+
+func TestIllegalEncodingsAreRejected(t *testing.T) {
+	for _, tc := range []struct {
+		label       string
+		instruction uint32
+	}{
+		{"slli 高位非零", insIllegalShift},
+		{"jalr funct3 非零", insIllegalJalr},
+		{"system 立即数非法", insIllegalSystem},
+	} {
+		_, err := executeOne(t, tc.instruction, func(state *cpu.Machine) { state.Registers[1] = 0x1000 })
+		var trap cpu.Trap
+		if !errors.As(err, &trap) {
+			t.Errorf("%s: 应产生 trap: %v", tc.label, err)
+			continue
+		}
+		if trap.Kind != cpu.TrapIllegalInstruction {
+			t.Errorf("%s: 类别=%v want illegal-instruction", tc.label, trap.Kind)
+		}
+	}
+}
+
+func TestCompressedInstructionIsNotImplemented(t *testing.T) {
+	_, err := executeOne(t, insCompressed, nil)
+	var trap cpu.Trap
+	if !errors.As(err, &trap) {
+		t.Fatalf("压缩指令应产生 trap: %v", err)
+	}
+	if trap.Kind != cpu.TrapNotImplemented {
+		t.Fatalf("类别=%v want not-implemented", trap.Kind)
+	}
+}
+
+const (
+	insLd  = 0x0000B183
+	insLw  = 0x0000A183
+	insLwu = 0x0000E183
+	insLw4 = 0x0040A183
+	insSd  = 0x0020B023
+	insSw  = 0x0020A023
+
+	insAddiw = 0x0010819B
+	insSlliw = 0x0010919B
+	insSrliw = 0x0010D19B
+	insSraiw = 0x4010D19B
+
+	insAddw  = 0x002081BB
+	insSubw  = 0x402081BB
+	insSllw  = 0x002091BB
+	insSrlw  = 0x0020D1BB
+	insSraw  = 0x4020D1BB
+	insMulw  = 0x022081BB
+	insDivw  = 0x0220C1BB
+	insDivuw = 0x0220D1BB
+	insRemw  = 0x0220E1BB
+	insRemuw = 0x0220F1BB
+
+	insMul    = 0x022081B3
+	insMulh   = 0x022091B3
+	insMulhsu = 0x0220A1B3
+	insMulhu  = 0x0220B1B3
+	insDiv    = 0x0220C1B3
+	insDivu   = 0x0220D1B3
+	insRem    = 0x0220E1B3
+	insRemu   = 0x0220F1B3
+
+	insLuiSigned   = 0x800001B7
+	insAuipcSigned = 0xFFFFF197
+
+	insAmoadd = 0x0020A2AF
+	insFlw    = 0x0000A187
+	insFadd   = 0x00000053
+)
+
+const (
+	minusOne64 = 0xFFFFFFFFFFFFFFFF
+	minusTwo64 = 0xFFFFFFFFFFFFFFFE
+	minusSeven = 0xFFFFFFFFFFFFFFF9
+	minInt64   = 0x8000000000000000
+)
+
+func TestRV64WordOperations(t *testing.T) {
+	for _, tc := range []struct {
+		label       string
+		instruction uint32
+		left        uint64
+		right       uint64
+		want        uint64
+	}{
+
+		{"addw 0x7FFFFFFF+1 回绕", insAddw, 0x7FFFFFFF, 1, 0xFFFFFFFF80000000},
+		{"addw -1+1", insAddw, minusOne64, 1, 0},
+		{"subw 0-1", insSubw, 0, 1, minusOne64},
+		{"sllw 1<<31", insSllw, 1, 31, 0xFFFFFFFF80000000},
+		{"srlw 0xFFFFFFFF>>4", insSrlw, 0xFFFFFFFF, 4, 0x0FFFFFFF},
+		{"sraw -0x80000000>>4", insSraw, 0xFFFFFFFF80000000, 4, 0xFFFFFFFFF8000000},
+	} {
+		state, err := executeOne(t, tc.instruction, func(state *cpu.Machine) {
+			state.Registers[1] = tc.left
+			state.Registers[2] = tc.right
+		})
+		if err != nil {
+			t.Fatalf("%s: %v", tc.label, err)
+		}
+		if state.Registers[3] != tc.want {
+			t.Errorf("%s: x3=%#x want %#x", tc.label, state.Registers[3], tc.want)
+		}
+	}
+	for _, tc := range []struct {
+		label       string
+		instruction uint32
+		source      uint64
+		want        uint64
+	}{
+		{"addiw 0x7FFFFFFF+1 回绕", insAddiw, 0x7FFFFFFF, 0xFFFFFFFF80000000},
+		{"slliw 1<<1", insSlliw, 1, 2},
+		{"srliw 0xFFFFFFFF>>1", insSrliw, 0xFFFFFFFF, 0x7FFFFFFF},
+		{"sraiw -0x80000000>>1", insSraiw, 0xFFFFFFFF80000000, 0xFFFFFFFFC0000000},
+	} {
+		state, err := executeOne(t, tc.instruction, func(state *cpu.Machine) { state.Registers[1] = tc.source })
+		if err != nil {
+			t.Fatalf("%s: %v", tc.label, err)
+		}
+		if state.Registers[3] != tc.want {
+			t.Errorf("%s: x3=%#x want %#x", tc.label, state.Registers[3], tc.want)
+		}
+	}
+}
+
+func TestRV64MultiplicationAndDivision(t *testing.T) {
+	for _, tc := range []struct {
+		label       string
+		instruction uint32
+		left        uint64
+		right       uint64
+		want        uint64
+	}{
+		{"mul 3*5", insMul, 3, 5, 15},
+		{"mul -1*2", insMul, minusOne64, 2, minusTwo64},
+		{"mulh -1*-1", insMulh, minusOne64, minusOne64, 0},
+		{"mulh 最小负数*2", insMulh, minInt64, 2, minusOne64},
+		{"mulhu 最大*最大", insMulhu, minusOne64, minusOne64, minusTwo64},
+		{"mulhsu -1*最大", insMulhsu, minusOne64, minusOne64, minusOne64},
+		{"div -7/2 向零截断", insDiv, minusSeven, 2, 0xFFFFFFFFFFFFFFFD},
+		{"div 除零得全 1", insDiv, 7, 0, minusOne64},
+		{"div 最小负数/-1 溢出", insDiv, minInt64, minusOne64, minInt64},
+		{"divu 除零得全 1", insDivu, 7, 0, minusOne64},
+		{"divu 最大/2", insDivu, minusOne64, 2, 0x7FFFFFFFFFFFFFFF},
+		{"rem -7%2", insRem, minusSeven, 2, minusOne64},
+		{"rem 除零取被除数", insRem, 7, 0, 7},
+		{"rem 最小负数%-1 溢出", insRem, minInt64, minusOne64, 0},
+		{"remu 除零取被除数", insRemu, 7, 0, 7},
+		{"remu 最大%2", insRemu, minusOne64, 2, 1},
+		{"mulw 0x80000000*2 回绕", insMulw, 0x80000000, 2, 0},
+		{"mulw -1*-1", insMulw, 0xFFFFFFFF, 0xFFFFFFFF, 1},
+
+		{"divw 只看低 32 位", insDivw, 0xFFFFFFFF00000001, 1, 1},
+		{"divw 除零", insDivw, 1, 0, minusOne64},
+		{"divw 最小负数/-1", insDivw, 0xFFFFFFFF80000000, minusOne64, 0xFFFFFFFF80000000},
+		{"divuw 0xFFFFFFFF/2", insDivuw, 0xFFFFFFFF, 2, 0x7FFFFFFF},
+		{"remw -7%3", insRemw, minusSeven, 3, minusOne64},
+		{"remw 除零取被除数", insRemw, 0xFFFFFFFF00000007, 0, 7},
+		{"remuw 除零取被除数", insRemuw, 0xFFFFFFFF00000007, 0, 7},
+		{"remuw 0xFFFFFFFF%3", insRemuw, 0xFFFFFFFF, 3, 0},
+	} {
+		state, err := executeOne(t, tc.instruction, func(state *cpu.Machine) {
+			state.Registers[1] = tc.left
+			state.Registers[2] = tc.right
+		})
+		if err != nil {
+			t.Fatalf("%s: %v", tc.label, err)
+		}
+		if state.Registers[3] != tc.want {
+			t.Errorf("%s: x3=%#x want %#x", tc.label, state.Registers[3], tc.want)
+		}
+	}
+}
+
+func TestRV64WideLoadStore(t *testing.T) {
+	ctx := context.Background()
+
+	execute := func(t *testing.T, value uint64, instructions ...uint32) *Core {
+		t.Helper()
+		memory := newSparse()
+		memory.load(t, 0, instructions...)
+		port := newPort(t, memory, 0)
+		state, err := port.State(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		state.Registers[1] = 0x2000
+		state.Registers[2] = value
+		if err := port.Reset(ctx, state); err != nil {
+			t.Fatal(err)
+		}
+		run(t, port, len(instructions))
+		return port
+	}
+
+	port := execute(t, 0x0123456789ABCDEF, insSd, insLd)
+	got, err := port.ReadRegister(3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 0x0123456789ABCDEF {
+		t.Fatalf("ld: x3=%#x want 0x0123456789ABCDEF", got)
+	}
+
+	if got, err = execute(t, minusOne64, insSd, insLw).ReadRegister(3); err != nil {
+		t.Fatal(err)
+	}
+	if got != minusOne64 {
+		t.Fatalf("lw: x3=%#x want 0xFFFFFFFFFFFFFFFF", got)
+	}
+	if got, err = execute(t, minusOne64, insSd, insLwu).ReadRegister(3); err != nil {
+		t.Fatal(err)
+	}
+	if got != 0xFFFFFFFF {
+		t.Fatalf("lwu: x3=%#x want 0xFFFFFFFF", got)
+	}
+
+	if got, err = execute(t, 0x1122334455667788, insSw, insLd).ReadRegister(3); err != nil {
+		t.Fatal(err)
+	}
+	if got != 0x0000000055667788 {
+		t.Fatalf("sw 应只写 4 字节: x3=%#x want 0x55667788", got)
+	}
+
+	if got, err = execute(t, 0x1122334455667788, insSd, insLw4).ReadRegister(3); err != nil {
+		t.Fatal(err)
+	}
+	if got != 0x11223344 {
+		t.Fatalf("lw 4(x1): x3=%#x want 0x11223344", got)
+	}
+}
+
+func TestRV64ImmediateSignExtension(t *testing.T) {
+	state, err := executeOne(t, insLuiSigned, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Registers[3] != 0xFFFFFFFF80000000 {
+		t.Fatalf("lui: x3=%#x want 0xFFFFFFFF80000000", state.Registers[3])
+	}
+	auipc, err := executeOne(t, insAuipcSigned, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if auipc.Registers[3] != 0xFFFFFFFFFFFFF000 {
+		t.Fatalf("auipc: x3=%#x want 0xFFFFFFFFFFFFF000", auipc.Registers[3])
+	}
+}
+
+func TestRV64ProgramCounterIsWide(t *testing.T) {
+
+	state, err := executeOne(t, insJalr, func(state *cpu.Machine) { state.Registers[1] = 0x1_0000_0002 })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.PC != 0x1_0000_0002 {
+		t.Fatalf("jalr: PC=%#x want 0x100000002", state.PC)
+	}
+	if state.Registers[3] != 4 {
+		t.Fatalf("jalr: x3=%d want 4", state.Registers[3])
+	}
+}
+
+func TestUnimplementedExtensions(t *testing.T) {
+	for _, tc := range []struct {
+		label       string
+		instruction uint32
+	}{
+		{"amoadd.w（A）", insAmoadd},
+		{"flw（F）", insFlw},
+		{"fadd.s（F）", insFadd},
+		{"csrrw（Zicsr）", insCSR},
+		{"fence.i（Zifencei）", insFenceI},
+	} {
+		_, err := executeOne(t, tc.instruction, func(state *cpu.Machine) { state.Registers[1] = 0x2000 })
+		var trap cpu.Trap
+		if !errors.As(err, &trap) {
+			t.Errorf("%s: 应产生 trap: %v", tc.label, err)
+			continue
+		}
+		if trap.Kind != cpu.TrapNotImplemented {
+			t.Errorf("%s: 类别=%v want not-implemented", tc.label, trap.Kind)
+		}
+	}
+}
+
+func TestRegisterFilePort(t *testing.T) {
+	memory := newSparse()
+	port := newPort(t, memory, 0)
+	if err := port.WriteRegister(10, 0x1122334455667788); err != nil {
+		t.Fatal(err)
+	}
+	got, err := port.ReadRegister(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 0x1122334455667788 {
+		t.Fatalf("a0=%#x", got)
+	}
+
+	if err := port.WriteRegister(0, 42); err != nil {
+		t.Fatal(err)
+	}
+	if zero, err := port.ReadRegister(0); err != nil || zero != 0 {
+		t.Fatalf("x0=%d err=%v", zero, err)
+	}
+	for _, index := range []int{-1, numRegs} {
+		if err := port.WriteRegister(index, 1); !errors.Is(err, errno.Invalid) {
+			t.Errorf("写寄存器 %d: %v want EINVAL", index, err)
+		}
+		if _, err := port.ReadRegister(index); !errors.Is(err, errno.Invalid) {
+			t.Errorf("读寄存器 %d: %v want EINVAL", index, err)
+		}
+	}
+}

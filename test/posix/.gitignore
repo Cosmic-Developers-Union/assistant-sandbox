@@ -1,0 +1,5 @@
+.local/
+.generated/
+suites.local.json
+tet_captured
+tet_xres

@@ -1,0 +1,10 @@
+{
+  "standard": "POSIX.1-2016",
+  "specification": "https://pubs.opengroup.org/onlinepubs/9699919799.2016edition/",
+  "suite_source": "https://posix.opengroup.org/testsuites.html",
+  "checked_on": "2026-10-05",
+  "suites": [
+    {"name": "VSC-PCTS2016", "version": "3.1", "domain": "shell/utilities", "directory": ".local/suites/VSC-PCTS2016"},
+    {"name": "VSX-PCTS2016", "version": "1.15", "domain": "system interfaces", "directory": ".local/suites/VSX-PCTS2016"}
+  ]
+}

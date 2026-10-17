@@ -1,0 +1,218 @@
+package bccmd
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/userland/toolcompat"
+)
+
+func runBC(t *testing.T, input string, args ...string) (string, string, int) {
+	t.Helper()
+	return runBCIn(t, t.TempDir(), input, args...)
+}
+
+func runBCIn(t *testing.T, dir, input string, args ...string) (string, string, int) {
+	t.Helper()
+	bindDir(t, dir)
+	var out, err bytes.Buffer
+	rc := &toolcompat.RunContext{Ctx: context.Background(), Dir: dir, Stdio: toolcompat.Stdio{In: strings.NewReader(input), Out: &out, Err: &err}}
+	code := run(rc, args)
+	return out.String(), err.String(), code
+}
+
+func TestPOSIXArithmeticScaleAndBases(t *testing.T) {
+	in := `2+3*4
+scale=3
+1/8
+scale(1.230)
+length(123.40)
+ibase=16
+FF
+ibase=A
+obase=16
+255
+`
+	out, errOut, code := runBC(t, in)
+	if code != 0 || errOut != "" {
+		t.Fatalf("code=%d stderr=%q", code, errOut)
+	}
+	want := "14\n.125\n3\n5\n255\nFF\n"
+	if out != want {
+		t.Fatalf("stdout=%q, want %q", out, want)
+	}
+}
+
+func TestPOSIXFunctionsArraysAndControlFlow(t *testing.T) {
+	in := `define f(n) {
+auto i,r
+r=1
+for(i=2;i<=n;i++) { r*=i }
+return(r)
+}
+f(10)
+a[2]=7
+while(a[2]>4) { a[2]-- }
+a[2]
+if(a[2]==4) { "ok" }
+`
+	out, errOut, code := runBC(t, in)
+	if code != 0 || errOut != "" {
+		t.Fatalf("code=%d stderr=%q", code, errOut)
+	}
+	if out != "3628800\n7\n6\n5\n4\nok" {
+		t.Fatalf("stdout=%q", out)
+	}
+}
+
+func TestFilesPrecedeStandardInputAndShareState(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/program.bc"
+	if err := os.WriteFile(path, []byte("x=41\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, errOut, code := runBCIn(t, dir, "x+1\n", path)
+	if code != 0 || errOut != "" || out != "42\n" {
+		t.Fatalf("got (%q,%q,%d)", out, errOut, code)
+	}
+}
+
+func TestPOSIXOperandPathResolutionForms(t *testing.T) {
+	dir := t.TempDir()
+	subdir := filepath.Join(dir, "programs")
+	if err := os.Mkdir(subdir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(subdir, "input.bc"), []byte("1+2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, operand := range []string{
+		"programs//input.bc",
+		"programs/../programs/input.bc",
+	} {
+		t.Run(operand, func(t *testing.T) {
+			var out, errOut bytes.Buffer
+			bindDir(t, dir)
+			rc := &toolcompat.RunContext{
+				Ctx:   context.Background(),
+				Dir:   dir,
+				Stdio: toolcompat.Stdio{In: strings.NewReader("2+3\n"), Out: &out, Err: &errOut},
+			}
+			if code := run(rc, []string{operand}); code != 0 || errOut.String() != "" || out.String() != "3\n5\n" {
+				t.Fatalf("stdout=%q stderr=%q code=%d", out.String(), errOut.String(), code)
+			}
+		})
+	}
+}
+
+func TestDiagnosticsAndExitStatus(t *testing.T) {
+	_, errOut, code := runBC(t, "1/0\n")
+	if code == 0 || !strings.Contains(errOut, "divide by zero") {
+		t.Fatalf("got stderr=%q code=%d", errOut, code)
+	}
+}
+
+func TestStdoutWriteErrors(t *testing.T) {
+	for _, src := range []string{"1\n", `"hello"`} {
+		t.Run(src, func(t *testing.T) {
+			var errOut bytes.Buffer
+			rc := &toolcompat.RunContext{
+				Ctx:   context.Background(),
+				Dir:   t.TempDir(),
+				Stdio: toolcompat.Stdio{In: strings.NewReader(src), Out: failingWriter{}, Err: &errOut},
+			}
+			if code := run(rc, nil); code == 0 || !strings.Contains(errOut.String(), "output unavailable") {
+				t.Fatalf("stderr=%q code=%d", errOut.String(), code)
+			}
+		})
+	}
+}
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("output unavailable") }
+
+func TestPOSIXMathLibrary(t *testing.T) {
+	out, errOut, code := runBC(t, "s(0)\nc(0)\ns(1)\nc(1)\na(1)\nl(e(1))\n", "-l")
+	if code != 0 || errOut != "" {
+		t.Fatalf("code=%d stderr=%q", code, errOut)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 6 || lines[0] != "0" || lines[1] != "1.00000000000000000000" || !strings.HasPrefix(lines[2], ".841470984807") || !strings.HasPrefix(lines[3], ".540302305868") || !strings.HasPrefix(lines[4], ".785398163397") || !strings.HasPrefix(lines[5], ".999999999999") {
+		t.Fatalf("unexpected math output %q", out)
+	}
+}
+
+func TestDecimalScaleRulesAndFractionalOutputBases(t *testing.T) {
+	in := `scale=0
+.5*.5
+scale=3
+1.20*3.4
+5.5%2
+2^10
+scale=4
+2^-3
+sqrt(2)
+obase=2
+1/3
+obase=8
+1/3
+obase=16
+1/3
+`
+	out, errOut, code := runBC(t, in)
+	if code != 0 || errOut != "" {
+		t.Fatalf("code=%d stderr=%q", code, errOut)
+	}
+	want := ".2\n4.080\n0\n1024\n.1250\n1.4142\n.01010101010100\n.25251\n.5553\n"
+	if out != want {
+		t.Fatalf("stdout=%q, want %q", out, want)
+	}
+}
+
+func TestPOSIXOptionAndOperandContract(t *testing.T) {
+	out, errOut, code := runBC(t, "scale\nc(0)\n", "-l")
+	if code != 0 || errOut != "" || out != "20\n1.00000000000000000000\n" {
+		t.Fatalf("-l: stdout=%q stderr=%q code=%d", out, errOut, code)
+	}
+	_, errOut, code = runBC(t, "", "-x")
+	if code != 2 || !strings.Contains(errOut, "unknown shorthand flag") {
+		t.Fatalf("unknown option: stderr=%q code=%d", errOut, code)
+	}
+}
+
+func TestRejectsNonPOSIXLanguageExtensions(t *testing.T) {
+	for _, src := range []string{"# comment\n", "if(0) 1 else 2\n", "i=0; continue\n", "halt\n", "read()\n", "!1\n", "1&&1\n", "return 1\n"} {
+		_, errOut, code := runBC(t, src)
+		if code == 0 || errOut == "" {
+			t.Fatalf("%q unexpectedly accepted: stderr=%q code=%d", src, errOut, code)
+		}
+	}
+}
+
+func TestMissingInputStopsProcessing(t *testing.T) {
+	out, errOut, code := runBC(t, "9\n", t.TempDir()+"/missing.bc")
+	if code == 0 || out != "" || !strings.Contains(errOut, "missing.bc") {
+		t.Fatalf("stdout=%q stderr=%q code=%d", out, errOut, code)
+	}
+}
+
+func TestPOSIXLocaleIndependentRadix(t *testing.T) {
+	var out, errOut bytes.Buffer
+	rc := &toolcompat.RunContext{
+		Ctx:   context.Background(),
+		Dir:   t.TempDir(),
+		Env:   []string{"LANG=de_DE.UTF-8", "LC_NUMERIC=de_DE.UTF-8"},
+		Stdio: toolcompat.Stdio{In: strings.NewReader("scale=2;1/4\n"), Out: &out, Err: &errOut},
+	}
+	code := run(rc, nil)
+	if code != 0 || errOut.String() != "" || out.String() != ".25\n" {
+		t.Fatalf("stdout=%q stderr=%q code=%d", out.String(), errOut.String(), code)
+	}
+}

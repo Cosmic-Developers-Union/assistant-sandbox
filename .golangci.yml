@@ -1,0 +1,302 @@
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+  relative-path-mode: cfg
+
+linters:
+  default: none
+
+  enable:
+    # 基础正确性
+    - govet
+    - staticcheck
+    - errcheck
+    - errorlint
+    - nilerr
+
+    # 无效代码
+    - unused
+    - ineffassign
+    - wastedassign
+
+    # 类型和计算
+    - unconvert
+    - durationcheck
+
+    # 资源管理
+    - bodyclose
+    - sqlclosecheck
+    - rowserrcheck
+
+    # 安全
+    - bidichk
+
+  settings:
+    gocritic:
+      disable-all: true
+      enabled-checks:
+        - appendAssign
+        - badCall
+        - badCond
+        - dupArg
+        - dupBranchBody
+        - dupCase
+        - dupSubExpr
+        - offBy1
+
+  exclusions:
+    generated: strict
+    rules:
+      - path: '^userland/toolcompat/clock/clock_test\.go$'
+        linters: [gocritic]
+        text: 'dupArg:'
+        source: 'base\.Compare\(base\)'
+      - path: '^userland/commands/(cksum/cksum|sum/sum)\.go$'
+        linters: [staticcheck]
+        text: 'ST1005:'
+        source: '"Is a directory"'
+      - path: '^userland/commands/internal/bc/math\.go$'
+        linters: [staticcheck]
+        text: 'ST1005:'
+        source: '"Bessel order is not an integer"'
+      - path: '^userland/toolcompat/bre/regexp\.go$'
+        linters: [staticcheck]
+        text: 'ST1005:'
+        source: '"unmatched \(\?:"'
+      - path: '^abi/linux/(common/syscalls_test|riscv64/adapter_test)\.go$'
+        linters: [gosec]
+        text: 'G115:'
+        source: '(int64\(binary\.LittleEndian\.Uint64\(encoded|uint64\(-int64\(number\)\))'
+      - path: '^loader/elf/elf_test\.go$'
+        linters: [gosec]
+        text: 'G115:'
+        source: 'int\(decoded\.argc\)'
+      - path: '^platform/modules/modules_test\.go$'
+        linters: [gosec]
+        text: 'G115:'
+        source: 'uint32\((copy\(output, "response"\)|len\(output\) \+ 1)\)'
+      - path: '^modules\.go$'
+        linters: [gosec]
+        text: 'G115:'
+        source: 'return uint32\(len\(encoded\)\)'
+      - path: '^userland/shell/loop_test\.go$'
+        linters: [gosec]
+        text: 'G115:'
+        source: 'return uint32\(len\(tc\.response\)\)'
+      - path: '^userland/commands/(cksum/cksum|sum/sum)\.go$'
+        linters: [gosec]
+        text: 'G115:'
+        source: '(n \+= uint64\(got\)|size \+= uint64\(n\)|return h\.Sum32\(\), uint64\(n\), nil)'
+      - path: '^userland/commands/du/du\.go$'
+        linters: [gosec]
+        text: 'G115:'
+        source: 'return (humanSize|siSize)\(uint64\(n\)\)'
+      - path: '^userland/commands/iconv/command\.go$'
+        linters: [gosec]
+        text: 'G115:'
+        source: 'b\.WriteByte\(byte\(r\)\)'
+      - path: '^userland/commands/join/join\.go$'
+        linters: [gosec]
+        text: 'G115:'
+        source: 'byte\((opt|o)\.tab\)'
+      - path: '^userland/commands/printf/numeric\.go$'
+        linters: [gosec]
+        text: 'G115:'
+        source: '(uint64\(d\)|value = -int64\(mag\)|return uint64\(r\), false)'
+      - path: '^userland/commands/printf/printf\.go$'
+        linters: [gosec]
+        text: 'G115:'
+        source: 'buf\.WriteByte\(byte\(v\)\)'
+      - path: '^userland/commands/split/split\.go$'
+        linters: [gosec]
+        text: 'G115:'
+        source: 'return ''[0a]'' \+ byte\((d|hd|hd-10)\)'
+      - path: '^userland/commands/sum/command_test\.go$'
+        linters: [gosec]
+        text: 'G115:'
+        source: 'return uint64\(\(size \+ block - 1\) / block\)'
+      - path: '^userland/commands/tr/command\.go$'
+        linters: [gosec]
+        text: 'G115:'
+        source: 'out = append\(out, byte\(current\)\)'
+      - path: '^userland/commands/uuencode/uuencode\.go$'
+        linters: [gosec]
+        text: 'G115:'
+        source: 'line\[0\] = enc\(byte\(n\)\)'
+      - path: '^userland/toolcompat/goawk/interp/interp\.go$'
+        linters: [gosec]
+        text: 'G115:'
+        source: 'p\.random = rand\.New\(rand\.NewSource\(int64\(seed\)\)\)'
+      - path: '^executor/wasm/host\.go$'
+        linters: [gosec]
+        text: 'G115:'
+        source: 'remaining := uint32\(length\)'
+      - path: '^filesystem/memfs/capacity\.go$'
+        linters: [gosec]
+        text: 'G115:'
+        source: '(uint64\(f\.maxNodes\)|Used: uint64\(used\))'
+      - path: '^filesystem/memfs/memfs\.go$'
+        linters: [gosec]
+        text: 'G115:'
+        source: 'f\.nodes >= uint64\(f\.maxNodes\)'
+      - path: '^userland/shell/extension\.go$'
+        linters: [gosec]
+        text: 'G115:'
+        source: '(uint32\((copied|copy\(output, result\))\)|return interp\.ExitStatus\(result\.Code\))'
+      - path: '^userland/shell/shell\.go$'
+        linters: [gosec]
+        text: 'G115:'
+        source: 'system\.Open\(ctx, commandio\.Path\(h\.Dir, name\), uint32\(flags\), mode\)'
+      - path: '^userland/shell/slot\.go$'
+        linters: [gosec]
+        text: 'G115:'
+        source: 'cost := uint64\(size\) \+ stepBaseCost'
+      - path: '^vm/jobs\.go$'
+        linters: [gosec]
+        text: 'G115:'
+        source: 'civilFromDays\(int64\(days\)\)'
+      - path: '^vm/stdin_record\.go$'
+        linters: [gosec]
+        text: 'G115:'
+        source: 'binary\.BigEndian\.PutUint(16|32)\(request\[(0:2|2:6)\], uint(16\(id\)|32\(length\))\)'
+      - path: '^abi/linux/common/syscalls\.go$'
+        linters: [gosec]
+        text: 'G115:'
+        source: '(Perm:  uint32\(call\.Args\[3\]\)|int64\(call\.Args\[1\]\))'
+      - path: '^abi/linux/riscv64/adapter\.go$'
+        linters: [gosec]
+        text: 'G115:'
+        source: 'value = uint64\(-int64\(number\)\)'
+      - path: '^executor/wasm/engine_host\.go$'
+        linters: [gosec]
+        text: 'G115:'
+        source: 'i\.state\.finish\(Result\{Code: uint8\(code\), Reason: Exited\}, nil\)'
+      - linters: [staticcheck]
+        text: 'ST1005: error strings should not be capitalized'
+        source: '(fmt\.Errorf|errors\.New)\("(Anthropic|Bash|Chat Completions|Claude|Git|Gitea|HTTP|Issue|JSON|Markdown|MCP|POSIX|QQ|Responses|Rust|SOPS|TLS|UTF-8|WASI|WASM|WebSocket|YAML)( |：)'
+      - path: '^executor/wasm/hostcall_test\.go$'
+        linters: [staticcheck]
+        text: 'SA1012:'
+        source: 'checkCancelled\(nil\)'
+      - path: '^userland/toolcompat/bre/bre\.go$'
+        linters: [gosec]
+        text: 'G115:'
+        source: 'tables\.tables\.equivalent\[byte\(r\)\]'
+      - path: '^userland/toolcompat/clock/time\.go$'
+        linters: [gosec]
+        text: 'G115:'
+        source: '(u := uint64\(d\)|int32\(floorMod\()'
+      - path: '^vm/entropy/(counter|seeded)\.go$'
+        linters: [gosec]
+        text: 'G115:'
+        source: '(byte\(c\.next \^|request := \[\]byte\{byte\(len\(p\) >> 8\), byte\(len\(p\)\)\})'
+      - path: '^vm/clock/(recording|virtual)\.go$'
+        linters: [gosec]
+        text: 'G115:'
+        source: '(encodeTime\(uint64\(value\)\)|return int64\(value\), err)'
+      - path: '^userland/toolcompat/goawk/interp/(vm|newexecute)\.go$'
+        linters: [gosec]
+        text: 'G115:'
+        source: '\.Seed\(int64\(math\.Float64bits\('
+      - path: '^userland/commands/(m4/eval|od/od|uudecode/uudecode)\.go$'
+        linters: [gosec]
+        text: 'G115:'
+        source: '(uint32\(l\)|uint32\(r\)|sv := int64\(v<<shift\)|decoded = append\(decoded, byte\(v>>16\), byte\(v>>8\), byte\(v\)\))'
+      - path: '^executor/wasm/module\.go$'
+        linters: [gosec]
+        text: 'G115:'
+        source: '(size > uint64\(len\(module\)-offset\)|body := module\[offset : offset\+int\(size\)\]|offset \+= int\(size\)|length > uint64\(len\(body\)-offset\)|return string\(body\[offset : offset\+int\(length\)\]\))'
+      - path: '^userland/commands/ar/archive\.go$'
+        linters: [gosec]
+        text: 'G115:'
+        source: '(uint64\(len\(data\)-offset\) < size|parsed\.data = data\[offset : offset\+int\(size\)\]|offset \+= int\(size\))'
+      - path: '^userland/commands/cksum/[^/]+_test\.go$'
+        linters: [gosec]
+        text: 'G(401|501|505):'
+      - path: '^userland/commands/diff/upstream_diff_test\.go$'
+        linters: [gosec]
+        text: 'G404:'
+        source: 'rand\.New\(rand\.NewSource\(42\)\)'
+      - path: '^internal/build/(build|interpreter)\.go$'
+        linters: [gosec]
+        text: 'G304:'
+        source: 'os\.ReadFile\('
+      - path: '^filesystem/persistent/store\.go$'
+        linters: [gosec]
+        text: 'G304:'
+        source: 'os\.(ReadFile\((checksum|target)|Open\(dir)\)'
+      - path: '^internal/build/build\.go$'
+        linters: [gosec]
+        text: 'G204:'
+        source: 'exec\.Command\("go", "(mod|list)",'
+      - path: '^userland/toolcompat/goawk/interp/io\.go$'
+        linters: [gosec]
+        text: 'G204:'
+        source: 'cmd = exec\.Command(Context)?\('
+      - path: '^userland/commands/join/join\.go$'
+        linters: [gosec]
+        text: 'G602:'
+        source: 'val = args\[idx\]'
+      - path: '_test\.go$'
+        linters: [gosec]
+        text: 'G(101|204|301|302|304|306|703):'
+      - path: '^userland/commands/(cksum/cksum|shasum/command)\.go$'
+        linters: [gosec]
+        text: 'G(401|501|505):'
+      - path: '^userland/commands/[^/]+/command\.go$'
+        linters: [gosec]
+        text: 'G115:'
+        source: 'return interp\.ExitStatus\('
+      - path: '^userland/toolcompat/goawk/interp/interp\.go$'
+        linters: [gosec]
+        text: 'G404:'
+        source: 'p\.random = rand\.New'
+      - path: '^userland/toolcompat/goawk/interp/vm\.go$'
+        linters: [nilerr]
+        source: 'return -1, "", nil'
+      - path: '^userland/shell/slot\.go$'
+        linters: [nilerr]
+        source: 'return nil'
+      - path: '^userland/commands/talk/command\.go$'
+        linters: [nilerr]
+        source: 'return nil'
+      - path: '^executor/elf/program\.go$'
+        linters: [nilerr]
+        source: 'return h\.brk, nil'
+      - path: '^userland/commands/test/platform\.go$'
+        linters: [nilerr]
+        source: 'return false, nil'
+      - path: '^abi/linux/common/structs\.go$'
+        linters: [gosec]
+        text: 'G115:'
+        source: 'binary\.LittleEndian\.PutUint64'
+      - path: '^executor/cpu/riscv64/core\.go$'
+        linters: [gosec]
+        text: 'G115:'
+      - path: '^internal/build/build\.go$'
+        linters: [gosec]
+        text: 'G204:'
+        source: 'exec\.Command\("go", "build"'
+      - path: '^internal/build/build\.go$'
+        linters: [gosec]
+        text: 'G302:'
+        source: 'os\.Chmod\(temp\.Name\(\), 0o644\)'
+      - path: '^userland/toolcompat/bre/byte_pattern\.go$'
+        linters: [gosec]
+        text: 'G602:'
+        source: 'next := pattern\[i\+1\]'
+    paths:
+      - '(^|/)(third_party|external|vendor|submodules)/'
+      - '^\.(agents|claude)/skills/'
+
+formatters:
+  enable:
+    - goimports
+
+  exclusions:
+    generated: strict
+    paths:
+      - '(^|/)(third_party|external|vendor|submodules)/'
+      - '^\.(agents|claude)/skills/'

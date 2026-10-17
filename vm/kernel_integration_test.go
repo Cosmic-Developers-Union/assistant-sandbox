@@ -1,0 +1,991 @@
+package vm
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"io"
+	stdfs "io/fs"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/filesystem/memfs"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/audit"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/capability"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/clock"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/executable"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fd"
+	vmfs "github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fs"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/proc"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/resources"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/scheduler"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/signal"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/storage"
+)
+
+func longProgram() executable.Program {
+	return executable.Func(func(ctx context.Context, _ proc.Proc) (uint8, error) {
+		<-ctx.Done()
+		return 0, ctx.Err()
+	})
+}
+
+func echoProgram() executable.Program {
+	return executable.Func(func(ctx context.Context, p proc.Proc) (uint8, error) {
+		descriptors, err := p.Resources.Descriptors()
+		if err != nil {
+			return 0, err
+		}
+		out, err := descriptors.Get(ctx, uint64(p.ID), 1)
+		if err != nil {
+			return 0, err
+		}
+		_, err = io.WriteString(out, strings.Join(p.Args, " ")+"\n")
+		return 0, err
+	})
+}
+
+func registryFor(names ...string) (executable.Registry, error) {
+	entries := map[string]executable.Program{}
+	for _, name := range names {
+		switch name {
+		case "long":
+			entries[name] = longProgram()
+		default:
+			entries[name] = echoProgram()
+		}
+	}
+	return executable.New(entries)
+}
+
+func TestKernelWaitBlocksUntilChildExit(t *testing.T) {
+	reg, err := registryFor("echo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	kernel, err := New(Services{Set: capability.Set{FD: fd.New()}, Programs: reg}, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	child, err := kernel.Begin(0, "echo", []string{"done"}, "/", nil, fd.Streams{Output: &out})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	waitDone := make(chan error, 1)
+	go func() {
+		_, err := kernel.Wait(t.Context(), 0, 0)
+		waitDone <- err
+	}()
+	time.Sleep(20 * time.Millisecond)
+	select {
+	case err := <-waitDone:
+		t.Fatalf("Wait 不应在子进程退出前返回: %v", err)
+	default:
+	}
+	if status, err := kernel.RunRegistered(t.Context(), child); err != nil || status.Code != 0 {
+		t.Fatalf("status=%+v err=%v", status, err)
+	}
+	select {
+	case err := <-waitDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("子进程退出后 Wait 未返回")
+	}
+
+	if _, err := kernel.Wait(t.Context(), 0, 0); !errors.Is(err, errno.NoChild) {
+		t.Fatal(err)
+	}
+}
+
+func TestKernelWaitSpecificChildAndCancel(t *testing.T) {
+	reg, _ := registryFor("long", "echo")
+	kernel, _ := New(Services{Set: capability.Set{FD: fd.New()}, Programs: reg}, 4)
+	first, _ := kernel.Begin(0, "long", nil, "/", nil, fd.Streams{})
+	second, _ := kernel.Begin(0, "long", nil, "/", nil, fd.Streams{})
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := kernel.Wait(ctx, 0, 0); !errors.Is(err, context.Canceled) {
+		t.Fatalf("取消的等待应返回取消: %v", err)
+	}
+
+	if _, err := kernel.Wait(t.Context(), 0, first.ID+99); !errors.Is(err, errno.NoChild) {
+		t.Fatal(err)
+	}
+	if err := kernel.Signal(first.ID, signal.TERM); err != nil {
+		t.Fatal(err)
+	}
+	if status, err := kernel.RunRegistered(t.Context(), first); err != nil || status.Signal != signal.TERM {
+		t.Fatal(err, status)
+	}
+
+	reaped, err := kernel.Wait(t.Context(), 0, first.ID)
+	if err != nil || reaped.ID != first.ID {
+		t.Fatalf("reaped=%+v err=%v", reaped, err)
+	}
+	_ = second
+	if err := kernel.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestKernelSignalTerminatesRunningProgram(t *testing.T) {
+	reg, _ := registryFor("long")
+	kernel, _ := New(Services{Set: capability.Set{FD: fd.New()}, Programs: reg}, 3)
+	child, err := kernel.Begin(0, "long", nil, "/", nil, fd.Streams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := kernel.Signal(child.ID, signal.STOP); !errors.Is(err, errno.NotSupported) {
+		t.Fatal(err)
+	}
+	type outcome struct {
+		status ExitStatus
+		err    error
+	}
+	results := make(chan outcome, 1)
+	go func() {
+		status, err := kernel.RunRegistered(t.Context(), child)
+		_ = kernel.Finish(0, child.ID, status)
+		results <- outcome{status, err}
+	}()
+	time.Sleep(20 * time.Millisecond)
+	if err := kernel.Signal(child.ID, signal.TERM); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-results:
+		if got.status.Signal != signal.TERM || got.status.Code != 143 {
+			t.Fatalf("status=%+v err=%v", got.status, got.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("信号未终止程序")
+	}
+
+	if err := kernel.Signal(child.ID, 0); !errors.Is(err, errno.Invalid) {
+		t.Fatal(err)
+	}
+	if err := kernel.Signal(999, signal.TERM); !errors.Is(err, errno.NoProcess) {
+		t.Fatal(err)
+	}
+}
+
+func TestKernelSignalGroup(t *testing.T) {
+	reg, _ := registryFor("long")
+	kernel, _ := New(Services{Set: capability.Set{FD: fd.New()}, Programs: reg}, 4)
+	group, _ := kernel.Begin(0, "long", nil, "/", nil, fd.Streams{})
+	if err := kernel.SetPGID(0, group.ID, group.ID); err != nil {
+		t.Fatal(err)
+	}
+	member, _ := kernel.Begin(0, "long", nil, "/", nil, fd.Streams{})
+	if err := kernel.SetPGID(0, member.ID, group.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := kernel.SignalGroup(group.ID, signal.INT); err != nil {
+		t.Fatal(err)
+	}
+
+	pending, err := kernel.signals.Pending(uint64(member.ID))
+	if err != nil || len(pending) != 1 || pending[0] != signal.INT {
+		t.Fatalf("pending=%v err=%v", pending, err)
+	}
+	if err := kernel.SignalGroup(999, signal.INT); !errors.Is(err, errno.NoProcess) {
+		t.Fatal(err)
+	}
+
+	if err := kernel.SetSID(member.ID); err != nil {
+		t.Fatal(err)
+	}
+	got := kernel.Processes()
+	for _, p := range got {
+		if p.ID == member.ID && (p.SID != member.ID || p.PGID != member.ID) {
+			t.Fatalf("setsid 未生效: %+v", p)
+		}
+	}
+}
+
+func TestKernelPipeSignalsBrokenWriter(t *testing.T) {
+	descriptors := fd.New()
+	reg, _ := registryFor("long")
+	kernel, err := New(Services{Set: capability.Set{FD: descriptors}, Programs: reg}, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, err := kernel.Begin(0, "long", nil, "/", nil, fd.Streams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid := uint64(owner.ID)
+	readFD, writeFD, err := kernel.Pipe(owner.ID, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if readFD != 3 || writeFD != 4 {
+		t.Fatalf("readFD=%d writeFD=%d", readFD, writeFD)
+	}
+
+	if err := descriptors.Close(t.Context(), pid, readFD); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	writer, err := descriptors.Get(t.Context(), pid, writeFD)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Write([]byte("x")); !errors.Is(err, errno.BrokenPipe) {
+		t.Fatalf("err=%v", err)
+	}
+	pending, err := kernel.signals.Pending(pid)
+	if err != nil || len(pending) != 1 || pending[0] != signal.PIPE {
+		t.Fatalf("pending=%v err=%v", pending, err)
+	}
+
+	bare, _ := New(Services{Programs: reg}, 2)
+	if _, _, err := bare.Pipe(1, 4); !errors.Is(err, errno.NotImplemented) {
+		t.Fatal(err)
+	}
+	if err := kernel.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestKernelCloseRejectsNewTasksAndIsIdempotent(t *testing.T) {
+	reg, _ := registryFor("long", "echo")
+	sequencer := scheduler.New(0)
+	kernel, _ := New(Services{Programs: reg, Sequencer: sequencer}, 3)
+	child, _ := kernel.Begin(0, "long", nil, "/", nil, fd.Streams{})
+	waitDone := make(chan error, 1)
+	go func() {
+		_, err := kernel.Wait(t.Context(), 0, 0)
+		waitDone <- err
+	}()
+	time.Sleep(20 * time.Millisecond)
+	if err := kernel.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := kernel.Close(t.Context()); err != nil {
+		t.Fatalf("Close 必须幂等: %v", err)
+	}
+
+	select {
+	case err := <-waitDone:
+		if !errors.Is(err, errno.Cancelled) {
+			t.Fatalf("err=%v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Close 未唤醒等待者")
+	}
+
+	if _, err := kernel.Begin(0, "echo", nil, "/", nil, fd.Streams{}); !errors.Is(err, errno.Cancelled) {
+		t.Fatal(err)
+	}
+	if err := kernel.Signal(child.ID, signal.TERM); !errors.Is(err, errno.Cancelled) {
+		t.Fatal(err)
+	}
+	if closed, err := kernel.Closed(); err != nil || !closed {
+		t.Fatalf("closed=%v err=%v", closed, err)
+	}
+	if len(sequencer.Log()) == 0 {
+		t.Fatal("控制序列未记录")
+	}
+	if sequencer.Log()[0].Kind != scheduler.KindSpawn {
+		t.Fatalf("首个事件应为 spawn: %+v", sequencer.Log()[0])
+	}
+}
+
+func TestKernelOpenFDsReportsPerProcess(t *testing.T) {
+	descriptors := fd.New()
+	reg, _ := registryFor("echo")
+	kernel, _ := New(Services{Set: capability.Set{FD: descriptors}, Programs: reg}, 3)
+	child, err := kernel.Begin(0, "echo", nil, "/", nil, fd.Streams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fds, err := kernel.OpenFDs(child.ID)
+	if err != nil || len(fds) != 3 {
+		t.Fatalf("fds=%v err=%v", fds, err)
+	}
+	if _, err := kernel.OpenFDs(99); !errors.Is(err, errno.NoProcess) {
+		t.Fatal(err)
+	}
+
+	bare, _ := New(Services{Programs: reg}, 3)
+	other, _ := bare.Begin(0, "echo", nil, "/", nil, fd.Streams{})
+	fds, err = bare.OpenFDs(other.ID)
+	if err != nil || len(fds) != 0 {
+		t.Fatalf("fds=%v err=%v", fds, err)
+	}
+}
+
+func TestKernelQuietPointAndSnapshot(t *testing.T) {
+	reg, _ := registryFor("echo")
+	kernel, _ := New(Services{Set: capability.Set{FD: fd.New()}, Programs: reg}, 3)
+	if err := kernel.EnsureQuietPoint(); err != nil {
+		t.Fatalf("init-only 内核应是安全点: %v", err)
+	}
+	var quietOut bytes.Buffer
+	child, _ := kernel.Begin(0, "echo", nil, "/", nil, fd.Streams{Output: &quietOut})
+	if err := kernel.EnsureQuietPoint(); !errors.Is(err, errno.Busy) {
+		t.Fatal("存在活动进程时必须拒绝快照")
+	}
+	if _, err := kernel.SnapshotFS(t.Context()); err == nil {
+		t.Fatal("无快照能力存储时必须失败")
+	}
+	if _, err := kernel.RunRegistered(t.Context(), child); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := kernel.Reap(child.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := kernel.EnsureQuietPoint(); err != nil {
+		t.Fatal(err)
+	}
+	if err := kernel.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := kernel.EnsureQuietPoint(); !errors.Is(err, errno.Cancelled) {
+		t.Fatal(err)
+	}
+}
+
+func TestKernelAuditFailureStopsKernel(t *testing.T) {
+	reg, _ := registryFor("echo")
+	sink := audit.NewMemory()
+	sink.FailNext(errors.New("审计后端故障"))
+	kernel, _ := New(Services{Set: capability.Set{Audit: sink}, Programs: reg}, 3)
+	if _, err := kernel.Begin(0, "echo", nil, "/", nil, fd.Streams{}); !errors.Is(err, errno.Busy) {
+		t.Fatalf("审计失败必须封锁内核: %v", err)
+	}
+}
+
+func TestKernelAuditRecordsControlEvents(t *testing.T) {
+	reg, _ := registryFor("echo")
+	sink := audit.NewMemory()
+	kernel, _ := New(Services{Set: capability.Set{Audit: sink, FD: fd.New()}, Programs: reg}, 3)
+	var auditOut bytes.Buffer
+	child, err := kernel.Begin(0, "echo", []string{"x"}, "/", nil, fd.Streams{Output: &auditOut})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := kernel.RunRegistered(t.Context(), child); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := kernel.Reap(child.ID); err != nil {
+		t.Fatal(err)
+	}
+	events := sink.Events()
+	if len(events) < 3 {
+		t.Fatalf("events=%+v", events)
+	}
+	for i, event := range events {
+		if event.Sequence != uint64(i+1) {
+			t.Fatalf("序号不严格: %+v", events)
+		}
+	}
+	if events[0].Kind != "spawn" || events[len(events)-1].Kind != "reap" {
+		t.Fatalf("首尾事件错误: %+v", events)
+	}
+}
+
+func TestKernelMetersChargeSpawnAndDiscard(t *testing.T) {
+	reg, _ := registryFor("echo")
+	meters, err := resources.NewSession(resources.Limits{Memory: 1024, Work: 2}, resources.Limits{Memory: 512, Work: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kernel, _ := New(Services{Set: capability.Set{FD: fd.New()}, Programs: reg, Meters: meters}, 4)
+	first, err := kernel.Begin(0, "echo", nil, "/", nil, fd.Streams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var metersOut bytes.Buffer
+	second, err := kernel.Begin(0, "echo", nil, "/", nil, fd.Streams{Output: &metersOut})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := kernel.Begin(0, "echo", nil, "/", nil, fd.Streams{}); !errors.Is(err, errno.Limit) {
+		t.Fatalf("预算耗尽必须拒绝: %v", err)
+	}
+
+	if _, err := kernel.RunRegistered(t.Context(), second); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := kernel.Reap(second.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := kernel.Begin(0, "echo", nil, "/", nil, fd.Streams{}); !errors.Is(err, errno.Limit) {
+		t.Fatalf("工作量不随回收释放: %v", err)
+	}
+	_ = first
+}
+
+func TestKernelSessionStorageCapability(t *testing.T) {
+	reg, _ := registryFor("echo")
+	store := storage.New(0)
+	kernel, _ := New(Services{Set: capability.Set{Sessions: store}, Programs: reg}, 3)
+
+	if err := store.Save(t.Context(), "s", []byte("v")); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := store.Load(t.Context(), "s"); err != nil || string(data) != "v" {
+		t.Fatal(data, err)
+	}
+	if err := kernel.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestInterruptErrorText(t *testing.T) {
+	var cause error = interrupt{n: signal.TERM}
+	if !strings.Contains(cause.Error(), "SIGTERM") {
+		t.Fatal(cause.Error())
+	}
+}
+
+func TestKernelSnapshotFSWithMemfsAndRemainingBranches(t *testing.T) {
+	filesystem, err := memfs.New(&clock.Virtual{}, memfs.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg, err := registryFor("long")
+	if err != nil {
+		t.Fatal(err)
+	}
+	kernel, err := New(Services{Set: capability.Set{FS: filesystem, FD: fd.New()}, Programs: reg}, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := kernel.SnapshotFS(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if kernel.Init() != 1 {
+		t.Fatalf("init=%d", kernel.Init())
+	}
+
+	bridgeFS := &noSnapshotFS{System: filesystem}
+	empty, _ := executable.New(nil)
+	bare, _ := New(Services{Set: capability.Set{FS: bridgeFS}, Programs: empty}, 3)
+	if _, err := bare.SnapshotFS(t.Context()); !errors.Is(err, errno.NotSupported) {
+		t.Fatal(err)
+	}
+
+	none, _ := New(Services{Programs: empty}, 3)
+	if _, err := none.SnapshotFS(t.Context()); !errors.Is(err, errno.NotImplemented) {
+		t.Fatal(err)
+	}
+
+	long, err := kernel.Begin(0, "long", nil, "/", nil, fd.Streams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+	if _, err := kernel.RunRegistered(ctx, long); err == nil {
+		t.Fatal("取消后应返回错误")
+	}
+	got := kernel.Processes()
+	if len(got) != 2 || got[1].State != proc.Zombie {
+		t.Fatalf("processes=%+v", got)
+	}
+}
+
+type noSnapshotFS struct{ vmfs.System }
+
+func TestKernelResolverShebangFallsBack(t *testing.T) {
+	filesystem, err := memfs.New(&clock.Virtual{}, memfs.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg, _ := registryFor("interp")
+	resolverReg, _ := executable.New(map[string]executable.Program{"interp": echoProgram()})
+	_ = resolverReg
+	_ = reg
+	kernel, err := New(Services{
+		Set:      capability.Set{FS: filesystem, FD: fd.New()},
+		Programs: mustRegistry(t),
+	}, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := kernel.Begin(0, "missing", nil, "/", nil, fd.Streams{}); !errors.Is(err, errno.NotFound) {
+		t.Fatal(err)
+	}
+}
+
+func mustRegistry(t *testing.T) executable.Registry {
+	t.Helper()
+	reg, err := registryFor("interp", "echo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return reg
+}
+
+func envProgram(name string) executable.Program {
+	return executable.Func(func(ctx context.Context, p proc.Proc) (uint8, error) {
+		descriptors, err := p.Resources.Descriptors()
+		if err != nil {
+			return 0, err
+		}
+		out, err := descriptors.Get(ctx, uint64(p.ID), 1)
+		if err != nil {
+			return 0, err
+		}
+		_, err = io.WriteString(out, name+"="+p.Env[name])
+		return 0, err
+	})
+}
+
+func TestControlRunExecutesAndReapsChild(t *testing.T) {
+	reg, err := executable.New(map[string]executable.Program{
+		"echo": echoProgram(),
+		"env":  envProgram("KEY"),
+		"fail": executable.Func(func(context.Context, proc.Proc) (uint8, error) { return 3, nil }),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kernel, err := New(Services{Set: capability.Set{FD: fd.New()}, Programs: reg}, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	control := proc.Control(procControl{k: kernel})
+
+	live := func() int { return len(kernel.table.List()) }
+	var out bytes.Buffer
+	terminal, err := control.Run(t.Context(), proc.RunSpec{Parent: 0, Name: "echo", Args: []string{"one", "two"}, Dir: "/", Streams: fd.Streams{Output: &out}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.String() != "one two\n" || terminal.State != proc.Zombie || terminal.ExitCode != 0 {
+		t.Fatalf("执行结果: %q %+v", out.String(), terminal)
+	}
+	if live() != 1 {
+		t.Fatalf("子进程未回收: %d", live())
+	}
+
+	terminal, err = control.Run(t.Context(), proc.RunSpec{Parent: 0, Name: "fail", Args: nil, Dir: "/", Env: nil, Streams: fd.Streams{}})
+	if err != nil || terminal.ExitCode != 3 {
+		t.Fatalf("退出码: %+v %v", terminal, err)
+	}
+
+	out.Reset()
+	if _, err := control.Run(t.Context(), proc.RunSpec{Parent: 0, Name: "env", Args: nil, Dir: "/", Env: map[string]string{"KEY": "value"}, Streams: fd.Streams{Output: &out}}); err != nil {
+		t.Fatal(err)
+	}
+	if out.String() != "KEY=value" {
+		t.Fatalf("环境: %q", out.String())
+	}
+
+	if _, err := control.Run(t.Context(), proc.RunSpec{Parent: 0, Name: "missing", Args: nil, Dir: "/", Env: nil, Streams: fd.Streams{}}); !errors.Is(err, errno.NotFound) {
+		t.Fatalf("未登记程序: %v", err)
+	}
+	if live() != 1 {
+		t.Fatalf("失败后进程表残留: %d", live())
+	}
+
+	cancelled, cancel := context.WithCancel(t.Context())
+	cancel()
+	terminal, err = control.Run(cancelled, proc.RunSpec{Parent: 0, Name: "echo", Args: nil, Dir: "/", Env: nil, Streams: fd.Streams{}})
+	if !errors.Is(err, context.Canceled) || terminal.ExitCode != 125 {
+		t.Fatalf("取消: %+v %v", terminal, err)
+	}
+	if live() != 1 {
+		t.Fatalf("取消后进程表残留: %d", live())
+	}
+}
+
+func TestKernelControlPortAndRemainingBranches(t *testing.T) {
+	reg, _ := registryFor("long", "echo")
+	descriptors := fd.New()
+	kernel, _ := New(Services{Set: capability.Set{FD: descriptors}, Programs: reg}, 4)
+
+	control := proc.Control(procControl{k: kernel})
+	child, err := control.Begin(0, "long", nil, "/", nil, fd.Streams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := control.Finish(99, child.ID, 0); !errors.Is(err, errno.NoChild) {
+		t.Fatal(err)
+	}
+
+	if err := control.Finish(0, child.ID, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := kernel.SetSID(999); !errors.Is(err, errno.NoProcess) {
+		t.Fatal(err)
+	}
+
+	if _, err := descriptors.Get(t.Context(), uint64(child.ID), 1); !errors.Is(err, errno.NoProcess) {
+		t.Fatal(err)
+	}
+
+	owner, err := kernel.Begin(0, "long", nil, "/", nil, fd.Streams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := kernel.Pipe(owner.ID, 0); !errors.Is(err, errno.Invalid) {
+		t.Fatal(err)
+	}
+	if err := kernel.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestKernelClosedGuardsOnEveryControlPath(t *testing.T) {
+	reg, _ := registryFor("long", "echo")
+	kernel, _ := New(Services{Programs: reg}, 4)
+	child, _ := kernel.Begin(0, "long", nil, "/", nil, fd.Streams{})
+	if err := kernel.SetPGID(0, child.ID, child.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := kernel.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := kernel.Wait(t.Context(), 0, 0); !errors.Is(err, errno.Cancelled) {
+		t.Fatal(err)
+	}
+	if err := kernel.SignalGroup(child.ID, signal.TERM); !errors.Is(err, errno.Cancelled) {
+		t.Fatal(err)
+	}
+	if err := kernel.SetPGID(0, child.ID, child.ID); !errors.Is(err, errno.Cancelled) {
+		t.Fatal(err)
+	}
+	if err := kernel.SetSID(child.ID); !errors.Is(err, errno.Cancelled) {
+		t.Fatal(err)
+	}
+	if _, _, err := kernel.Pipe(child.ID, 4); !errors.Is(err, errno.Cancelled) && !errors.Is(err, errno.NotImplemented) {
+		t.Fatal(err)
+	}
+}
+
+func TestKernelWaitZombieTargetAndSequencerFull(t *testing.T) {
+	reg, _ := registryFor("echo")
+	sequencer := scheduler.New(2)
+	kernel, _ := New(Services{Programs: reg, Sequencer: sequencer}, 4)
+
+	first, err := kernel.Begin(0, "echo", []string{"a"}, "/", nil, fd.Streams{Output: io.Discard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := kernel.RunRegistered(t.Context(), first); err == nil {
+		t.Fatal("序列器溢出必须使内核 fail-closed")
+	}
+	_ = kernel
+}
+
+func TestKernelBranchCompletion(t *testing.T) {
+	reg, _ := registryFor("echo")
+
+	descriptors := fd.New()
+	kernel, _ := New(Services{Set: capability.Set{FD: descriptors}, Programs: reg}, 3)
+
+	child, _ := kernel.Begin(0, "echo", []string{"x"}, "/", nil, fd.Streams{Output: io.Discard})
+	if _, err := kernel.RunRegistered(t.Context(), child); err != nil {
+		t.Fatal(err)
+	}
+	wrongStatus := ExitStatus{Code: 99}
+	if err := kernel.Finish(0, child.ID, wrongStatus); !errors.Is(err, errno.Busy) {
+		t.Fatalf("err=%v", err)
+	}
+
+	if err := kernel.Signal(child.ID, signal.TERM); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := kernel.Pipe(999, 4); !errors.Is(err, errno.NoProcess) {
+		t.Fatal(err)
+	}
+
+	forged := child
+	forged.Program = "ghost"
+	if _, err := kernel.RunRegistered(t.Context(), forged); err == nil {
+		t.Fatal("伪造程序名应失败")
+	}
+	_ = kernel
+}
+
+func TestControlRunIgnoresSignals(t *testing.T) {
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	program := executable.Func(func(ctx context.Context, _ proc.Proc) (uint8, error) {
+		once.Do(func() { close(started) })
+		select {
+		case <-release:
+			return 0, nil
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		}
+	})
+	reg, err := executable.New(map[string]executable.Program{"waiter": program})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kernel, err := New(Services{Set: capability.Set{FD: fd.New()}, Programs: reg}, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	control := proc.Control(procControl{k: kernel})
+	run := func(ignore []signal.Number) chan proc.Proc {
+		result := make(chan proc.Proc, 1)
+		go func() {
+			terminal, _ := control.Run(t.Context(), proc.RunSpec{
+				Name: "waiter", Dir: "/", IgnoreSignals: ignore,
+			})
+			result <- terminal
+		}()
+		<-started
+		return result
+	}
+
+	done := run([]signal.Number{signal.HUP})
+	if err := kernel.Signal(proc.PID(2), signal.HUP); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	if terminal := <-done; terminal.ExitCode != 0 || terminal.ExitSignal != 0 {
+		t.Fatalf("忽略处置下的终态: %+v", terminal)
+	}
+
+	started, release = make(chan struct{}), make(chan struct{})
+	once = sync.Once{}
+	done = run(nil)
+	if err := kernel.Signal(proc.PID(3), signal.HUP); err != nil {
+		t.Fatal(err)
+	}
+	terminal := <-done
+	if terminal.ExitSignal != uint8(signal.HUP) {
+		t.Fatalf("未忽略时 SIGHUP 应终止子进程: %+v", terminal)
+	}
+	close(release)
+}
+
+func TestKernelUmaskFact(t *testing.T) {
+	reg, err := registryFor("echo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	kernel, err := New(Services{Set: capability.Set{FD: fd.New()}, Programs: reg}, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := kernel.services.UmaskSource
+	if source == nil {
+		t.Fatal("内核必须装上创建掩码查询口")
+	}
+	if _, err := source.Umask(999); !errors.Is(err, errno.NoProcess) {
+		t.Fatalf("未知进程: %v", err)
+	}
+	parent, err := kernel.Begin(0, "echo", nil, "/", nil, fd.Streams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mask, err := source.Umask(uint64(parent.ID)); err != nil || mask != proc.DefaultUmask {
+		t.Fatalf("初值 = %o, %v", mask, err)
+	}
+
+	control, ok := proc.Control(procControl{k: kernel}).(proc.UmaskControl)
+	if !ok {
+		t.Fatal("procControl 必须实现 UmaskControl")
+	}
+	if err := control.SetUmask(parent.ID, 0o077); err != nil {
+		t.Fatal(err)
+	}
+	if mask, err := source.Umask(uint64(parent.ID)); err != nil || mask != 0o077 {
+		t.Fatalf("设置后 = %o, %v", mask, err)
+	}
+
+	if err := kernel.SetUmask(parent.ID, stdfs.FileMode(0o10000)); !errors.Is(err, errno.Invalid) {
+		t.Fatalf("越界掩码: %v", err)
+	}
+	if err := kernel.SetUmask(999, 0o022); !errors.Is(err, errno.NoProcess) {
+		t.Fatalf("未知进程: %v", err)
+	}
+	child, err := kernel.Begin(parent.ID, "echo", nil, "/", nil, fd.Streams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if child.Umask != 0o077 {
+		t.Fatalf("子进程应继承掩码: %o", child.Umask)
+	}
+	if err := kernel.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := kernel.SetUmask(parent.ID, 0o022); !errors.Is(err, errno.Cancelled) {
+		t.Fatalf("关闭后应拒绝: %v", err)
+	}
+}
+
+func TestKernelSignalControlPort(t *testing.T) {
+	reg, err := registryFor("echo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	kernel, err := New(Services{Set: capability.Set{FD: fd.New()}, Programs: reg}, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	control, ok := proc.Control(procControl{k: kernel}).(proc.SignalControl)
+	if !ok {
+		t.Fatal("procControl 必须实现 SignalControl")
+	}
+	child, err := kernel.Begin(0, "echo", nil, "/", nil, fd.Streams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exists, err := control.Exists(child.ID); err != nil || !exists {
+		t.Fatalf("存在性查询 = %v, %v", exists, err)
+	}
+	if exists, err := control.Exists(999); err != nil || exists {
+		t.Fatalf("未知进程的存在性查询 = %v, %v", exists, err)
+	}
+	if err := control.Signal(child.ID, signal.TERM); err != nil {
+		t.Fatal(err)
+	}
+	if pending, err := kernel.Pending(child.ID); err != nil || len(pending) != 1 || pending[0] != signal.TERM {
+		t.Fatalf("待决信号 = %v, %v", pending, err)
+	}
+	if err := control.Signal(999, signal.TERM); !errors.Is(err, errno.NoProcess) {
+		t.Fatalf("向未知进程投递 = %v", err)
+	}
+	if err := kernel.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.Exists(child.ID); !errors.Is(err, errno.Cancelled) {
+		t.Fatalf("关闭后的存在性查询 = %v", err)
+	}
+}
+
+func TestKernelTableControlPort(t *testing.T) {
+	reg, err := registryFor("echo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	kernel, err := New(Services{Set: capability.Set{FD: fd.New()}, Programs: reg}, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	control, ok := proc.Control(procControl{k: kernel}).(proc.TableControl)
+	if !ok {
+		t.Fatal("procControl 必须实现 TableControl")
+	}
+	child, err := kernel.Begin(0, "echo", []string{"hi"}, "/", nil, fd.Streams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	processes := control.Processes()
+	if len(processes) == 0 {
+		t.Fatal("进程表不应为空")
+	}
+	var found bool
+	for _, process := range processes {
+		if process.ID != child.ID {
+			continue
+		}
+		found = true
+		if process.Program != "echo" || len(process.Args) != 1 || process.Args[0] != "hi" {
+			t.Fatalf("进程条目 = %+v", process)
+		}
+		if process.SID == 0 || process.PGID == 0 {
+			t.Fatalf("进程条目缺少会话/进程组: %+v", process)
+		}
+	}
+	if !found {
+		t.Fatalf("进程表里没有刚创建的进程 %d: %+v", child.ID, processes)
+	}
+
+	processes[0].Program = "mutated"
+	for _, process := range kernel.Processes() {
+		if process.Program == "mutated" {
+			t.Fatal("Processes 返回的必须是值副本")
+		}
+	}
+}
+
+func TestKernelUsageAggregatesChildren(t *testing.T) {
+	reg, err := registryFor("echo")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	meters, err := resources.NewSession(
+		resources.Limits{Memory: 1 << 20, Work: 1 << 20},
+		resources.Limits{Memory: 1 << 20, Work: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptors := fd.New()
+	kernel, err := New(Services{Set: capability.Set{FD: descriptors}, Programs: reg, Meters: meters}, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	control, ok := proc.Control(procControl{k: kernel}).(proc.UsageControl)
+	if !ok {
+		t.Fatal("procControl 必须实现 UsageControl")
+	}
+	parent, err := kernel.Begin(0, "echo", nil, "/", nil, fd.Streams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := kernel.Begin(parent.ID, "echo", nil, "/", nil, fd.Streams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := kernel.meters.Charge(t.Context(), uint64(child.ID), 7); err != nil {
+		t.Fatal(err)
+	}
+	before, err := control.Usage(parent.ID)
+	if err != nil || before.Children != 0 {
+		t.Fatalf("回收前父进程的子进程用量应为 0: %+v, %v", before, err)
+	}
+
+	if err := kernel.table.Exit(child.ID, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := kernel.Finish(parent.ID, child.ID, ExitStatus{}); err != nil {
+		t.Fatal(err)
+	}
+	after, err := control.Usage(parent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Children < 7 {
+		t.Fatalf("回收后应把子进程用量并入父进程: %+v", after)
+	}
+	if after.Self == 0 {
+		t.Fatalf("父进程自身也应有用量记录: %+v", after)
+	}
+
+	if _, err := control.Usage(child.ID); !errors.Is(err, errno.NoProcess) {
+		t.Fatalf("回收后的子进程用量应报 NoProcess: %v", err)
+	}
+
+	if _, err := control.Usage(999); !errors.Is(err, errno.NoProcess) {
+		t.Fatalf("未知进程用量: %v", err)
+	}
+	if err := kernel.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.Usage(parent.ID); !errors.Is(err, errno.Cancelled) {
+		t.Fatalf("关闭后的用量查询: %v", err)
+	}
+}

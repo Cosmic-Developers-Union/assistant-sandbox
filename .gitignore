@@ -1,0 +1,10 @@
+/assistant-bash.wasm
+/assistant-bash.wasm.gz
+/assistant-sandbox
+/assistant-sandbox.exe
+/dist/
+/coverage/
+/.idea/
+/test/posix/.generated/
+/test/posix/.local/
+*.cover

@@ -1,0 +1,740 @@
+package bre
+
+import (
+	"errors"
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestPOSIXLeftmostLongest(t *testing.T) {
+	cases := []struct {
+		pattern      string
+		in           string
+		first        []int
+		posixLongest []int
+	}{
+
+		{`a\|ab`, "ab", []int{0, 1}, []int{0, 2}},
+		{`ab\|a`, "ab", []int{0, 2}, []int{0, 2}},
+		{`foo\|foobar`, "foobarx", []int{0, 3}, []int{0, 6}},
+
+		{`b\|aa`, "xaab", []int{1, 3}, []int{1, 3}},
+
+		{`\(a\|ab\)\1`, "abab", []int{0, 4}, []int{0, 4}},
+		{`\(a\|ab\)c\1`, "abcab", []int{0, 5}, []int{0, 5}},
+	}
+	for _, c := range cases {
+		re, err := Compile(c.pattern)
+		if err != nil {
+			t.Fatalf("Compile(%q): %v", c.pattern, err)
+		}
+		if got := re.FindStringIndex(c.in); !sameInts(got, c.first) {
+			t.Errorf("default %q on %q = %v, want leftmost-first %v", c.pattern, c.in, got, c.first)
+		}
+
+		re, err = Compile(c.pattern)
+		if err != nil {
+			t.Fatalf("Compile(%q): %v", c.pattern, err)
+		}
+		re.Longest()
+		if got := re.FindStringIndex(c.in); !sameInts(got, c.posixLongest) {
+			t.Errorf("Longest %q on %q = %v, want POSIX leftmost-longest %v", c.pattern, c.in, got, c.posixLongest)
+		}
+	}
+}
+
+func TestPOSIXLongestPreservesMatchExistence(t *testing.T) {
+	for _, c := range []struct {
+		pattern string
+		in      string
+		want    bool
+	}{
+		{`a\|ab`, "zzz", false},
+		{`a\|ab`, "zab", true},
+		{`\(a*\)b\1`, "aaa", false},
+		{`\(a*\)b\1`, "aaba", true},
+	} {
+		re, err := Compile(c.pattern)
+		if err != nil {
+			t.Fatalf("Compile(%q): %v", c.pattern, err)
+		}
+		re.Longest()
+		if got := re.MatchString(c.in); got != c.want {
+			t.Errorf("Longest %q.MatchString(%q) = %v, want %v", c.pattern, c.in, got, c.want)
+		}
+	}
+}
+
+func TestPOSIXBackrefEmptyGroup(t *testing.T) {
+	cases := []struct {
+		name    string
+		pattern string
+		in      string
+		want    []int
+	}{
+		{"empty capture, backref matches empty", `\(a*\)b\1`, "b", []int{0, 1}},
+		{"empty capture mid-subject", `\(x*\)y\1z`, "yz", []int{0, 2}},
+		{"non-empty capture still required to repeat", `\(a*\)x\1`, "aaxaa", []int{0, 5}},
+
+		{"leftmost wins over a later empty-capture match", `\(a*\)b\1`, "aaba", []int{1, 4}},
+
+		{"group that never participated", `\(a\)\{0\}b\1`, "b", nil},
+	}
+	for _, c := range cases {
+		re, err := Compile(c.pattern)
+		if err != nil {
+			t.Fatalf("%s: Compile(%q): %v", c.name, c.pattern, err)
+		}
+		if got := re.FindStringIndex(c.in); !sameInts(got, c.want) {
+			t.Errorf("%s: %q on %q = %v, want %v", c.name, c.pattern, c.in, got, c.want)
+		}
+	}
+}
+
+func TestPOSIXIntervalBounds(t *testing.T) {
+	valid := []struct {
+		pattern string
+		in      string
+	}{
+		{`^a\{255\}$`, strings.Repeat("a", 255)},
+		{`^a\{0002\}$`, "aa"},
+		{`^a\{0002,0003\}$`, "aaa"},
+		{`^a\{,3\}$`, "aaa"},
+		{`^a\{2,\}$`, "aa"},
+		{`^a\{255\}$`, strings.Repeat("a", 255)},
+		{`^a\{1,255\}$`, strings.Repeat("a", 255)},
+	}
+	for _, c := range valid {
+		re, err := Compile(c.pattern)
+		if err != nil {
+			t.Errorf("Compile(%q): %v", c.pattern, err)
+			continue
+		}
+		if !re.MatchString(c.in) {
+			t.Errorf("%q did not match %q", c.pattern, c.in)
+		}
+	}
+	maxRE, err := Compile(fmt.Sprintf(`^a\{%d\}$`, REDupMax))
+	if err != nil {
+		t.Errorf("Compile at advertised RE_DUP_MAX: %v", err)
+	} else if !maxRE.MatchString(strings.Repeat("a", REDupMax)) {
+		t.Errorf("pattern at advertised RE_DUP_MAX did not match")
+	}
+
+	for _, pattern := range []string{
+		fmt.Sprintf(`a\{%d\}`, REDupMax+1),
+		fmt.Sprintf(`a\{1,%d\}`, REDupMax+1),
+		`a\{999999999999999999999999999999\}`,
+		`a\{3,2\}`,
+	} {
+		if _, err := Compile(pattern); err == nil {
+			t.Errorf("Compile(%q) succeeded, want invalid interval error", pattern)
+		}
+	}
+}
+
+func TestPOSIXEREIntervalCanonicalization(t *testing.T) {
+	translations := []struct {
+		pattern string
+		want    string
+	}{
+		{`a{0000}`, `a{0}`},
+		{`a{0002}`, `a{2}`},
+		{`a{0002,}`, `a{2,}`},
+		{`a{0002,0004}`, `a{2,4}`},
+		{`a{,0004}`, `a{0,4}`},
+		{`(ab){0002}`, `(ab){2}`},
+		{`a\{0002\}`, `a\{0002\}`},
+		{`[{]`, `[{]`},
+	}
+	for _, tc := range translations {
+		got, err := ToGoERE(tc.pattern)
+		if err != nil {
+			t.Errorf("ToGoERE(%q): %v", tc.pattern, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("ToGoERE(%q) = %q, want %q", tc.pattern, got, tc.want)
+		}
+	}
+
+	matches := []struct {
+		pattern string
+		in      string
+	}{
+		{`^a{0002}$`, "aa"},
+		{`^a{0002,}$`, "aaaaa"},
+		{`^a{0002,0004}$`, "aaa"},
+		{`^a{,0004}$`, "aaa"},
+		{`^(ab){0002}$`, "abab"},
+	}
+	for _, tc := range matches {
+		re, err := CompileEREWithFlags(tc.pattern, "")
+		if err != nil {
+			t.Errorf("CompileEREWithFlags(%q): %v", tc.pattern, err)
+			continue
+		}
+		if !re.MatchString(tc.in) {
+			t.Errorf("%q did not match %q", tc.pattern, tc.in)
+		}
+	}
+}
+
+func TestPOSIXEREIntervalCanonicalParity(t *testing.T) {
+
+	for lo := 0; lo <= 8; lo++ {
+		forms := [][2]string{
+			{fmt.Sprintf(`^a{%04d}$`, lo), fmt.Sprintf(`^a{%d}$`, lo)},
+			{fmt.Sprintf(`^a{%04d,}$`, lo), fmt.Sprintf(`^a{%d,}$`, lo)},
+		}
+		for hi := lo; hi <= 8; hi++ {
+			forms = append(forms, [2]string{
+				fmt.Sprintf(`^a{%04d,%04d}$`, lo, hi),
+				fmt.Sprintf(`^a{%d,%d}$`, lo, hi),
+			})
+		}
+		for _, form := range forms {
+			padded, err := CompileEREWithFlags(form[0], "")
+			if err != nil {
+				t.Fatalf("CompileEREWithFlags(%q): %v", form[0], err)
+			}
+			canonical, err := CompileEREWithFlags(form[1], "")
+			if err != nil {
+				t.Fatalf("CompileEREWithFlags(%q): %v", form[1], err)
+			}
+			for n := 0; n <= 10; n++ {
+				in := strings.Repeat("a", n)
+				if got, want := padded.MatchString(in), canonical.MatchString(in); got != want {
+					t.Errorf("%q on length %d = %v, canonical %q = %v", form[0], n, got, form[1], want)
+				}
+			}
+		}
+	}
+}
+
+func TestPOSIXEREInvalidIntervals(t *testing.T) {
+	patterns := []string{
+		`{2}`,
+		`a{`,
+		`a{}`,
+		`a{,}`,
+		`a{x}`,
+		`a{1,2,3}`,
+		`a{0004,0002}`,
+		`a{32768}`,
+		`a{0001,00032768}`,
+		`a{999999999999999999999999999999}`,
+	}
+	for _, pattern := range patterns {
+		if _, err := ToGoERE(pattern); err == nil {
+			t.Errorf("ToGoERE(%q) succeeded, want invalid interval error", pattern)
+		}
+		if _, err := CompileEREWithFlags(pattern, ""); err == nil {
+			t.Errorf("CompileEREWithFlags(%q) succeeded, want invalid interval error", pattern)
+		}
+	}
+	for _, pattern := range []string{`a*{1001}`, `a{2}{1001}`, `*a{1001}`} {
+		if ERERequiresBacktracking(pattern) {
+			t.Errorf("ERERequiresBacktracking(%q) = true for invalid repeated quantifier", pattern)
+		}
+		if _, err := CompileEREWithFlags(pattern, ""); err == nil {
+			t.Errorf("CompileEREWithFlags(%q) succeeded, want repeated quantifier error", pattern)
+		}
+	}
+}
+
+func TestPOSIXEREBackreferenceDispatch(t *testing.T) {
+	for _, pattern := range []string{`^(a)\1$`} {
+		if !ERERequiresBacktracking(pattern) {
+			t.Errorf("ERERequiresBacktracking(%q) = false, want true", pattern)
+		}
+	}
+	for _, pattern := range []string{
+		`^a{255}$`,
+		`^a{00255}$`,
+		`^a\{1001\}$`,
+		`^[{]1001[}]$`,
+		`^[\1]$`,
+		`{1001}`,
+		`a{32768}`,
+	} {
+		if ERERequiresBacktracking(pattern) {
+			t.Errorf("ERERequiresBacktracking(%q) = true, want false", pattern)
+		}
+	}
+
+}
+
+func TestAdvertisedIntervalComplexity(t *testing.T) {
+	cases := []struct {
+		pattern  string
+		input    string
+		extended bool
+	}{
+		{`^[[:alpha:]]\{255\}$`, strings.Repeat("a", 255), false},
+		{`^\(a\|b\|c\|d\|e\|f\|g\)\{255\}$`, strings.Repeat("g", 255), false},
+		{`^\(a\{255\}\)\1$`, strings.Repeat("a", 510), false},
+		{`^[[:alpha:]]{255}$`, strings.Repeat("a", 255), true},
+		{`^(a|b|c|d|e|f|g){255}$`, strings.Repeat("g", 255), true},
+	}
+	for _, tc := range cases {
+		var re *Regexp
+		var err error
+		if tc.extended {
+			re, err = CompileEREWithFlags(tc.pattern, "")
+		} else {
+			re, err = Compile(tc.pattern)
+		}
+		if err != nil {
+			t.Fatalf("Compile(%q): %v", tc.pattern, err)
+		}
+		if !re.MatchString(tc.input) {
+			t.Errorf("%q did not match", tc.pattern)
+		}
+	}
+	for _, pattern := range []string{`a\{256\}`, `a{256}`} {
+		var err error
+		if strings.Contains(pattern, `\{`) {
+			_, err = Compile(pattern)
+		} else {
+			_, err = CompileEREWithFlags(pattern, "")
+		}
+		if err == nil {
+			t.Errorf("Compile(%q) succeeded above REDupMax", pattern)
+		}
+	}
+}
+
+func TestBacktrackBudgetCoversWholeUnanchoredSearch(t *testing.T) {
+	re, err := Compile(`\(a*\)b\1`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	if matched, err := re.MatchStringErr(strings.Repeat("a", 20000)); matched || !errors.Is(err, ErrMatchLimit) {
+		t.Fatalf("near-miss = (%v, %v), want false and ErrMatchLimit", matched, err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("unanchored near-miss took %v; search budget reset per candidate", elapsed)
+	}
+}
+
+func TestBacktrackExhaustionDoesNotHideLaterMatch(t *testing.T) {
+	re, err := Compile(`\(a*\)b\1`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := strings.Repeat("a", 500) + "bb"
+	matched, err := re.MatchStringErr(input)
+	if matched || !errors.Is(err, ErrMatchLimit) {
+		t.Fatalf("later-match exhaustion = (%v, %v), want resource error, not no-match", matched, err)
+	}
+	var limitErr *MatchLimitError
+	if !errors.As(err, &limitErr) || limitErr.Limit != maxBacktrackSteps {
+		t.Fatalf("error type = %T %v, want *MatchLimitError at %d", err, err, maxBacktrackSteps)
+	}
+}
+
+func TestPOSIXBracketExpressions(t *testing.T) {
+	classes := map[string]string{
+		"alnum": "a", "alpha": "a", "blank": " ", "cntrl": "\t",
+		"digit": "7", "graph": "!", "lower": "a", "print": " ",
+		"punct": "!", "space": "\n", "upper": "A", "xdigit": "f",
+	}
+	for class, in := range classes {
+		pattern := "[[:" + class + ":]]"
+		re, err := Compile(pattern)
+		if err != nil {
+			t.Errorf("Compile(%q): %v", pattern, err)
+			continue
+		}
+		if !re.MatchString(in) {
+			t.Errorf("%q did not match %q", pattern, in)
+		}
+	}
+
+	for _, translate := range []struct {
+		name string
+		fn   func(string) (string, error)
+	}{
+		{"BRE", ToGo},
+		{"ERE", ToGoERE},
+	} {
+		for _, pattern := range []string{`[[:bogus:]]`, `[z-a]`} {
+			if _, err := translate.fn(pattern); err == nil {
+				t.Errorf("%s translation of %q succeeded, want bracket expression error", translate.name, pattern)
+			}
+		}
+	}
+
+	positions := []struct {
+		pattern, matches, notMatches string
+	}{
+		{`[]a]`, "]", "b"},
+		{`[^]a]`, "b", "]"},
+		{`[-a]`, "-", "b"},
+		{`[a-]`, "-", "b"},
+		{`[a^]`, "^", "b"},
+		{`[^^]`, "a", "^"},
+	}
+	for _, c := range positions {
+		re, err := Compile(c.pattern)
+		if err != nil {
+			t.Errorf("Compile(%q): %v", c.pattern, err)
+			continue
+		}
+		if !re.MatchString(c.matches) {
+			t.Errorf("%q did not match %q", c.pattern, c.matches)
+		}
+		if re.MatchString(c.notMatches) {
+			t.Errorf("%q unexpectedly matched %q", c.pattern, c.notMatches)
+		}
+	}
+}
+
+func TestPOSIXCollatingSymbolsCLocale(t *testing.T) {
+	cases := []struct {
+		pattern, matches, notMatches string
+	}{
+		{`[[.a.]]`, "a", "b"},
+		{`[[=a=]]`, "a", "b"},
+		{`[^[=a=]]`, "b", "a"},
+		{`[[.-.]]`, "-", "a"},
+		{`[[.].]]`, "]", "a"},
+		{`[[.^.]]`, "^", "a"},
+		{`[[.a.]-c]`, "b", "z"},
+
+		{`[][.-.]-0]`, "/", "1"},
+	}
+	for _, c := range cases {
+		re, err := Compile(c.pattern)
+		if err != nil {
+			t.Errorf("Compile(%q): %v", c.pattern, err)
+			continue
+		}
+		if !re.MatchString(c.matches) {
+			t.Errorf("%q did not match %q", c.pattern, c.matches)
+		}
+		if re.MatchString(c.notMatches) {
+			t.Errorf("%q unexpectedly matched %q", c.pattern, c.notMatches)
+		}
+	}
+}
+
+func TestPOSIXInvalidCollatingSymbolsCLocale(t *testing.T) {
+	patterns := []string{
+		`[[.ab.]]`,
+		`[[=ab=]]`,
+		`[[..]]`,
+		`[[==]]`,
+		`[[.a]`,
+		`[[=a]`,
+	}
+	for _, translate := range []struct {
+		name string
+		fn   func(string) (string, error)
+	}{
+		{"BRE", ToGo},
+		{"ERE", ToGoERE},
+	} {
+		for _, pattern := range patterns {
+			if _, err := translate.fn(pattern); err == nil {
+				t.Errorf("%s translation of %q succeeded, want invalid collating element error", translate.name, pattern)
+			}
+		}
+	}
+}
+
+func TestPOSIXBREEREOperatorDistinction(t *testing.T) {
+	translations := []struct {
+		name, pattern, want string
+		fn                  func(string) (string, error)
+	}{
+		{"BRE literals", `a+?{2}(b)|c`, `a\+\?\{2\}\(b\)\|c`, ToGo},
+		{"BRE operators", `a\+\?\{2\}\(b\|c\)`, `a+?{2}(b|c)`, ToGo},
+		{"ERE operators", `a+?{2}(b)|c`, `a+?{2}(b)|c`, ToGoERE},
+		{"ERE escaped parens", `\(a\)`, `\(a\)`, ToGoERE},
+	}
+	for _, c := range translations {
+		got, err := c.fn(c.pattern)
+		if err != nil {
+			t.Errorf("%s: translate %q: %v", c.name, c.pattern, err)
+		} else if got != c.want {
+			t.Errorf("%s: translate %q = %q, want %q", c.name, c.pattern, got, c.want)
+		}
+	}
+
+	matchCases := []struct {
+		name, pattern, in string
+		extended          bool
+	}{
+		{"BRE plus literal", `^a+$`, "a+", false},
+		{"BRE question literal", `^a?$`, "a?", false},
+		{"BRE braces literal", `^a{2}$`, "a{2}", false},
+		{"BRE parens and bar literal", `^(a|b)$`, "(a|b)", false},
+		{"BRE escaped operators", `^\(a\|b\)\+$`, "aba", false},
+		{"ERE plus", `^a+$`, "aaa", true},
+		{"ERE question", `^a?$`, "", true},
+		{"ERE interval", `^a{2}$`, "aa", true},
+		{"ERE grouping and alternation", `^(a|b)$`, "b", true},
+		{"ERE escaped paren literal", `^\($`, "(", true},
+	}
+	for _, c := range matchCases {
+		var re *Regexp
+		var err error
+		if c.extended {
+			re, err = CompileEREWithFlags(c.pattern, "")
+		} else {
+			re, err = Compile(c.pattern)
+		}
+		if err != nil {
+			t.Errorf("%s: compile %q: %v", c.name, c.pattern, err)
+		} else if !re.MatchString(c.in) {
+			t.Errorf("%s: %q did not match %q", c.name, c.pattern, c.in)
+		}
+	}
+
+	for _, c := range []struct {
+		pattern, in string
+		extended    bool
+	}{
+		{`^\(a\+\)\1$`, "aaaa", false},
+		{`^(a+)\1$`, "aaaa", true},
+		{`^(a?)\1$`, "aa", true},
+		{`^(a{2})\1$`, "aaaa", true},
+		{`^(a|b)\1$`, "bb", true},
+		{`^\((a)\1\)$`, "(aa)", true},
+	} {
+		var re *Regexp
+		var err error
+		if c.extended {
+			re, err = CompileEREWithFlags(c.pattern, "")
+		} else {
+			re, err = Compile(c.pattern)
+		}
+		if err != nil {
+			t.Errorf("backtracking compile %q: %v", c.pattern, err)
+		} else if !re.MatchString(c.in) {
+			t.Errorf("backtracking %q did not match %q", c.pattern, c.in)
+		}
+	}
+}
+
+func TestPOSIXAnchorTranslation(t *testing.T) {
+	breCases := []struct{ pattern, want string }{
+		{`^a$`, `^a$`},
+		{`a^b`, `a\^b`},
+		{`a$b`, `a\$b`},
+		{`\(^a\)`, `(^a)`},
+		{`\(a$\)`, `(a$)`},
+		{`a\|^b`, `a|^b`},
+		{`a$\|b`, `a$|b`},
+	}
+	for _, c := range breCases {
+		got, err := ToGo(c.pattern)
+		if err != nil {
+			t.Errorf("ToGo(%q): %v", c.pattern, err)
+		} else if got != c.want {
+			t.Errorf("ToGo(%q) = %q, want %q", c.pattern, got, c.want)
+		}
+	}
+
+	ereCases := []struct{ pattern, want string }{
+		{`^a$`, `^a$`}, {`a^b`, `a\^b`}, {`a$b`, `a\$b`},
+		{`(^a)`, `(^a)`}, {`(a$)`, `(a$)`}, {`a|^b`, `a|^b`},
+		{`a$|b`, `a$|b`}, {`^^+`, `^\^+`},
+	}
+	for _, tc := range ereCases {
+		got, err := ToGoERE(tc.pattern)
+		if err != nil {
+			t.Errorf("ToGoERE(%q): %v", tc.pattern, err)
+		} else if got != tc.want {
+			t.Errorf("ToGoERE(%q) = %q, want %q", tc.pattern, got, tc.want)
+		}
+	}
+}
+
+func TestPOSIXAnchorBackrefParity(t *testing.T) {
+	breCases := []struct {
+		pattern, in string
+		want        []int
+	}{
+		{`^\(a\)\1$`, "aa", []int{0, 2}},
+		{`a^\(b\)\1`, "a^bb", []int{0, 4}},
+		{`a$\(b\)\1`, "a$bb", []int{0, 4}},
+		{`\(^a\)\1`, "aa", []int{0, 2}},
+		{`\(a$\)\1`, "aa", nil},
+		{`\(^a\|b\)\1`, "aa", []int{0, 2}},
+		{`\(a$\|b\)\1`, "bb", []int{0, 2}},
+	}
+	for _, c := range breCases {
+		re, err := Compile(c.pattern)
+		if err != nil {
+			t.Errorf("Compile(%q): %v", c.pattern, err)
+			continue
+		}
+		if got := re.FindStringIndex(c.in); !sameInts(got, c.want) {
+			t.Errorf("BRE %q on %q = %v, want %v", c.pattern, c.in, got, c.want)
+		}
+	}
+
+	ereCases := []struct {
+		pattern, in string
+		want        []int
+	}{
+		{`^(a)\1$`, "aa", []int{0, 2}},
+		{`(a)\1^`, "aa^", []int{0, 3}},
+		{`(a)$\1`, "a$a", []int{0, 3}},
+		{`(a^)\1`, "a^a^", []int{0, 4}},
+		{`($a)\1`, "$a$a", []int{0, 4}},
+		{`(^a)\1`, "aa", []int{0, 2}},
+		{`(a$)\1`, "aa", nil},
+		{`(a^|b)\1`, "a^a^", []int{0, 4}},
+		{`($a|b)\1`, "$a$a", []int{0, 4}},
+	}
+	for _, c := range ereCases {
+		re, err := CompileEREWithFlags(c.pattern, "")
+		if err != nil {
+			t.Errorf("CompileEREWithFlags(%q): %v", c.pattern, err)
+			continue
+		}
+		if got := re.FindStringIndex(c.in); !sameInts(got, c.want) {
+			t.Errorf("ERE %q on %q = %v, want %v", c.pattern, c.in, got, c.want)
+		}
+	}
+}
+
+func TestPOSIXBackrefParticipationAndNumbering(t *testing.T) {
+	cases := []struct {
+		name, pattern, in string
+		want              []int
+	}{
+		{"optional group absent", `^\(a\)\{0,1\}\1$`, "", nil},
+		{"optional group participates", `^\(a\)\{0,1\}\1$`, "aa", []int{0, 2}},
+		{"optional empty group participates", `^\(a*\)\{0,1\}\1$`, "", []int{0, 0}},
+		{"nested group two", `\(\(a\)\2\)`, "aa", []int{0, 2}},
+		{"nested numbering", `^\(\(a\)b\)\1\2$`, "ababa", []int{0, 5}},
+		{"ninth group", `^\(a\)\(b\)\(c\)\(d\)\(e\)\(f\)\(g\)\(h\)\(i\)\9$`, "abcdefghii", []int{0, 10}},
+		{"interval repeats group then last capture", `^\(ab\)\{2\}\1$`, "ababab", []int{0, 6}},
+		{"interval repeats backref", `^\(a\)\1\{2\}$`, "aaa", []int{0, 3}},
+	}
+	for _, c := range cases {
+		re, err := Compile(c.pattern)
+		if err != nil {
+			t.Errorf("%s: Compile(%q): %v", c.name, c.pattern, err)
+			continue
+		}
+		if got := re.FindStringIndex(c.in); !sameInts(got, c.want) {
+			t.Errorf("%s: %q on %q = %v, want %v", c.name, c.pattern, c.in, got, c.want)
+		}
+	}
+}
+
+func TestPOSIXBackrefRequiresClosedGroup(t *testing.T) {
+	invalidBRE := []string{
+		`\1\(a\)`,
+		`\(a\1\)`,
+		`\(\(a\1\)\)`,
+	}
+	for _, pattern := range invalidBRE {
+		if _, err := Compile(pattern); err == nil {
+			t.Errorf("Compile(%q) succeeded, want invalid back-reference error", pattern)
+		}
+	}
+
+	invalidERE := []string{`\1(a)`, `(a\1)`, `((a\1))`}
+	for _, pattern := range invalidERE {
+		if _, err := CompileEREWithFlags(pattern, ""); err == nil {
+			t.Errorf("CompileEREWithFlags(%q) succeeded, want invalid back-reference error", pattern)
+		}
+	}
+
+	for _, c := range []struct{ pattern, in string }{
+		{`((a)\2)`, "aa"},
+		{`((a)b)\1\2`, "ababa"},
+	} {
+		re, err := CompileEREWithFlags(c.pattern, "")
+		if err != nil {
+			t.Errorf("CompileEREWithFlags(%q): %v", c.pattern, err)
+		} else if got := re.FindStringIndex(c.in); !sameInts(got, []int{0, len(c.in)}) {
+			t.Errorf("ERE %q on %q = %v, want full match", c.pattern, c.in, got)
+		}
+	}
+}
+
+func TestPOSIXBacktrackLeftmost(t *testing.T) {
+	cases := []struct {
+		pattern string
+		in      string
+		want    []int
+	}{
+		{`\(a\)\1`, "xaay", []int{1, 3}},
+		{`\(ab\)\1`, "zzababzz", []int{2, 6}},
+		{`\(a*\)b\1`, "aaba", []int{1, 4}},
+		{`\(.\)\1`, "abcdd", []int{3, 5}},
+	}
+	for _, c := range cases {
+		re, err := Compile(c.pattern)
+		if err != nil {
+			t.Fatalf("Compile(%q): %v", c.pattern, err)
+		}
+		if got := re.FindStringIndex(c.in); !sameInts(got, c.want) {
+			t.Errorf("%q on %q = %v, want leftmost %v", c.pattern, c.in, got, c.want)
+		}
+	}
+}
+
+func TestSedEscapes(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{`a\nb`, "a\nb"},
+		{`a\tb`, "a\tb"},
+		{`\r\f\v\a`, "\r\f\v\a"},
+		{`[\n]`, `[\n]`},
+
+		{`\(a\)\1`, `\(a\)\1`},
+		{`a\{2,3\}`, `a\{2,3\}`},
+		{`a\|b`, `a\|b`},
+		{`\<w\>`, `\<w\>`},
+		{`\w\s\b`, `\w\s\b`},
+		{`\.`, `\.`},
+
+		{`a\\nb`, `a\\nb`},
+		{`\\`, `\\`},
+
+		{`abc`, `abc`},
+		{`abc\`, `abc\`},
+	}
+	for _, c := range cases {
+		if got := SedEscapes(c.in); got != c.want {
+			t.Errorf("SedEscapes(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestDotAllFlag(t *testing.T) {
+	cases := []struct {
+		pattern string
+		flags   string
+		in      string
+		want    []int
+	}{
+		{`a.b`, "(?s)", "a\nb", []int{0, 3}},
+		{`a.b`, "", "a\nb", nil},
+
+		{`\(a\).\1`, "(?s)", "a\na", []int{0, 3}},
+		{`\(a\).\1`, "", "a\na", nil},
+
+		{`\(a\).\1`, "(?is)", "A\na", []int{0, 3}},
+	}
+	for _, c := range cases {
+		re, err := CompileWithFlags(c.pattern, c.flags)
+		if err != nil {
+			t.Fatalf("CompileWithFlags(%q, %q): %v", c.pattern, c.flags, err)
+		}
+		if got := re.FindStringIndex(c.in); !sameInts(got, c.want) {
+			t.Errorf("CompileWithFlags(%q, %q) on %q = %v, want %v", c.pattern, c.flags, c.in, got, c.want)
+		}
+	}
+}
