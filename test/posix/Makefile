@@ -5,7 +5,7 @@ TET_ROOT ?= $(CURDIR)/.local/tet3.8
 SANDBOX_CLI ?= $(ROOT)/assistant-sandbox
 
 
-WASM := $(ROOT)/assistant-sandbox-bash.wasm.gz
+WASM := $(ROOT)/assistant-bash.wasm.gz
 
 $(WASM):
 	@$(MAKE) --no-print-directory -C "$(ROOT)" guest
