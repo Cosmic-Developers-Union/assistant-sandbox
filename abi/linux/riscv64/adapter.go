@@ -25,6 +25,7 @@ const (
 	numberExit         = 93
 	numberExitGroup    = 94
 	numberClockGettime = 113
+	numberClockGetres  = 114
 	numberGetPID       = 172
 	numberGetPPID      = 173
 	numberGetUID       = 174
@@ -176,6 +177,8 @@ func syscallOf(number uint64) common.Syscall {
 		return common.SysLseek
 	case numberClockGettime:
 		return common.SysClockGettime
+	case numberClockGetres:
+		return common.SysClockGetres
 	case numberGetPID:
 		return common.SysGetPID
 	case numberGetPPID:

@@ -131,6 +131,8 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 		return s.identity(call)
 	case SysClockGettime:
 		return s.clockGettime(ctx, call)
+	case SysClockGetres:
+		return s.clockGetres(ctx, call)
 	case SysBrk:
 		return s.brk(ctx, call)
 	case SysUname:
@@ -772,6 +774,18 @@ func (s Syscalls) ftruncate(ctx context.Context, call Call) Reply {
 	}
 	if err := s.Descriptors.Truncate(ctx, call.Args[0], int64(call.Args[1])); err != nil {
 		return Reply{Errno: errnoOf(err)}
+	}
+	return Reply{}
+}
+
+func (s Syscalls) clockGetres(ctx context.Context, call Call) Reply {
+	if s.Memory == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	// 1ns resolution claim.
+	encoded := encodeTimespec(0, 1)
+	if err := s.Memory.Write(ctx, call.Args[1], encoded[:]); err != nil {
+		return Reply{Errno: errno.Fault}
 	}
 	return Reply{}
 }

@@ -39,6 +39,8 @@ const (
 
 	SysClockGettime
 
+	SysClockGetres
+
 	SysBrk
 
 	SysUname
