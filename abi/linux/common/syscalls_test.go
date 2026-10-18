@@ -66,6 +66,10 @@ func (d *fakeDescriptors) Write(_ context.Context, _ uint64, buffer []byte) (int
 	return len(buffer), nil
 }
 
+func (d *fakeDescriptors) Get(_ context.Context, descriptor uint64) (any, error) {
+	return nil, d.seekErr
+}
+
 func (d *fakeDescriptors) Truncate(_ context.Context, _ uint64, size int64) error {
 	return d.seekErr
 }
@@ -351,6 +355,9 @@ func (f *fakeFiles) Remove(_ context.Context, path string) error              { 
 func (f *fakeFiles) Symlink(_ context.Context, target, linkpath string) error { return f.err }
 func (f *fakeFiles) Link(_ context.Context, oldpath, newpath string) error    { return f.err }
 func (f *fakeFiles) Rename(_ context.Context, oldpath, newpath string) error  { return f.err }
+func (f *fakeFiles) ReadDir(_ context.Context, path string) ([]stdfs.DirEntry, error) {
+	return nil, f.err
+}
 
 func (f *fakeFiles) Readlink(_ context.Context, path string) (string, error) {
 	if f.err != nil {

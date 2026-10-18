@@ -322,6 +322,8 @@ func (f *rootFile) Truncate(size int64) abi.Errno {
 }
 func (f *rootFile) Sync() abi.Errno     { return errno(f.file.Sync()) }
 func (f *rootFile) Datasync() abi.Errno { return f.Sync() }
+func (f *rootFile) Name() string        { return f.name }
+
 func (f *rootFile) Close() abi.Errno {
 	if f.closed.Swap(true) {
 		return 0

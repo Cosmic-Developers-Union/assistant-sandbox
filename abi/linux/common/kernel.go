@@ -78,6 +78,16 @@ func (p ProcessDescriptors) Truncate(ctx context.Context, descriptor uint64, siz
 	return errno.Wrap(errno.NotSupported, "描述符不支持截断")
 }
 
+func (p ProcessDescriptors) Get(ctx context.Context, descriptor uint64) (any, error) {
+	if p.Table == nil {
+		return nil, errno.Wrap(errno.NotImplemented, "描述符端口未装配")
+	}
+	if descriptor > math.MaxUint32 {
+		return nil, errno.Wrap(errno.BadHandle, "描述符编号超出表示范围")
+	}
+	return p.Table.Get(ctx, p.PID, uint32(descriptor))
+}
+
 func (p ProcessDescriptors) stream(ctx context.Context, descriptor uint64) (fd.Stream, error) {
 	if p.Table == nil {
 		return nil, errno.Wrap(errno.NotImplemented, "描述符端口未装配")
@@ -149,6 +159,17 @@ func (p ProcessFiles) Link(ctx context.Context, oldpath, newpath string) error {
 		newpath = pathpkg.Join(p.Dir, newpath)
 	}
 	return p.System.Link(ctx, oldpath, newpath)
+}
+
+func (p ProcessFiles) ReadDir(ctx context.Context, path string) ([]stdfs.DirEntry, error) {
+	if p.System == nil {
+		return nil, errno.Wrap(errno.NotImplemented, "文件端口未装配")
+	}
+	target := path
+	if !strings.HasPrefix(target, "/") {
+		target = pathpkg.Join(p.Dir, target)
+	}
+	return p.System.ReadDir(ctx, target)
 }
 
 func (p ProcessFiles) Rename(ctx context.Context, oldpath, newpath string) error {
