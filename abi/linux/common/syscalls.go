@@ -144,6 +144,10 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 		return Reply{}
 	case SysPrlimit64:
 		return s.prlimit64(ctx, call)
+	case SysGetrlimit:
+		return s.getrlimit(ctx, call)
+	case SysSetrlimit:
+		return Reply{Value: 0}
 	case SysGetrusage:
 		return s.getrusage(ctx, call)
 	case SysGetitimer, SysSetitimer:
@@ -584,6 +588,23 @@ func (s Syscalls) faccessat(ctx context.Context, call Call) Reply {
 		return Reply{Errno: errnoOf(err)}
 	}
 	return Reply{}
+}
+
+func (s Syscalls) getrlimit(ctx context.Context, call Call) Reply {
+	if s.Memory == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	if call.Args[1] == 0 {
+		return Reply{Errno: errno.Invalid}
+	}
+	const infinity = ^uint64(0)
+	var encoded [16]byte
+	binary.LittleEndian.PutUint64(encoded[0:], infinity)
+	binary.LittleEndian.PutUint64(encoded[8:], infinity)
+	if err := s.Memory.Write(ctx, call.Args[1], encoded[:]); err != nil {
+		return Reply{Errno: errno.Fault}
+	}
+	return Reply{Value: 0}
 }
 
 func (s Syscalls) brk(ctx context.Context, call Call) Reply {

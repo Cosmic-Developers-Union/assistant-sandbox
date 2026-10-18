@@ -83,6 +83,9 @@ const (
 	SysMadvise
 
 	SysFaccessat
+
+	SysGetrlimit
+	SysSetrlimit
 )
 
 func (s Syscall) String() string {
@@ -141,6 +144,10 @@ func (s Syscall) String() string {
 		return "sched_yield"
 	case SysPrlimit64:
 		return "prlimit64"
+	case SysGetrlimit:
+		return "getrlimit"
+	case SysSetrlimit:
+		return "setrlimit"
 	case SysGetrusage:
 		return "getrusage"
 	case SysGetitimer:
