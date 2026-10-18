@@ -92,6 +92,7 @@ const (
 	numberPselect6      = 72
 	numberEventfd2      = 19
 	numberTimerfdCreate = 85
+	numberSignalfd4     = 74
 	numberReadlinkat    = 78
 	numberUmask         = 166
 	numberSync          = 81
@@ -339,6 +340,8 @@ func syscallOf(number uint64) common.Syscall {
 		return common.SysEventfd2
 	case numberTimerfdCreate:
 		return common.SysTimerfdCreate
+	case numberSignalfd4:
+		return common.SysSignalfd4
 	case numberReadlinkat:
 		return common.SysReadlinkat
 	case numberUmask:

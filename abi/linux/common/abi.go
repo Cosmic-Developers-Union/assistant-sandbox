@@ -146,6 +146,8 @@ const (
 	SysEventfd2
 
 	SysTimerfdCreate
+
+	SysSignalfd4
 )
 
 func (s Syscall) String() string {
@@ -316,6 +318,8 @@ func (s Syscall) String() string {
 		return "eventfd2"
 	case SysTimerfdCreate:
 		return "timerfd_create"
+	case SysSignalfd4:
+		return "signalfd4"
 	case SysReadlinkat:
 		return "readlinkat"
 	case SysUmask:
