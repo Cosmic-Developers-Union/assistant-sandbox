@@ -17,32 +17,31 @@ const (
 )
 
 const (
-	numberOpenAt        = 56
-	numberClose         = 57
-	numberLseek         = 62
-	numberRead          = 63
-	numberWrite         = 64
-	numberExit          = 93
-	numberExitGroup     = 94
-	numberClockGettime  = 113
-	numberGetPID        = 172
-	numberGetPPID       = 173
-	numberGetUID        = 174
-	numberGetEUID       = 175
-	numberGetGID        = 176
-	numberGetEGID       = 177
-	numberGetTID        = 178
-	numberBrk           = 214
-	numberUname         = 160
-	numberGetcwd        = 17
-	numberSysinfo       = 179
-	numberGetpgid       = 155
-	numberGetsid        = 156
-	numberGetpgrp       = 158
-	numberGethostname   = 161
-	numberGetdomainname = 163
-	numberTimes         = 153
-	numberGetrandom     = 278
+	numberOpenAt       = 56
+	numberClose        = 57
+	numberLseek        = 62
+	numberRead         = 63
+	numberWrite        = 64
+	numberExit         = 93
+	numberExitGroup    = 94
+	numberClockGettime = 113
+	numberGetPID       = 172
+	numberGetPPID      = 173
+	numberGetUID       = 174
+	numberGetEUID      = 175
+	numberGetGID       = 176
+	numberGetEGID      = 177
+	numberGetTID       = 178
+	numberBrk          = 214
+	numberUname        = 160
+	numberGetcwd       = 17
+	numberSysinfo      = 179
+	numberGetpgid      = 155
+	numberGetsid       = 156
+	numberGetpgrp      = 158
+	numberGethostname  = 161
+	numberTimes        = 153
+	numberGetrandom    = 278
 )
 
 const ecallInstruction = 0x00000073
@@ -170,12 +169,6 @@ func syscallOf(number uint64) common.Syscall {
 		return common.SysGetpgid
 	case numberGetsid:
 		return common.SysGetsid
-	case numberGetpgrp:
-		return common.SysGetpgrp
-	case numberGethostname:
-		return common.SysGethostname
-	case numberGetdomainname:
-		return common.SysGetdomainname
 	case numberTimes:
 		return common.SysTimes
 	case numberGetrandom:

@@ -123,12 +123,8 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 		return s.getcwd(ctx, call)
 	case SysSysinfo:
 		return s.sysinfo(ctx, call)
-	case SysGetpgid, SysGetsid, SysGetpgrp:
+	case SysGetpgid, SysGetsid:
 		return s.identity(call)
-	case SysGethostname:
-		return s.gethostname(ctx, call)
-	case SysGetdomainname:
-		return s.getdomainname(ctx, call)
 	case SysTimes:
 		return s.times(ctx, call)
 	default:
@@ -302,7 +298,7 @@ func (s Syscalls) identity(call Call) Reply {
 		return Reply{Errno: errno.NotImplemented}
 	}
 	switch call.Syscall {
-	case SysGetPID, SysGetTID, SysGetpgid, SysGetsid, SysGetpgrp:
+	case SysGetPID, SysGetTID, SysGetpgid, SysGetsid:
 		return Reply{Value: s.Identity.PID}
 	case SysGetPPID:
 		return Reply{Value: s.Identity.PPID}
@@ -484,49 +480,10 @@ func (s Syscalls) sysinfo(ctx context.Context, call Call) Reply {
 	return Reply{}
 }
 
-func (s Syscalls) gethostname(ctx context.Context, call Call) Reply {
-	if s.Memory == nil {
-		return Reply{Errno: errno.NotImplemented}
-	}
-	name := s.nodename()
-	size := call.Args[1]
-	encoded := append([]byte(name), 0)
-	if size == 0 {
-		return Reply{Errno: errno.Invalid}
-	}
-	if uint64(len(encoded)) > size {
-		return Reply{Errno: errno.Invalid}
-	}
-	if err := s.Memory.Write(ctx, call.Args[0], encoded); err != nil {
-		return Reply{Errno: errno.Fault}
-	}
-	return Reply{Value: uint64(len(name))}
-}
-
-func (s Syscalls) getdomainname(ctx context.Context, call Call) Reply {
-	if s.Memory == nil {
-		return Reply{Errno: errno.NotImplemented}
-	}
-	name := s.domainname()
-	size := call.Args[1]
-	encoded := append([]byte(name), 0)
-	if size == 0 {
-		return Reply{Errno: errno.Invalid}
-	}
-	if uint64(len(encoded)) > size {
-		return Reply{Errno: errno.Invalid}
-	}
-	if err := s.Memory.Write(ctx, call.Args[0], encoded); err != nil {
-		return Reply{Errno: errno.Fault}
-	}
-	return Reply{Value: uint64(len(name))}
-}
-
 func (s Syscalls) times(ctx context.Context, call Call) Reply {
 	if s.Memory == nil {
 		return Reply{Errno: errno.NotImplemented}
 	}
-	// struct tms: 4 * clock_t (8 bytes each on 64-bit) = 32 bytes, all zero.
 	var encoded [32]byte
 	if call.Args[0] != 0 {
 		if err := s.Memory.Write(ctx, call.Args[0], encoded[:]); err != nil {
