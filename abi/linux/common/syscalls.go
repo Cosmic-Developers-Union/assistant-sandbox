@@ -2,7 +2,6 @@ package common
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"io"
 	"strings"
@@ -65,6 +64,10 @@ const atCurrentWorkingDirectory = ^uint64(0) - 99
 
 const DefaultBufferLimit = 1 << 20
 
+type Random interface {
+	Read(context.Context, []byte) (int, error)
+}
+
 type Syscalls struct {
 	Memory Memory
 
@@ -79,6 +82,8 @@ type Syscalls struct {
 	Heap Heap
 
 	BufferLimit uint64
+
+	Random Random
 
 	Sysname    string
 	Nodename   string
@@ -419,7 +424,10 @@ func (s Syscalls) getrandom(ctx context.Context, call Call) Reply {
 		return Reply{Errno: errno.Invalid}
 	}
 	buffer := make([]byte, length)
-	if _, err := rand.Read(buffer); err != nil {
+	if s.Random == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	if _, err := s.Random.Read(ctx, buffer); err != nil {
 		return Reply{Errno: errno.IO}
 	}
 	if err := s.Memory.Write(ctx, call.Args[0], buffer); err != nil {
