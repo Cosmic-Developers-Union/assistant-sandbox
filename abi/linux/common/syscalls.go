@@ -127,6 +127,8 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 		return s.identity(call)
 	case SysGethostname:
 		return s.gethostname(ctx, call)
+	case SysGetdomainname:
+		return s.getdomainname(ctx, call)
 	default:
 		return Reply{Errno: errno.NotImplemented}
 	}
@@ -485,6 +487,25 @@ func (s Syscalls) gethostname(ctx context.Context, call Call) Reply {
 		return Reply{Errno: errno.NotImplemented}
 	}
 	name := s.nodename()
+	size := call.Args[1]
+	encoded := append([]byte(name), 0)
+	if size == 0 {
+		return Reply{Errno: errno.Invalid}
+	}
+	if uint64(len(encoded)) > size {
+		return Reply{Errno: errno.Invalid}
+	}
+	if err := s.Memory.Write(ctx, call.Args[0], encoded); err != nil {
+		return Reply{Errno: errno.Fault}
+	}
+	return Reply{Value: uint64(len(name))}
+}
+
+func (s Syscalls) getdomainname(ctx context.Context, call Call) Reply {
+	if s.Memory == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	name := s.domainname()
 	size := call.Args[1]
 	encoded := append([]byte(name), 0)
 	if size == 0 {
