@@ -62,6 +62,8 @@ const (
 	SysSchedYield
 
 	SysPrlimit64
+
+	SysGetrusage
 )
 
 func (s Syscall) String() string {
@@ -120,6 +122,8 @@ func (s Syscall) String() string {
 		return "sched_yield"
 	case SysPrlimit64:
 		return "prlimit64"
+	case SysGetrusage:
+		return "getrusage"
 	case SysGetcwd:
 		return "getcwd"
 	case SysGetrandom:

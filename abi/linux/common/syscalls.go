@@ -141,6 +141,8 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 		return Reply{}
 	case SysPrlimit64:
 		return s.prlimit64(ctx, call)
+	case SysGetrusage:
+		return s.getrusage(ctx, call)
 	default:
 		return Reply{Errno: errno.NotImplemented}
 	}
@@ -534,6 +536,20 @@ func (s Syscalls) prlimit64(ctx context.Context, call Call) Reply {
 		}
 	}
 	return Reply{}
+}
+
+func (s Syscalls) getrusage(ctx context.Context, call Call) Reply {
+	if s.Memory == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	if call.Args[1] == 0 {
+		return Reply{Errno: errno.Invalid}
+	}
+	var encoded [144]byte
+	if err := s.Memory.Write(ctx, call.Args[1], encoded[:]); err != nil {
+		return Reply{Errno: errno.Fault}
+	}
+	return Reply{Value: 0}
 }
 
 func (s Syscalls) brk(ctx context.Context, call Call) Reply {

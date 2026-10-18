@@ -44,6 +44,7 @@ const (
 	numberSetsid       = 157
 	numberSchedYield   = 124
 	numberPrlimit64    = 261
+	numberGetrusage    = 165
 	numberGetrandom    = 278
 )
 
@@ -184,6 +185,8 @@ func syscallOf(number uint64) common.Syscall {
 		return common.SysSchedYield
 	case numberPrlimit64:
 		return common.SysPrlimit64
+	case numberGetrusage:
+		return common.SysGetrusage
 	case numberGetrandom:
 		return common.SysGetrandom
 	case numberExit:
