@@ -173,6 +173,19 @@ func validCommand(name string) bool {
 
 func (r *Runtime) Close() error { return r.close() }
 
+// CloseWithDeadline 在截止时间前协作关闭；超时后取消基础上下文并返回超时错误。
+func (r *Runtime) CloseWithDeadline(ctx context.Context) error {
+	done := make(chan error, 1)
+	go func() { done <- r.close() }()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		r.cancelBase()
+		return ctx.Err()
+	}
+}
+
 func (r *Runtime) Execute(ctx context.Context, dir, command string, stdout, stderr io.Writer) (Result, error) {
 	full, err := filepath.Abs(dir)
 	if err != nil {
