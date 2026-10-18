@@ -164,6 +164,8 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 		return Reply{Value: 0}
 	case SysFaccessat:
 		return s.faccessat(ctx, call)
+	case SysSetuid, SysSetgid, SysSetreuid, SysSetregid, SysSetresuid, SysSetresgid, SysSetfsuid, SysSetfsgid:
+		return Reply{Value: 0}
 	default:
 		return Reply{Errno: errno.NotImplemented}
 	}

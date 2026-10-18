@@ -86,6 +86,15 @@ const (
 
 	SysGetrlimit
 	SysSetrlimit
+
+	SysSetuid
+	SysSetgid
+	SysSetreuid
+	SysSetregid
+	SysSetresuid
+	SysSetresgid
+	SysSetfsuid
+	SysSetfsgid
 )
 
 func (s Syscall) String() string {
@@ -178,6 +187,22 @@ func (s Syscall) String() string {
 		return "madvise"
 	case SysFaccessat:
 		return "faccessat"
+	case SysSetuid:
+		return "setuid"
+	case SysSetgid:
+		return "setgid"
+	case SysSetreuid:
+		return "setreuid"
+	case SysSetregid:
+		return "setregid"
+	case SysSetresuid:
+		return "setresuid"
+	case SysSetresgid:
+		return "setresgid"
+	case SysSetfsuid:
+		return "setfsuid"
+	case SysSetfsgid:
+		return "setfsgid"
 	case SysGetcwd:
 		return "getcwd"
 	case SysGetrandom:

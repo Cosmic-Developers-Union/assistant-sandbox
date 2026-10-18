@@ -61,6 +61,14 @@ const (
 	numberMincore      = 232
 	numberMadvise      = 233
 	numberFaccessat    = 48
+	numberSetuid       = 146
+	numberSetgid       = 144
+	numberSetreuid     = 145
+	numberSetregid     = 143
+	numberSetresuid    = 147
+	numberSetresgid    = 149
+	numberSetfsuid     = 151
+	numberSetfsgid     = 152
 	numberGetrandom    = 278
 )
 
@@ -235,6 +243,22 @@ func syscallOf(number uint64) common.Syscall {
 		return common.SysMadvise
 	case numberFaccessat:
 		return common.SysFaccessat
+	case numberSetuid:
+		return common.SysSetuid
+	case numberSetgid:
+		return common.SysSetgid
+	case numberSetreuid:
+		return common.SysSetreuid
+	case numberSetregid:
+		return common.SysSetregid
+	case numberSetresuid:
+		return common.SysSetresuid
+	case numberSetresgid:
+		return common.SysSetresgid
+	case numberSetfsuid:
+		return common.SysSetfsuid
+	case numberSetfsgid:
+		return common.SysSetfsgid
 	case numberGetrandom:
 		return common.SysGetrandom
 	case numberExit:
