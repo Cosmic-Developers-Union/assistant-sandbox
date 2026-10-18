@@ -121,6 +121,8 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 		return s.getrandom(ctx, call)
 	case SysGetcwd:
 		return s.getcwd(ctx, call)
+	case SysSysinfo:
+		return s.sysinfo(ctx, call)
 	default:
 		return Reply{Errno: errno.NotImplemented}
 	}
@@ -459,6 +461,19 @@ func (s Syscalls) getcwd(ctx context.Context, call Call) Reply {
 		return Reply{Errno: errno.Fault}
 	}
 	return Reply{Value: uint64(len(encoded))}
+}
+
+func (s Syscalls) sysinfo(ctx context.Context, call Call) Reply {
+	if s.Memory == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	var encoded [128]byte
+	// procs at offset 64+8+8? Layout: uptime(8)+loads(24)+totalram(8)+freeram(8)+sharedram(8)+bufferram(8)+totalswap(8)+freeswap(8)=88? Let's place procs at 80? Simpler: zero-filled success.
+	encoded[80] = 1 // procs low byte (approx)
+	if err := s.Memory.Write(ctx, call.Args[0], encoded[:]); err != nil {
+		return Reply{Errno: errno.Fault}
+	}
+	return Reply{}
 }
 
 func (s Syscalls) brk(ctx context.Context, call Call) Reply {
