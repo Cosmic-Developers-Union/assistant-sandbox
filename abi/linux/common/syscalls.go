@@ -29,6 +29,8 @@ type Descriptors interface {
 	Truncate(ctx context.Context, descriptor uint64, size int64) error
 
 	Get(ctx context.Context, descriptor uint64) (any, error)
+
+	Fcntl(ctx context.Context, descriptor uint64, cmd uint64, arg uint64) (uint64, error)
 }
 
 type SeekWhence int
@@ -194,6 +196,8 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 		return s.renameat(ctx, call)
 	case SysFtruncate:
 		return s.ftruncate(ctx, call)
+	case SysFcntl:
+		return s.fcntl(ctx, call)
 	case SysGetdents64:
 		return s.getdents64(ctx, call)
 	case SysReadlinkat:
@@ -915,6 +919,17 @@ func (s Syscalls) getdents64(ctx context.Context, call Call) Reply {
 		return Reply{Errno: errno.Fault}
 	}
 	return Reply{Value: uint64(len(out))}
+}
+
+func (s Syscalls) fcntl(ctx context.Context, call Call) Reply {
+	if s.Descriptors == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	value, err := s.Descriptors.Fcntl(ctx, call.Args[0], call.Args[1], call.Args[2])
+	if err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	return Reply{Value: value}
 }
 
 func (s Syscalls) brk(ctx context.Context, call Call) Reply {

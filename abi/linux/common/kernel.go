@@ -88,6 +88,37 @@ func (p ProcessDescriptors) Get(ctx context.Context, descriptor uint64) (any, er
 	return p.Table.Get(ctx, p.PID, uint32(descriptor))
 }
 
+func (p ProcessDescriptors) Fcntl(ctx context.Context, descriptor uint64, cmd uint64, arg uint64) (uint64, error) {
+	if p.Table == nil {
+		return 0, errno.Wrap(errno.NotImplemented, "描述符端口未装配")
+	}
+	if descriptor > math.MaxUint32 {
+		return 0, errno.Wrap(errno.BadHandle, "描述符编号超出表示范围")
+	}
+	table, ok := p.Table.(*fd.Table)
+	if !ok {
+		return 0, errno.Wrap(errno.NotSupported, "描述符表不支持 fcntl")
+	}
+	switch cmd {
+	case 1: // F_GETFD
+		cloexec, err := table.Cloexec(p.PID, uint32(descriptor))
+		if err != nil {
+			return 0, err
+		}
+		if cloexec {
+			return 1, nil // FD_CLOEXEC
+		}
+		return 0, nil
+	case 2: // F_SETFD
+		if err := table.SetCloexec(p.PID, uint32(descriptor), arg&1 != 0); err != nil {
+			return 0, err
+		}
+		return 0, nil
+	default:
+		return 0, errno.Wrap(errno.NotSupported, "fcntl 命令不被支持")
+	}
+}
+
 func (p ProcessDescriptors) stream(ctx context.Context, descriptor uint64) (fd.Stream, error) {
 	if p.Table == nil {
 		return nil, errno.Wrap(errno.NotImplemented, "描述符端口未装配")

@@ -187,6 +187,16 @@ func (t *Table) Close(ctx context.Context, pid uint64, id uint32) error {
 	return e.ref.release()
 }
 
+func (t *Table) Cloexec(pid uint64, id uint32) (bool, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	e := t.entries[pid][id]
+	if e == nil {
+		return false, errno.BadHandle
+	}
+	return e.cloexec, nil
+}
+
 func (t *Table) SetCloexec(pid uint64, id uint32, cloexec bool) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()

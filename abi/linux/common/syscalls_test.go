@@ -66,6 +66,10 @@ func (d *fakeDescriptors) Write(_ context.Context, _ uint64, buffer []byte) (int
 	return len(buffer), nil
 }
 
+func (d *fakeDescriptors) Fcntl(_ context.Context, descriptor uint64, cmd uint64, arg uint64) (uint64, error) {
+	return 0, d.seekErr
+}
+
 func (d *fakeDescriptors) Get(_ context.Context, descriptor uint64) (any, error) {
 	return nil, d.seekErr
 }
