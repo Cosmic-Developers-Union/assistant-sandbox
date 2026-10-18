@@ -2,6 +2,7 @@ package common
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"io"
 	"strings"
@@ -136,6 +137,10 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 			return Reply{Errno: errno.NotImplemented}
 		}
 		return Reply{Value: s.Identity.PID}
+	case SysSchedYield:
+		return Reply{}
+	case SysPrlimit64:
+		return s.prlimit64(ctx, call)
 	default:
 		return Reply{Errno: errno.NotImplemented}
 	}
@@ -512,6 +517,23 @@ func (s Syscalls) getgroups(ctx context.Context, call Call) Reply {
 	}
 	// No supplementary groups in this ABI profile.
 	return Reply{Value: 0}
+}
+
+func (s Syscalls) prlimit64(ctx context.Context, call Call) Reply {
+	if s.Memory == nil && call.Args[2] != 0 {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	// RLIM_INFINITY
+	const infinity = ^uint64(0)
+	if call.Args[2] != 0 {
+		var encoded [16]byte
+		binary.LittleEndian.PutUint64(encoded[0:], infinity)
+		binary.LittleEndian.PutUint64(encoded[8:], infinity)
+		if err := s.Memory.Write(ctx, call.Args[2], encoded[:]); err != nil {
+			return Reply{Errno: errno.Fault}
+		}
+	}
+	return Reply{}
 }
 
 func (s Syscalls) brk(ctx context.Context, call Call) Reply {
