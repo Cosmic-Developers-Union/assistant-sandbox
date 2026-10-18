@@ -85,6 +85,9 @@ const (
 	numberGetsockopt   = 209
 	numberGetsockname  = 204
 	numberGetpeername  = 205
+	numberEpollCreate1 = 20
+	numberEpollCtl     = 21
+	numberEpollPwait   = 22
 	numberReadlinkat   = 78
 	numberUmask        = 166
 	numberSync         = 81
@@ -318,6 +321,12 @@ func syscallOf(number uint64) common.Syscall {
 		return common.SysGetsockname
 	case numberGetpeername:
 		return common.SysGetpeername
+	case numberEpollCreate1:
+		return common.SysEpollCreate1
+	case numberEpollCtl:
+		return common.SysEpollCtl
+	case numberEpollPwait:
+		return common.SysEpollPwait
 	case numberReadlinkat:
 		return common.SysReadlinkat
 	case numberUmask:
