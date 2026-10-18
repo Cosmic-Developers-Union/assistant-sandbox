@@ -95,6 +95,8 @@ const (
 	numberOpenat2         = 437
 	numberPidfdGetfd      = 438
 	numberFaccessat2      = 439
+	numberFallocate       = 47
+	numberFadvise64       = 223
 	numberEpollCreate1    = 20
 	numberEpollCtl        = 21
 	numberEpollPwait      = 22
@@ -361,6 +363,10 @@ func syscallOf(number uint64) common.Syscall {
 		return common.SysPidfdGetfd
 	case numberFaccessat2:
 		return common.SysFaccessat2
+	case numberFallocate:
+		return common.SysFallocate
+	case numberFadvise64:
+		return common.SysFadvise64
 	case numberEpollCreate1:
 		return common.SysEpollCreate1
 	case numberEpollCtl:

@@ -148,6 +148,9 @@ const (
 	SysPidfdGetfd
 	SysFaccessat2
 
+	SysFallocate
+	SysFadvise64
+
 	SysEpollCreate1
 	SysEpollCtl
 	SysEpollPwait
@@ -344,6 +347,10 @@ func (s Syscall) String() string {
 		return "pidfd_getfd"
 	case SysFaccessat2:
 		return "faccessat2"
+	case SysFallocate:
+		return "fallocate"
+	case SysFadvise64:
+		return "fadvise64"
 	case SysEpollCreate1:
 		return "epoll_create1"
 	case SysEpollCtl:
