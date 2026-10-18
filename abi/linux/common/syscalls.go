@@ -129,6 +129,13 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 		return s.times(ctx, call)
 	case SysGetgroups:
 		return s.getgroups(ctx, call)
+	case SysSetpgid:
+		return Reply{}
+	case SysSetsid:
+		if s.Identity == nil {
+			return Reply{Errno: errno.NotImplemented}
+		}
+		return Reply{Value: s.Identity.PID}
 	default:
 		return Reply{Errno: errno.NotImplemented}
 	}
