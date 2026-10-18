@@ -49,11 +49,8 @@ const (
 	numberGetrusage    = 165
 	numberGetitimer    = 102
 	numberSetitimer    = 103
-	numberAlarm        = 37
-	numberPause        = 29
 	numberGetpriority  = 141
 	numberSetpriority  = 140
-	numberNice         = 34
 	numberMlock        = 228
 	numberMunlock      = 229
 	numberMlockall     = 230
@@ -61,6 +58,12 @@ const (
 	numberMincore      = 232
 	numberMadvise      = 233
 	numberFaccessat    = 48
+	numberMkdirat      = 34
+	numberUnlinkat     = 35
+	numberSymlinkat    = 36
+	numberLinkat       = 37
+	numberRenameat     = 38
+	numberRenameat2    = 276
 	numberReadlinkat   = 78
 	numberSetuid       = 146
 	numberSetgid       = 144
@@ -220,16 +223,10 @@ func syscallOf(number uint64) common.Syscall {
 		return common.SysGetitimer
 	case numberSetitimer:
 		return common.SysSetitimer
-	case numberAlarm:
-		return common.SysAlarm
-	case numberPause:
-		return common.SysPause
 	case numberGetpriority:
 		return common.SysGetpriority
 	case numberSetpriority:
 		return common.SysSetpriority
-	case numberNice:
-		return common.SysNice
 	case numberMlock:
 		return common.SysMlock
 	case numberMunlock:
@@ -244,6 +241,16 @@ func syscallOf(number uint64) common.Syscall {
 		return common.SysMadvise
 	case numberFaccessat:
 		return common.SysFaccessat
+	case numberMkdirat:
+		return common.SysMkdirat
+	case numberUnlinkat:
+		return common.SysUnlinkat
+	case numberSymlinkat:
+		return common.SysSymlinkat
+	case numberLinkat:
+		return common.SysLinkat
+	case numberRenameat, numberRenameat2:
+		return common.SysRenameat
 	case numberReadlinkat:
 		return common.SysReadlinkat
 	case numberSetuid:

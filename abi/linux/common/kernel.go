@@ -86,6 +86,64 @@ type ProcessFiles struct {
 	Dir string
 }
 
+func (p ProcessFiles) Mkdir(ctx context.Context, path string, mode uint32) error {
+	if p.System == nil {
+		return errno.Wrap(errno.NotImplemented, "文件端口未装配")
+	}
+	target := path
+	if !strings.HasPrefix(target, "/") {
+		target = pathpkg.Join(p.Dir, target)
+	}
+	return p.System.Mkdir(ctx, target, stdfs.FileMode(mode))
+}
+
+func (p ProcessFiles) Remove(ctx context.Context, path string) error {
+	if p.System == nil {
+		return errno.Wrap(errno.NotImplemented, "文件端口未装配")
+	}
+	target := path
+	if !strings.HasPrefix(target, "/") {
+		target = pathpkg.Join(p.Dir, target)
+	}
+	return p.System.Remove(ctx, target)
+}
+
+func (p ProcessFiles) Symlink(ctx context.Context, target, linkpath string) error {
+	if p.System == nil {
+		return errno.Wrap(errno.NotImplemented, "文件端口未装配")
+	}
+	if !strings.HasPrefix(linkpath, "/") {
+		linkpath = pathpkg.Join(p.Dir, linkpath)
+	}
+	return p.System.Symlink(ctx, target, linkpath)
+}
+
+func (p ProcessFiles) Link(ctx context.Context, oldpath, newpath string) error {
+	if p.System == nil {
+		return errno.Wrap(errno.NotImplemented, "文件端口未装配")
+	}
+	if !strings.HasPrefix(oldpath, "/") {
+		oldpath = pathpkg.Join(p.Dir, oldpath)
+	}
+	if !strings.HasPrefix(newpath, "/") {
+		newpath = pathpkg.Join(p.Dir, newpath)
+	}
+	return p.System.Link(ctx, oldpath, newpath)
+}
+
+func (p ProcessFiles) Rename(ctx context.Context, oldpath, newpath string) error {
+	if p.System == nil {
+		return errno.Wrap(errno.NotImplemented, "文件端口未装配")
+	}
+	if !strings.HasPrefix(oldpath, "/") {
+		oldpath = pathpkg.Join(p.Dir, oldpath)
+	}
+	if !strings.HasPrefix(newpath, "/") {
+		newpath = pathpkg.Join(p.Dir, newpath)
+	}
+	return p.System.Rename(ctx, oldpath, newpath)
+}
+
 func (p ProcessFiles) Readlink(ctx context.Context, path string) (string, error) {
 	if p.System == nil {
 		return "", errno.Wrap(errno.NotImplemented, "文件端口未装配")

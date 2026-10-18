@@ -68,13 +68,8 @@ const (
 	SysGetitimer
 	SysSetitimer
 
-	SysAlarm
-	SysPause
-
 	SysGetpriority
 	SysSetpriority
-	SysNice
-
 	SysMlock
 	SysMunlock
 	SysMlockall
@@ -97,6 +92,13 @@ const (
 	SysSetfsgid
 
 	SysReadlinkat
+
+	SysMkdirat
+	SysUnlinkat
+	SysSymlinkat
+	SysLinkat
+	SysRenameat
+	SysRenameat2
 )
 
 func (s Syscall) String() string {
@@ -165,16 +167,10 @@ func (s Syscall) String() string {
 		return "getitimer"
 	case SysSetitimer:
 		return "setitimer"
-	case SysAlarm:
-		return "alarm"
-	case SysPause:
-		return "pause"
 	case SysGetpriority:
 		return "getpriority"
 	case SysSetpriority:
 		return "setpriority"
-	case SysNice:
-		return "nice"
 	case SysMlock:
 		return "mlock"
 	case SysMunlock:
@@ -205,6 +201,18 @@ func (s Syscall) String() string {
 		return "setfsuid"
 	case SysSetfsgid:
 		return "setfsgid"
+	case SysMkdirat:
+		return "mkdirat"
+	case SysUnlinkat:
+		return "unlinkat"
+	case SysSymlinkat:
+		return "symlinkat"
+	case SysLinkat:
+		return "linkat"
+	case SysRenameat:
+		return "renameat"
+	case SysRenameat2:
+		return "renameat2"
 	case SysReadlinkat:
 		return "readlinkat"
 	case SysGetcwd:

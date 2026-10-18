@@ -62,6 +62,16 @@ type Files interface {
 	Stat(ctx context.Context, path string) (stdfs.FileInfo, error)
 
 	Readlink(ctx context.Context, path string) (string, error)
+
+	Mkdir(ctx context.Context, path string, mode uint32) error
+
+	Remove(ctx context.Context, path string) error
+
+	Symlink(ctx context.Context, target, linkpath string) error
+
+	Link(ctx context.Context, oldpath, newpath string) error
+
+	Rename(ctx context.Context, oldpath, newpath string) error
 }
 
 const PathLimit = 4096
@@ -154,11 +164,7 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 		return s.getrusage(ctx, call)
 	case SysGetitimer, SysSetitimer:
 		return Reply{Value: 0}
-	case SysAlarm:
-		return Reply{Value: 0}
-	case SysPause:
-		return Reply{Errno: errno.Interrupted}
-	case SysGetpriority, SysSetpriority, SysNice:
+	case SysGetpriority, SysSetpriority:
 		return Reply{Value: 0}
 	case SysMlock, SysMunlock, SysMlockall, SysMunlockall, SysMadvise:
 		return Reply{Value: 0}
@@ -166,6 +172,16 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 		return Reply{Value: 0}
 	case SysFaccessat:
 		return s.faccessat(ctx, call)
+	case SysMkdirat:
+		return s.mkdirat(ctx, call)
+	case SysUnlinkat:
+		return s.unlinkat(ctx, call)
+	case SysSymlinkat:
+		return s.symlinkat(ctx, call)
+	case SysLinkat:
+		return s.linkat(ctx, call)
+	case SysRenameat, SysRenameat2:
+		return s.renameat(ctx, call)
 	case SysReadlinkat:
 		return s.readlinkat(ctx, call)
 	case SysSetuid, SysSetgid, SysSetreuid, SysSetregid, SysSetresuid, SysSetresgid, SysSetfsuid, SysSetfsgid:
@@ -640,6 +656,106 @@ func (s Syscalls) readlinkat(ctx context.Context, call Call) Reply {
 		return Reply{Errno: errno.Fault}
 	}
 	return Reply{Value: uint64(len(target))}
+}
+
+func (s Syscalls) mkdirat(ctx context.Context, call Call) Reply {
+	if s.Files == nil || s.Memory == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	if call.Args[0] != atCurrentWorkingDirectory {
+		return Reply{Errno: errno.NotSupported}
+	}
+	path, code := s.readPath(ctx, call.Args[1])
+	if code != "" {
+		return Reply{Errno: code}
+	}
+	mode := uint32(call.Args[2])
+	if err := s.Files.Mkdir(ctx, path, mode); err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	return Reply{}
+}
+
+func (s Syscalls) unlinkat(ctx context.Context, call Call) Reply {
+	if s.Files == nil || s.Memory == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	if call.Args[0] != atCurrentWorkingDirectory {
+		return Reply{Errno: errno.NotSupported}
+	}
+	path, code := s.readPath(ctx, call.Args[1])
+	if code != "" {
+		return Reply{Errno: code}
+	}
+	flags := call.Args[2]
+	_ = flags
+	if err := s.Files.Remove(ctx, path); err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	return Reply{}
+}
+
+func (s Syscalls) symlinkat(ctx context.Context, call Call) Reply {
+	if s.Files == nil || s.Memory == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	target, code := s.readPath(ctx, call.Args[0])
+	if code != "" {
+		return Reply{Errno: code}
+	}
+	if call.Args[1] != atCurrentWorkingDirectory {
+		return Reply{Errno: errno.NotSupported}
+	}
+	linkpath, code := s.readPath(ctx, call.Args[2])
+	if code != "" {
+		return Reply{Errno: code}
+	}
+	if err := s.Files.Symlink(ctx, target, linkpath); err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	return Reply{}
+}
+
+func (s Syscalls) linkat(ctx context.Context, call Call) Reply {
+	if s.Files == nil || s.Memory == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	if call.Args[0] != atCurrentWorkingDirectory || call.Args[2] != atCurrentWorkingDirectory {
+		return Reply{Errno: errno.NotSupported}
+	}
+	oldpath, code := s.readPath(ctx, call.Args[1])
+	if code != "" {
+		return Reply{Errno: code}
+	}
+	newpath, code := s.readPath(ctx, call.Args[3])
+	if code != "" {
+		return Reply{Errno: code}
+	}
+	if err := s.Files.Link(ctx, oldpath, newpath); err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	return Reply{}
+}
+
+func (s Syscalls) renameat(ctx context.Context, call Call) Reply {
+	if s.Files == nil || s.Memory == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	if call.Args[0] != atCurrentWorkingDirectory || call.Args[2] != atCurrentWorkingDirectory {
+		return Reply{Errno: errno.NotSupported}
+	}
+	oldpath, code := s.readPath(ctx, call.Args[1])
+	if code != "" {
+		return Reply{Errno: code}
+	}
+	newpath, code := s.readPath(ctx, call.Args[3])
+	if code != "" {
+		return Reply{Errno: code}
+	}
+	if err := s.Files.Rename(ctx, oldpath, newpath); err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	return Reply{}
 }
 
 func (s Syscalls) brk(ctx context.Context, call Call) Reply {

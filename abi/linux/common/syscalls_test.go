@@ -342,6 +342,12 @@ type fakeFiles struct {
 	err      error
 }
 
+func (f *fakeFiles) Mkdir(_ context.Context, path string, mode uint32) error  { return f.err }
+func (f *fakeFiles) Remove(_ context.Context, path string) error              { return f.err }
+func (f *fakeFiles) Symlink(_ context.Context, target, linkpath string) error { return f.err }
+func (f *fakeFiles) Link(_ context.Context, oldpath, newpath string) error    { return f.err }
+func (f *fakeFiles) Rename(_ context.Context, oldpath, newpath string) error  { return f.err }
+
 func (f *fakeFiles) Readlink(_ context.Context, path string) (string, error) {
 	if f.err != nil {
 		return "", f.err
