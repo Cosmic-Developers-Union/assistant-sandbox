@@ -140,6 +140,8 @@ const (
 	SysEpollPwait
 
 	SysPpoll
+
+	SysPselect6
 )
 
 func (s Syscall) String() string {
@@ -304,6 +306,8 @@ func (s Syscall) String() string {
 		return "epoll_pwait"
 	case SysPpoll:
 		return "ppoll"
+	case SysPselect6:
+		return "pselect6"
 	case SysReadlinkat:
 		return "readlinkat"
 	case SysUmask:

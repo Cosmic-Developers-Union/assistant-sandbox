@@ -89,6 +89,7 @@ const (
 	numberEpollCtl     = 21
 	numberEpollPwait   = 22
 	numberPpoll        = 73
+	numberPselect6     = 72
 	numberReadlinkat   = 78
 	numberUmask        = 166
 	numberSync         = 81
@@ -330,6 +331,8 @@ func syscallOf(number uint64) common.Syscall {
 		return common.SysEpollPwait
 	case numberPpoll:
 		return common.SysPpoll
+	case numberPselect6:
+		return common.SysPselect6
 	case numberReadlinkat:
 		return common.SysReadlinkat
 	case numberUmask:
