@@ -34,6 +34,7 @@ const (
 	numberGetTID       = 178
 	numberBrk          = 214
 	numberUname        = 160
+	numberGetcwd       = 17
 	numberGetrandom    = 278
 )
 
@@ -154,6 +155,8 @@ func syscallOf(number uint64) common.Syscall {
 		return common.SysWrite
 	case numberUname:
 		return common.SysUname
+	case numberGetcwd:
+		return common.SysGetcwd
 	case numberGetrandom:
 		return common.SysGetrandom
 	case numberExit:

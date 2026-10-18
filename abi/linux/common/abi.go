@@ -43,6 +43,8 @@ const (
 
 	SysUname
 
+	SysGetcwd
+
 	SysGetrandom
 )
 
@@ -84,6 +86,8 @@ func (s Syscall) String() string {
 		return "brk"
 	case SysUname:
 		return "uname"
+	case SysGetcwd:
+		return "getcwd"
 	case SysGetrandom:
 		return "getrandom"
 	default:

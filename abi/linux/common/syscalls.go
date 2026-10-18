@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"io"
+	"strings"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 )
@@ -85,6 +86,8 @@ type Syscalls struct {
 	Version    string
 	Machine    string
 	Domainname string
+
+	Cwd string
 }
 
 func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
@@ -111,6 +114,8 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 		return s.uname(ctx, call)
 	case SysGetrandom:
 		return s.getrandom(ctx, call)
+	case SysGetcwd:
+		return s.getcwd(ctx, call)
 	default:
 		return Reply{Errno: errno.NotImplemented}
 	}
@@ -421,6 +426,31 @@ func (s Syscalls) getrandom(ctx context.Context, call Call) Reply {
 		return Reply{Errno: errno.Fault}
 	}
 	return Reply{Value: length}
+}
+
+func (s Syscalls) getcwd(ctx context.Context, call Call) Reply {
+	if s.Memory == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	cwd := s.Cwd
+	if cwd == "" {
+		cwd = "/"
+	}
+	if !strings.HasPrefix(cwd, "/") {
+		cwd = "/" + cwd
+	}
+	size := call.Args[1]
+	encoded := append([]byte(cwd), 0)
+	if size == 0 {
+		return Reply{Errno: errno.Invalid}
+	}
+	if uint64(len(encoded)) > size {
+		return Reply{Errno: errno.Range}
+	}
+	if err := s.Memory.Write(ctx, call.Args[0], encoded); err != nil {
+		return Reply{Errno: errno.Fault}
+	}
+	return Reply{Value: uint64(len(encoded))}
 }
 
 func (s Syscalls) brk(ctx context.Context, call Call) Reply {
