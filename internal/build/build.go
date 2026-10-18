@@ -98,7 +98,7 @@ func dependencySource(dir, name string) (string, error) {
 	download := exec.Command("go", "mod", "download", name)
 	download.Dir = dir
 	if output, err := download.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("下载依赖 %s: %w: %s", name, err, bytes.TrimSpace(output))
+		return "", fmt.Errorf("下载依赖 %s 失败（离线或网络受限时请预置 GOMODCACHE）: %w: %s", name, err, bytes.TrimSpace(output))
 	}
 	locate := exec.Command("go", "list", "-m", "-f", "{{.Dir}}", name)
 	locate.Dir = dir
