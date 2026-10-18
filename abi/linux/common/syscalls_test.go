@@ -342,6 +342,13 @@ type fakeFiles struct {
 	err      error
 }
 
+func (f *fakeFiles) Readlink(_ context.Context, path string) (string, error) {
+	if f.err != nil {
+		return "", f.err
+	}
+	return "", nil
+}
+
 func (f *fakeFiles) Stat(_ context.Context, path string) (stdfs.FileInfo, error) {
 	if f.err != nil {
 		return nil, f.err

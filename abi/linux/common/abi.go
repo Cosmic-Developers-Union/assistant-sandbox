@@ -95,6 +95,8 @@ const (
 	SysSetresgid
 	SysSetfsuid
 	SysSetfsgid
+
+	SysReadlinkat
 )
 
 func (s Syscall) String() string {
@@ -203,6 +205,8 @@ func (s Syscall) String() string {
 		return "setfsuid"
 	case SysSetfsgid:
 		return "setfsgid"
+	case SysReadlinkat:
+		return "readlinkat"
 	case SysGetcwd:
 		return "getcwd"
 	case SysGetrandom:

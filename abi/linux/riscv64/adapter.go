@@ -61,6 +61,7 @@ const (
 	numberMincore      = 232
 	numberMadvise      = 233
 	numberFaccessat    = 48
+	numberReadlinkat   = 78
 	numberSetuid       = 146
 	numberSetgid       = 144
 	numberSetreuid     = 145
@@ -243,6 +244,8 @@ func syscallOf(number uint64) common.Syscall {
 		return common.SysMadvise
 	case numberFaccessat:
 		return common.SysFaccessat
+	case numberReadlinkat:
+		return common.SysReadlinkat
 	case numberSetuid:
 		return common.SysSetuid
 	case numberSetgid:

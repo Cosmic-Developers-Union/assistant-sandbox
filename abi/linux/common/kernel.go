@@ -86,6 +86,17 @@ type ProcessFiles struct {
 	Dir string
 }
 
+func (p ProcessFiles) Readlink(ctx context.Context, path string) (string, error) {
+	if p.System == nil {
+		return "", errno.Wrap(errno.NotImplemented, "文件端口未装配")
+	}
+	target := path
+	if !strings.HasPrefix(target, "/") {
+		target = pathpkg.Join(p.Dir, target)
+	}
+	return p.System.Readlink(ctx, target)
+}
+
 func (p ProcessFiles) Stat(ctx context.Context, path string) (stdfs.FileInfo, error) {
 	if p.System == nil {
 		return nil, errno.Wrap(errno.NotImplemented, "文件端口未装配")

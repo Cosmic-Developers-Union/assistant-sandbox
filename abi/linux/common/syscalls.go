@@ -60,6 +60,8 @@ type Files interface {
 	Open(ctx context.Context, request OpenRequest) (uint64, error)
 
 	Stat(ctx context.Context, path string) (stdfs.FileInfo, error)
+
+	Readlink(ctx context.Context, path string) (string, error)
 }
 
 const PathLimit = 4096
@@ -164,6 +166,8 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 		return Reply{Value: 0}
 	case SysFaccessat:
 		return s.faccessat(ctx, call)
+	case SysReadlinkat:
+		return s.readlinkat(ctx, call)
 	case SysSetuid, SysSetgid, SysSetreuid, SysSetregid, SysSetresuid, SysSetresgid, SysSetfsuid, SysSetfsgid:
 		return Reply{Value: 0}
 	default:
@@ -607,6 +611,35 @@ func (s Syscalls) getrlimit(ctx context.Context, call Call) Reply {
 		return Reply{Errno: errno.Fault}
 	}
 	return Reply{Value: 0}
+}
+
+func (s Syscalls) readlinkat(ctx context.Context, call Call) Reply {
+	if s.Files == nil || s.Memory == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	if call.Args[0] != atCurrentWorkingDirectory {
+		return Reply{Errno: errno.NotSupported}
+	}
+	path, code := s.readPath(ctx, call.Args[1])
+	if code != "" {
+		return Reply{Errno: code}
+	}
+	target, err := s.Files.Readlink(ctx, path)
+	if err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	size := call.Args[3]
+	if size == 0 {
+		return Reply{Errno: errno.Invalid}
+	}
+	data := []byte(target)
+	if uint64(len(data)) > size {
+		data = data[:size]
+	}
+	if err := s.Memory.Write(ctx, call.Args[2], data); err != nil {
+		return Reply{Errno: errno.Fault}
+	}
+	return Reply{Value: uint64(len(target))}
 }
 
 func (s Syscalls) brk(ctx context.Context, call Call) Reply {
