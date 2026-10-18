@@ -58,6 +58,8 @@ const (
 
 	SysSetpgid
 	SysSetsid
+
+	SysSchedYield
 )
 
 func (s Syscall) String() string {
@@ -112,6 +114,8 @@ func (s Syscall) String() string {
 		return "setpgid"
 	case SysSetsid:
 		return "setsid"
+	case SysSchedYield:
+		return "sched_yield"
 	case SysGetcwd:
 		return "getcwd"
 	case SysGetrandom:
