@@ -97,6 +97,10 @@ const (
 	numberFaccessat2      = 439
 	numberFallocate       = 47
 	numberFadvise64       = 223
+	numberMount           = 40
+	numberUmount2         = 39
+	numberPivotRoot       = 41
+	numberChroot          = 51
 	numberEpollCreate1    = 20
 	numberEpollCtl        = 21
 	numberEpollPwait      = 22
@@ -367,6 +371,14 @@ func syscallOf(number uint64) common.Syscall {
 		return common.SysFallocate
 	case numberFadvise64:
 		return common.SysFadvise64
+	case numberMount:
+		return common.SysMount
+	case numberUmount2:
+		return common.SysUmount2
+	case numberPivotRoot:
+		return common.SysPivotRoot
+	case numberChroot:
+		return common.SysChroot
 	case numberEpollCreate1:
 		return common.SysEpollCreate1
 	case numberEpollCtl:

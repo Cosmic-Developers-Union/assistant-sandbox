@@ -151,6 +151,11 @@ const (
 	SysFallocate
 	SysFadvise64
 
+	SysMount
+	SysUmount2
+	SysPivotRoot
+	SysChroot
+
 	SysEpollCreate1
 	SysEpollCtl
 	SysEpollPwait
@@ -351,6 +356,14 @@ func (s Syscall) String() string {
 		return "fallocate"
 	case SysFadvise64:
 		return "fadvise64"
+	case SysMount:
+		return "mount"
+	case SysUmount2:
+		return "umount2"
+	case SysPivotRoot:
+		return "pivot_root"
+	case SysChroot:
+		return "chroot"
 	case SysEpollCreate1:
 		return "epoll_create1"
 	case SysEpollCtl:
