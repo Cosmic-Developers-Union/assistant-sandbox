@@ -41,6 +41,8 @@ const (
 
 	SysClockGetres
 
+	SysGettimeofday
+
 	SysBrk
 
 	SysUname
@@ -145,6 +147,10 @@ func (s Syscall) String() string {
 		return "getegid"
 	case SysClockGettime:
 		return "clock_gettime"
+	case SysClockGetres:
+		return "clock_getres"
+	case SysGettimeofday:
+		return "gettimeofday"
 	case SysBrk:
 		return "brk"
 	case SysUname:

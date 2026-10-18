@@ -133,6 +133,8 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 		return s.clockGettime(ctx, call)
 	case SysClockGetres:
 		return s.clockGetres(ctx, call)
+	case SysGettimeofday:
+		return s.gettimeofday(ctx, call)
 	case SysBrk:
 		return s.brk(ctx, call)
 	case SysUname:
@@ -788,6 +790,31 @@ func (s Syscalls) clockGetres(ctx context.Context, call Call) Reply {
 		return Reply{Errno: errno.Fault}
 	}
 	return Reply{}
+}
+
+func (s Syscalls) gettimeofday(ctx context.Context, call Call) Reply {
+	if s.Clock == nil || s.Memory == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	wall, err := s.Clock.Wall(ctx)
+	if err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	seconds := wall / nanosPerSecond
+	micros := (wall % nanosPerSecond) / 1000
+	if wall < 0 && wall%nanosPerSecond != 0 {
+		seconds--
+		micros = ((wall % nanosPerSecond) + nanosPerSecond) / 1000
+	}
+	var encoded [16]byte
+	binary.LittleEndian.PutUint64(encoded[0:], uint64(seconds))
+	binary.LittleEndian.PutUint64(encoded[8:], uint64(micros))
+	if call.Args[0] != 0 {
+		if err := s.Memory.Write(ctx, call.Args[0], encoded[:]); err != nil {
+			return Reply{Errno: errno.Fault}
+		}
+	}
+	return Reply{Value: 0}
 }
 
 func (s Syscalls) brk(ctx context.Context, call Call) Reply {
