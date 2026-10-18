@@ -42,6 +42,8 @@ const (
 	SysBrk
 
 	SysUname
+
+	SysGetrandom
 )
 
 func (s Syscall) String() string {
@@ -82,6 +84,8 @@ func (s Syscall) String() string {
 		return "brk"
 	case SysUname:
 		return "uname"
+	case SysGetrandom:
+		return "getrandom"
 	default:
 		return fmt.Sprintf("syscall(%d)", uint16(s))
 	}

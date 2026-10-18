@@ -2,6 +2,7 @@ package common
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"io"
 
@@ -108,6 +109,8 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 		return s.brk(ctx, call)
 	case SysUname:
 		return s.uname(ctx, call)
+	case SysGetrandom:
+		return s.getrandom(ctx, call)
 	default:
 		return Reply{Errno: errno.NotImplemented}
 	}
@@ -393,6 +396,31 @@ func (s Syscalls) domainname() string {
 		return "(none)"
 	}
 	return s.Domainname
+}
+
+func (s Syscalls) getrandom(ctx context.Context, call Call) Reply {
+	if s.Memory == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	length := call.Args[1]
+	if length == 0 {
+		return Reply{Value: 0}
+	}
+	limit := s.BufferLimit
+	if limit == 0 {
+		limit = DefaultBufferLimit
+	}
+	if length > limit {
+		return Reply{Errno: errno.Invalid}
+	}
+	buffer := make([]byte, length)
+	if _, err := rand.Read(buffer); err != nil {
+		return Reply{Errno: errno.IO}
+	}
+	if err := s.Memory.Write(ctx, call.Args[0], buffer); err != nil {
+		return Reply{Errno: errno.Fault}
+	}
+	return Reply{Value: length}
 }
 
 func (s Syscalls) brk(ctx context.Context, call Call) Reply {
