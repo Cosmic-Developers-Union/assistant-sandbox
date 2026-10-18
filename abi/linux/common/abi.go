@@ -156,6 +156,9 @@ const (
 	SysPivotRoot
 	SysChroot
 
+	SysReboot
+	SysKexecLoad
+
 	SysEpollCreate1
 	SysEpollCtl
 	SysEpollPwait
@@ -364,6 +367,10 @@ func (s Syscall) String() string {
 		return "pivot_root"
 	case SysChroot:
 		return "chroot"
+	case SysReboot:
+		return "reboot"
+	case SysKexecLoad:
+		return "kexec_load"
 	case SysEpollCreate1:
 		return "epoll_create1"
 	case SysEpollCtl:

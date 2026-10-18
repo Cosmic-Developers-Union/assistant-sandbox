@@ -101,6 +101,8 @@ const (
 	numberUmount2         = 39
 	numberPivotRoot       = 41
 	numberChroot          = 51
+	numberReboot          = 142
+	numberKexecLoad       = 104
 	numberEpollCreate1    = 20
 	numberEpollCtl        = 21
 	numberEpollPwait      = 22
@@ -379,6 +381,10 @@ func syscallOf(number uint64) common.Syscall {
 		return common.SysPivotRoot
 	case numberChroot:
 		return common.SysChroot
+	case numberReboot:
+		return common.SysReboot
+	case numberKexecLoad:
+		return common.SysKexecLoad
 	case numberEpollCreate1:
 		return common.SysEpollCreate1
 	case numberEpollCtl:
