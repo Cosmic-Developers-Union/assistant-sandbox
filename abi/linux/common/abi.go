@@ -147,6 +147,9 @@ const (
 
 	SysTimerfdCreate
 
+	SysTimerfdSettime
+	SysTimerfdGettime
+
 	SysSignalfd4
 
 	SysInotifyInit1
@@ -322,6 +325,10 @@ func (s Syscall) String() string {
 		return "eventfd2"
 	case SysTimerfdCreate:
 		return "timerfd_create"
+	case SysTimerfdSettime:
+		return "timerfd_settime"
+	case SysTimerfdGettime:
+		return "timerfd_gettime"
 	case SysSignalfd4:
 		return "signalfd4"
 	case SysInotifyInit1:

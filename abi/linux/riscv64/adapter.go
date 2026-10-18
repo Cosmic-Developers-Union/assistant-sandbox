@@ -92,6 +92,8 @@ const (
 	numberPselect6        = 72
 	numberEventfd2        = 19
 	numberTimerfdCreate   = 85
+	numberTimerfdSettime  = 86
+	numberTimerfdGettime  = 87
 	numberSignalfd4       = 74
 	numberInotifyInit1    = 26
 	numberInotifyAddWatch = 27
@@ -343,6 +345,10 @@ func syscallOf(number uint64) common.Syscall {
 		return common.SysEventfd2
 	case numberTimerfdCreate:
 		return common.SysTimerfdCreate
+	case numberTimerfdSettime:
+		return common.SysTimerfdSettime
+	case numberTimerfdGettime:
+		return common.SysTimerfdGettime
 	case numberSignalfd4:
 		return common.SysSignalfd4
 	case numberInotifyInit1:
