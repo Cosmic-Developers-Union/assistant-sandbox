@@ -135,6 +135,8 @@ const (
 	SysGetsockname
 	SysGetpeername
 
+	SysAccept4
+
 	SysEpollCreate1
 	SysEpollCtl
 	SysEpollPwait
@@ -311,6 +313,8 @@ func (s Syscall) String() string {
 		return "getsockname"
 	case SysGetpeername:
 		return "getpeername"
+	case SysAccept4:
+		return "accept4"
 	case SysEpollCreate1:
 		return "epoll_create1"
 	case SysEpollCtl:
