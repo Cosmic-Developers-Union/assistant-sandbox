@@ -66,6 +66,10 @@ func (d *fakeDescriptors) Write(_ context.Context, _ uint64, buffer []byte) (int
 	return len(buffer), nil
 }
 
+func (d *fakeDescriptors) Truncate(_ context.Context, _ uint64, size int64) error {
+	return d.seekErr
+}
+
 func (d *fakeDescriptors) Seek(_ context.Context, _ uint64, offset int64, whence SeekWhence) (int64, error) {
 	if d.seekErr != nil {
 		return 0, d.seekErr

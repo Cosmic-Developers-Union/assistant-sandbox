@@ -25,6 +25,8 @@ type Descriptors interface {
 	Close(ctx context.Context, descriptor uint64) error
 
 	Seek(ctx context.Context, descriptor uint64, offset int64, whence SeekWhence) (int64, error)
+
+	Truncate(ctx context.Context, descriptor uint64, size int64) error
 }
 
 type SeekWhence int
@@ -182,6 +184,8 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 		return s.linkat(ctx, call)
 	case SysRenameat, SysRenameat2:
 		return s.renameat(ctx, call)
+	case SysFtruncate:
+		return s.ftruncate(ctx, call)
 	case SysReadlinkat:
 		return s.readlinkat(ctx, call)
 	case SysUmask:
@@ -757,6 +761,16 @@ func (s Syscalls) renameat(ctx context.Context, call Call) Reply {
 		return Reply{Errno: code}
 	}
 	if err := s.Files.Rename(ctx, oldpath, newpath); err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	return Reply{}
+}
+
+func (s Syscalls) ftruncate(ctx context.Context, call Call) Reply {
+	if s.Descriptors == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	if err := s.Descriptors.Truncate(ctx, call.Args[0], int64(call.Args[1])); err != nil {
 		return Reply{Errno: errnoOf(err)}
 	}
 	return Reply{}

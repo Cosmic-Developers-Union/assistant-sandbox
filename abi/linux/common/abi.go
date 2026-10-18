@@ -105,6 +105,8 @@ const (
 	SysLinkat
 	SysRenameat
 	SysRenameat2
+
+	SysFtruncate
 )
 
 func (s Syscall) String() string {
@@ -219,6 +221,8 @@ func (s Syscall) String() string {
 		return "renameat"
 	case SysRenameat2:
 		return "renameat2"
+	case SysFtruncate:
+		return "ftruncate"
 	case SysReadlinkat:
 		return "readlinkat"
 	case SysUmask:
