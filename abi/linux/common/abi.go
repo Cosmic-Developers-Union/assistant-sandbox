@@ -117,6 +117,8 @@ const (
 	SysPipe
 	SysPipe2
 
+	SysDup3
+
 	SysGetdents64
 )
 
@@ -244,6 +246,8 @@ func (s Syscall) String() string {
 		return "pipe"
 	case SysPipe2:
 		return "pipe2"
+	case SysDup3:
+		return "dup3"
 	case SysGetdents64:
 		return "getdents64"
 	case SysReadlinkat:

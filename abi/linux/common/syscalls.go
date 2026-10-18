@@ -33,6 +33,8 @@ type Descriptors interface {
 	Fcntl(ctx context.Context, descriptor uint64, cmd uint64, arg uint64) (uint64, error)
 
 	Pipe(ctx context.Context) (uint64, uint64, error)
+
+	Dup2(ctx context.Context, oldfd, newfd uint64, cloexec bool) error
 }
 
 type SeekWhence int
@@ -204,6 +206,8 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 		return s.pipe(ctx, call, false)
 	case SysPipe2:
 		return s.pipe(ctx, call, true)
+	case SysDup3:
+		return s.dup3(ctx, call)
 	case SysGetdents64:
 		return s.getdents64(ctx, call)
 	case SysReadlinkat:
@@ -957,6 +961,18 @@ func (s Syscalls) pipe(ctx context.Context, call Call, pipe2 bool) Reply {
 		return Reply{Errno: errno.Fault}
 	}
 	return Reply{Value: 0}
+}
+
+func (s Syscalls) dup3(ctx context.Context, call Call) Reply {
+	if s.Descriptors == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	flags := call.Args[2]
+	cloexec := flags&0o2000000 != 0
+	if err := s.Descriptors.Dup2(ctx, call.Args[0], call.Args[1], cloexec); err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	return Reply{Value: call.Args[1]}
 }
 
 func (s Syscalls) brk(ctx context.Context, call Call) Reply {

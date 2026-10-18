@@ -134,6 +134,26 @@ func (p ProcessDescriptors) Pipe(ctx context.Context) (uint64, uint64, error) {
 	return uint64(r), uint64(w), nil
 }
 
+func (p ProcessDescriptors) Dup2(ctx context.Context, oldfd, newfd uint64, cloexec bool) error {
+	if p.Table == nil {
+		return errno.Wrap(errno.NotImplemented, "描述符端口未装配")
+	}
+	if oldfd > math.MaxUint32 || newfd > math.MaxUint32 {
+		return errno.Wrap(errno.BadHandle, "描述符编号超出表示范围")
+	}
+	table, ok := p.Table.(*fd.Table)
+	if !ok {
+		return errno.Wrap(errno.NotSupported, "描述符表不支持 dup")
+	}
+	if err := table.Dup(ctx, p.PID, uint32(oldfd), uint32(newfd)); err != nil {
+		return err
+	}
+	if cloexec {
+		_ = table.SetCloexec(p.PID, uint32(newfd), true)
+	}
+	return nil
+}
+
 func (p ProcessDescriptors) stream(ctx context.Context, descriptor uint64) (fd.Stream, error) {
 	if p.Table == nil {
 		return nil, errno.Wrap(errno.NotImplemented, "描述符端口未装配")

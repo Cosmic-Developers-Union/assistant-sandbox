@@ -66,6 +66,10 @@ func (d *fakeDescriptors) Write(_ context.Context, _ uint64, buffer []byte) (int
 	return len(buffer), nil
 }
 
+func (d *fakeDescriptors) Dup2(_ context.Context, oldfd, newfd uint64, cloexec bool) error {
+	return d.seekErr
+}
+
 func (d *fakeDescriptors) Pipe(_ context.Context) (uint64, uint64, error) {
 	return 3, 4, d.seekErr
 }
