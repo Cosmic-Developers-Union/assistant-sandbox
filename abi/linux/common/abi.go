@@ -137,6 +137,10 @@ const (
 
 	SysAccept4
 
+	SysMemfdCreate
+	SysUserfaultfd
+	SysPerfEventOpen
+
 	SysEpollCreate1
 	SysEpollCtl
 	SysEpollPwait
@@ -315,6 +319,12 @@ func (s Syscall) String() string {
 		return "getpeername"
 	case SysAccept4:
 		return "accept4"
+	case SysMemfdCreate:
+		return "memfd_create"
+	case SysUserfaultfd:
+		return "userfaultfd"
+	case SysPerfEventOpen:
+		return "perf_event_open"
 	case SysEpollCreate1:
 		return "epoll_create1"
 	case SysEpollCtl:
