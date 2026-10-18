@@ -148,6 +148,10 @@ const (
 	SysTimerfdCreate
 
 	SysSignalfd4
+
+	SysInotifyInit1
+	SysInotifyAddWatch
+	SysInotifyRmWatch
 )
 
 func (s Syscall) String() string {
@@ -320,6 +324,12 @@ func (s Syscall) String() string {
 		return "timerfd_create"
 	case SysSignalfd4:
 		return "signalfd4"
+	case SysInotifyInit1:
+		return "inotify_init1"
+	case SysInotifyAddWatch:
+		return "inotify_add_watch"
+	case SysInotifyRmWatch:
+		return "inotify_rm_watch"
 	case SysReadlinkat:
 		return "readlinkat"
 	case SysUmask:
