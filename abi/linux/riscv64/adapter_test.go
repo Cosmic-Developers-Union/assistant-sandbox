@@ -210,6 +210,7 @@ func TestSyscallNumberMapping(t *testing.T) {
 		numberRead: common.SysRead, numberWrite: common.SysWrite,
 		numberExit: common.SysExit, numberExitGroup: common.SysExitGroup,
 		numberClockGettime: common.SysClockGettime, numberBrk: common.SysBrk,
+		numberUname:  common.SysUname,
 		numberGetPID: common.SysGetPID, numberGetPPID: common.SysGetPPID, numberGetTID: common.SysGetTID,
 		numberGetUID: common.SysGetUID, numberGetEUID: common.SysGetEUID,
 		numberGetGID: common.SysGetGID, numberGetEGID: common.SysGetEGID,

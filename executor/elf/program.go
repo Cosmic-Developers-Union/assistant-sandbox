@@ -156,7 +156,7 @@ func addressSpace(ctx context.Context, plan *loaderelf.Plan) (*memory.Table, err
 }
 
 func syscalls(ctx context.Context, process proc.Proc, space *memory.Table, plan *loaderelf.Plan) common.Syscalls {
-	handler := common.Syscalls{Memory: space}
+	handler := common.Syscalls{Memory: space, Sysname: "Linux", Nodename: "assistant-sandbox", Release: "6.8.0", Version: "#1", Machine: "riscv64", Domainname: "(none)"}
 	identity := &common.Identity{PID: uint64(process.ID), PPID: uint64(process.Parent)}
 	handler.Identity = identity
 	if process.Resources == nil {

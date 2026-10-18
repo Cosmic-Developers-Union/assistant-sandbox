@@ -33,6 +33,7 @@ const (
 	numberGetEGID      = 177
 	numberGetTID       = 178
 	numberBrk          = 214
+	numberUname        = 160
 )
 
 const ecallInstruction = 0x00000073
@@ -150,6 +151,8 @@ func syscallOf(number uint64) common.Syscall {
 		return common.SysRead
 	case numberWrite:
 		return common.SysWrite
+	case numberUname:
+		return common.SysUname
 	case numberExit:
 		return common.SysExit
 	case numberExitGroup:

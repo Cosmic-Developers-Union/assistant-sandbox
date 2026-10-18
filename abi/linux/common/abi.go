@@ -40,6 +40,8 @@ const (
 	SysClockGettime
 
 	SysBrk
+
+	SysUname
 )
 
 func (s Syscall) String() string {
@@ -78,6 +80,8 @@ func (s Syscall) String() string {
 		return "clock_gettime"
 	case SysBrk:
 		return "brk"
+	case SysUname:
+		return "uname"
 	default:
 		return fmt.Sprintf("syscall(%d)", uint16(s))
 	}

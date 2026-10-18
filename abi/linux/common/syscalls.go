@@ -77,6 +77,13 @@ type Syscalls struct {
 	Heap Heap
 
 	BufferLimit uint64
+
+	Sysname    string
+	Nodename   string
+	Release    string
+	Version    string
+	Machine    string
+	Domainname string
 }
 
 func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
@@ -99,6 +106,8 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 		return s.clockGettime(ctx, call)
 	case SysBrk:
 		return s.brk(ctx, call)
+	case SysUname:
+		return s.uname(ctx, call)
 	default:
 		return Reply{Errno: errno.NotImplemented}
 	}
@@ -327,6 +336,63 @@ type Heap interface {
 	Break(ctx context.Context) (uint64, error)
 
 	Grow(ctx context.Context, target uint64) (uint64, error)
+}
+
+func (s Syscalls) uname(ctx context.Context, call Call) Reply {
+	if s.Memory == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	fields := []string{s.sysname(), s.nodename(), s.release(), s.version(), s.machine(), s.domainname()}
+	var encoded [390]byte
+	for index, value := range fields {
+		copy(encoded[index*65:], []byte(value))
+	}
+	if err := s.Memory.Write(ctx, call.Args[0], encoded[:]); err != nil {
+		return Reply{Errno: errno.Fault}
+	}
+	return Reply{}
+}
+
+func (s Syscalls) sysname() string {
+	if s.Sysname == "" {
+		return "Linux"
+	}
+	return s.Sysname
+}
+
+func (s Syscalls) nodename() string {
+	if s.Nodename == "" {
+		return "assistant-sandbox"
+	}
+	return s.Nodename
+}
+
+func (s Syscalls) release() string {
+	if s.Release == "" {
+		return "6.8.0"
+	}
+	return s.Release
+}
+
+func (s Syscalls) version() string {
+	if s.Version == "" {
+		return "#1 SMP"
+	}
+	return s.Version
+}
+
+func (s Syscalls) machine() string {
+	if s.Machine == "" {
+		return "riscv64"
+	}
+	return s.Machine
+}
+
+func (s Syscalls) domainname() string {
+	if s.Domainname == "" {
+		return "(none)"
+	}
+	return s.Domainname
 }
 
 func (s Syscalls) brk(ctx context.Context, call Call) Reply {
