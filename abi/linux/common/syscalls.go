@@ -145,6 +145,10 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 		return s.getrusage(ctx, call)
 	case SysGetitimer, SysSetitimer:
 		return Reply{Value: 0}
+	case SysAlarm:
+		return Reply{Value: 0}
+	case SysPause:
+		return Reply{Errno: errno.Interrupted}
 	default:
 		return Reply{Errno: errno.NotImplemented}
 	}

@@ -67,6 +67,9 @@ const (
 
 	SysGetitimer
 	SysSetitimer
+
+	SysAlarm
+	SysPause
 )
 
 func (s Syscall) String() string {
@@ -131,6 +134,10 @@ func (s Syscall) String() string {
 		return "getitimer"
 	case SysSetitimer:
 		return "setitimer"
+	case SysAlarm:
+		return "alarm"
+	case SysPause:
+		return "pause"
 	case SysGetcwd:
 		return "getcwd"
 	case SysGetrandom:

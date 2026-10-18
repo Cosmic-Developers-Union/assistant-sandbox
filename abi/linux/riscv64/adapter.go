@@ -47,6 +47,8 @@ const (
 	numberGetrusage    = 165
 	numberGetitimer    = 102
 	numberSetitimer    = 103
+	numberAlarm        = 37
+	numberPause        = 29
 	numberGetrandom    = 278
 )
 
@@ -193,6 +195,10 @@ func syscallOf(number uint64) common.Syscall {
 		return common.SysGetitimer
 	case numberSetitimer:
 		return common.SysSetitimer
+	case numberAlarm:
+		return common.SysAlarm
+	case numberPause:
+		return common.SysPause
 	case numberGetrandom:
 		return common.SysGetrandom
 	case numberExit:
