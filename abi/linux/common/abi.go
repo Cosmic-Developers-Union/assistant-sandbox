@@ -138,6 +138,8 @@ const (
 	SysEpollCreate1
 	SysEpollCtl
 	SysEpollPwait
+
+	SysPpoll
 )
 
 func (s Syscall) String() string {
@@ -300,6 +302,8 @@ func (s Syscall) String() string {
 		return "epoll_ctl"
 	case SysEpollPwait:
 		return "epoll_pwait"
+	case SysPpoll:
+		return "ppoll"
 	case SysReadlinkat:
 		return "readlinkat"
 	case SysUmask:
