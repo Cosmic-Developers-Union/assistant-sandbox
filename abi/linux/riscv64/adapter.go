@@ -39,6 +39,7 @@ const (
 	numberGetpgid      = 155
 	numberGetsid       = 156
 	numberGetpgrp      = 158
+	numberGethostname  = 161
 	numberGetrandom    = 278
 )
 
@@ -169,6 +170,8 @@ func syscallOf(number uint64) common.Syscall {
 		return common.SysGetsid
 	case numberGetpgrp:
 		return common.SysGetpgrp
+	case numberGethostname:
+		return common.SysGethostname
 	case numberGetrandom:
 		return common.SysGetrandom
 	case numberExit:

@@ -52,6 +52,8 @@ const (
 	SysGetpgid
 	SysGetsid
 	SysGetpgrp
+
+	SysGethostname
 )
 
 func (s Syscall) String() string {
@@ -100,6 +102,8 @@ func (s Syscall) String() string {
 		return "getsid"
 	case SysGetpgrp:
 		return "getpgrp"
+	case SysGethostname:
+		return "gethostname"
 	case SysGetcwd:
 		return "getcwd"
 	case SysGetrandom:
