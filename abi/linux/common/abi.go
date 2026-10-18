@@ -53,6 +53,8 @@ const (
 	SysGetsid
 
 	SysTimes
+
+	SysGetgroups
 )
 
 func (s Syscall) String() string {
@@ -101,6 +103,8 @@ func (s Syscall) String() string {
 		return "getsid"
 	case SysTimes:
 		return "times"
+	case SysGetgroups:
+		return "getgroups"
 	case SysGetcwd:
 		return "getcwd"
 	case SysGetrandom:

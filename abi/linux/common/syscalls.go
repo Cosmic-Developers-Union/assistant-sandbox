@@ -127,6 +127,8 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 		return s.identity(call)
 	case SysTimes:
 		return s.times(ctx, call)
+	case SysGetgroups:
+		return s.getgroups(ctx, call)
 	default:
 		return Reply{Errno: errno.NotImplemented}
 	}
@@ -490,6 +492,18 @@ func (s Syscalls) times(ctx context.Context, call Call) Reply {
 			return Reply{Errno: errno.Fault}
 		}
 	}
+	return Reply{Value: 0}
+}
+
+func (s Syscalls) getgroups(ctx context.Context, call Call) Reply {
+	size := call.Args[1]
+	if size == 0 {
+		return Reply{Value: 0}
+	}
+	if s.Memory == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	// No supplementary groups in this ABI profile.
 	return Reply{Value: 0}
 }
 
