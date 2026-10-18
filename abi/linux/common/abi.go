@@ -144,6 +144,8 @@ const (
 	SysPselect6
 
 	SysEventfd2
+
+	SysTimerfdCreate
 )
 
 func (s Syscall) String() string {
@@ -312,6 +314,8 @@ func (s Syscall) String() string {
 		return "pselect6"
 	case SysEventfd2:
 		return "eventfd2"
+	case SysTimerfdCreate:
+		return "timerfd_create"
 	case SysReadlinkat:
 		return "readlinkat"
 	case SysUmask:
