@@ -123,6 +123,8 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 		return s.getcwd(ctx, call)
 	case SysSysinfo:
 		return s.sysinfo(ctx, call)
+	case SysGetpgid, SysGetsid, SysGetpgrp:
+		return s.identity(call)
 	default:
 		return Reply{Errno: errno.NotImplemented}
 	}
@@ -294,7 +296,7 @@ func (s Syscalls) identity(call Call) Reply {
 		return Reply{Errno: errno.NotImplemented}
 	}
 	switch call.Syscall {
-	case SysGetPID, SysGetTID:
+	case SysGetPID, SysGetTID, SysGetpgid, SysGetsid, SysGetpgrp:
 		return Reply{Value: s.Identity.PID}
 	case SysGetPPID:
 		return Reply{Value: s.Identity.PPID}
