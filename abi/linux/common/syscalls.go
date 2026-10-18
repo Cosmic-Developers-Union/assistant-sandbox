@@ -184,6 +184,8 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 		return s.renameat(ctx, call)
 	case SysReadlinkat:
 		return s.readlinkat(ctx, call)
+	case SysUmask:
+		return Reply{Value: 0}
 	case SysSetuid, SysSetgid, SysSetreuid, SysSetregid, SysSetresuid, SysSetresgid, SysSetfsuid, SysSetfsgid:
 		return Reply{Value: 0}
 	default:

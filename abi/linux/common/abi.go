@@ -93,6 +93,8 @@ const (
 
 	SysReadlinkat
 
+	SysUmask
+
 	SysMkdirat
 	SysUnlinkat
 	SysSymlinkat
@@ -215,6 +217,8 @@ func (s Syscall) String() string {
 		return "renameat2"
 	case SysReadlinkat:
 		return "readlinkat"
+	case SysUmask:
+		return "umask"
 	case SysGetcwd:
 		return "getcwd"
 	case SysGetrandom:
