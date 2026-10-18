@@ -72,6 +72,19 @@ const (
 	numberPipe2        = 60
 	numberDup3         = 24
 	numberGetdents64   = 61
+	numberSocket       = 198
+	numberBind         = 200
+	numberListen       = 201
+	numberAccept       = 202
+	numberConnect      = 203
+	numberSocketpair   = 199
+	numberSendto       = 206
+	numberRecvfrom     = 207
+	numberShutdown     = 210
+	numberSetsockopt   = 208
+	numberGetsockopt   = 209
+	numberGetsockname  = 204
+	numberGetpeername  = 205
 	numberReadlinkat   = 78
 	numberUmask        = 166
 	numberSync         = 81
@@ -279,6 +292,32 @@ func syscallOf(number uint64) common.Syscall {
 		return common.SysDup3
 	case numberGetdents64:
 		return common.SysGetdents64
+	case numberSocket:
+		return common.SysSocket
+	case numberBind:
+		return common.SysBind
+	case numberListen:
+		return common.SysListen
+	case numberAccept:
+		return common.SysAccept
+	case numberConnect:
+		return common.SysConnect
+	case numberSocketpair:
+		return common.SysSocketpair
+	case numberSendto:
+		return common.SysSendto
+	case numberRecvfrom:
+		return common.SysRecvfrom
+	case numberShutdown:
+		return common.SysShutdown
+	case numberSetsockopt:
+		return common.SysSetsockopt
+	case numberGetsockopt:
+		return common.SysGetsockopt
+	case numberGetsockname:
+		return common.SysGetsockname
+	case numberGetpeername:
+		return common.SysGetpeername
 	case numberReadlinkat:
 		return common.SysReadlinkat
 	case numberUmask:

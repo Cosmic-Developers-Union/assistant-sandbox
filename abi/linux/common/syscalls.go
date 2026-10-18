@@ -210,6 +210,8 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 		return s.dup3(ctx, call)
 	case SysGetdents64:
 		return s.getdents64(ctx, call)
+	case SysSocket, SysBind, SysListen, SysAccept, SysConnect, SysSocketpair, SysSendto, SysRecvfrom, SysShutdown, SysSetsockopt, SysGetsockopt, SysGetsockname, SysGetpeername:
+		return Reply{Errno: errno.NotImplemented}
 	case SysReadlinkat:
 		return s.readlinkat(ctx, call)
 	case SysUmask:

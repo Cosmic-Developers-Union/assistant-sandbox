@@ -120,6 +120,20 @@ const (
 	SysDup3
 
 	SysGetdents64
+
+	SysSocket
+	SysBind
+	SysListen
+	SysAccept
+	SysConnect
+	SysSocketpair
+	SysSendto
+	SysRecvfrom
+	SysShutdown
+	SysSetsockopt
+	SysGetsockopt
+	SysGetsockname
+	SysGetpeername
 )
 
 func (s Syscall) String() string {
@@ -250,6 +264,32 @@ func (s Syscall) String() string {
 		return "dup3"
 	case SysGetdents64:
 		return "getdents64"
+	case SysSocket:
+		return "socket"
+	case SysBind:
+		return "bind"
+	case SysListen:
+		return "listen"
+	case SysAccept:
+		return "accept"
+	case SysConnect:
+		return "connect"
+	case SysSocketpair:
+		return "socketpair"
+	case SysSendto:
+		return "sendto"
+	case SysRecvfrom:
+		return "recvfrom"
+	case SysShutdown:
+		return "shutdown"
+	case SysSetsockopt:
+		return "setsockopt"
+	case SysGetsockopt:
+		return "getsockopt"
+	case SysGetsockname:
+		return "getsockname"
+	case SysGetpeername:
+		return "getpeername"
 	case SysReadlinkat:
 		return "readlinkat"
 	case SysUmask:
