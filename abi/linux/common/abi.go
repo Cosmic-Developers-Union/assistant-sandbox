@@ -159,6 +159,8 @@ const (
 	SysReboot
 	SysKexecLoad
 
+	SysSyslog
+
 	SysEpollCreate1
 	SysEpollCtl
 	SysEpollPwait
@@ -371,6 +373,8 @@ func (s Syscall) String() string {
 		return "reboot"
 	case SysKexecLoad:
 		return "kexec_load"
+	case SysSyslog:
+		return "syslog"
 	case SysEpollCreate1:
 		return "epoll_create1"
 	case SysEpollCtl:
