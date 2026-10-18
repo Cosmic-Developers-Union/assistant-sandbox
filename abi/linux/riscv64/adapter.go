@@ -89,6 +89,12 @@ const (
 	numberMemfdCreate     = 279
 	numberUserfaultfd     = 282
 	numberPerfEventOpen   = 241
+	numberClone3          = 435
+	numberPidfdOpen       = 434
+	numberCloseRange      = 436
+	numberOpenat2         = 437
+	numberPidfdGetfd      = 438
+	numberFaccessat2      = 439
 	numberEpollCreate1    = 20
 	numberEpollCtl        = 21
 	numberEpollPwait      = 22
@@ -343,6 +349,18 @@ func syscallOf(number uint64) common.Syscall {
 		return common.SysUserfaultfd
 	case numberPerfEventOpen:
 		return common.SysPerfEventOpen
+	case numberClone3:
+		return common.SysClone3
+	case numberPidfdOpen:
+		return common.SysPidfdOpen
+	case numberCloseRange:
+		return common.SysCloseRange
+	case numberOpenat2:
+		return common.SysOpenat2
+	case numberPidfdGetfd:
+		return common.SysPidfdGetfd
+	case numberFaccessat2:
+		return common.SysFaccessat2
 	case numberEpollCreate1:
 		return common.SysEpollCreate1
 	case numberEpollCtl:

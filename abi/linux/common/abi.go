@@ -141,6 +141,13 @@ const (
 	SysUserfaultfd
 	SysPerfEventOpen
 
+	SysClone3
+	SysPidfdOpen
+	SysCloseRange
+	SysOpenat2
+	SysPidfdGetfd
+	SysFaccessat2
+
 	SysEpollCreate1
 	SysEpollCtl
 	SysEpollPwait
@@ -325,6 +332,18 @@ func (s Syscall) String() string {
 		return "userfaultfd"
 	case SysPerfEventOpen:
 		return "perf_event_open"
+	case SysClone3:
+		return "clone3"
+	case SysPidfdOpen:
+		return "pidfd_open"
+	case SysCloseRange:
+		return "close_range"
+	case SysOpenat2:
+		return "openat2"
+	case SysPidfdGetfd:
+		return "pidfd_getfd"
+	case SysFaccessat2:
+		return "faccessat2"
 	case SysEpollCreate1:
 		return "epoll_create1"
 	case SysEpollCtl:
