@@ -70,6 +70,10 @@ const (
 
 	SysAlarm
 	SysPause
+
+	SysGetpriority
+	SysSetpriority
+	SysNice
 )
 
 func (s Syscall) String() string {
@@ -138,6 +142,12 @@ func (s Syscall) String() string {
 		return "alarm"
 	case SysPause:
 		return "pause"
+	case SysGetpriority:
+		return "getpriority"
+	case SysSetpriority:
+		return "setpriority"
+	case SysNice:
+		return "nice"
 	case SysGetcwd:
 		return "getcwd"
 	case SysGetrandom:
