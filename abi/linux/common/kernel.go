@@ -86,6 +86,17 @@ type ProcessFiles struct {
 	Dir string
 }
 
+func (p ProcessFiles) Stat(ctx context.Context, path string) (stdfs.FileInfo, error) {
+	if p.System == nil {
+		return nil, errno.Wrap(errno.NotImplemented, "文件端口未装配")
+	}
+	target := path
+	if !strings.HasPrefix(target, "/") {
+		target = pathpkg.Join(p.Dir, target)
+	}
+	return p.System.Stat(ctx, target)
+}
+
 func (p ProcessFiles) Open(ctx context.Context, request OpenRequest) (uint64, error) {
 	if p.System == nil || p.Store == nil {
 		return 0, errno.Wrap(errno.NotImplemented, "文件端口未装配")

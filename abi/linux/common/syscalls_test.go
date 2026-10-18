@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	stdfs "io/fs"
 	"math"
 	"testing"
 
@@ -339,6 +340,13 @@ type fakeFiles struct {
 	requests []OpenRequest
 	next     uint64
 	err      error
+}
+
+func (f *fakeFiles) Stat(_ context.Context, path string) (stdfs.FileInfo, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return nil, nil
 }
 
 func (f *fakeFiles) Open(_ context.Context, request OpenRequest) (uint64, error) {

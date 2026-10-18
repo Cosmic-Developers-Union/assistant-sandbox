@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	stdfs "io/fs"
 	"strings"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
@@ -57,6 +58,8 @@ type OpenRequest struct {
 
 type Files interface {
 	Open(ctx context.Context, request OpenRequest) (uint64, error)
+
+	Stat(ctx context.Context, path string) (stdfs.FileInfo, error)
 }
 
 const PathLimit = 4096
@@ -155,6 +158,8 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 		return Reply{Value: 0}
 	case SysMincore:
 		return Reply{Value: 0}
+	case SysFaccessat:
+		return s.faccessat(ctx, call)
 	default:
 		return Reply{Errno: errno.NotImplemented}
 	}
@@ -562,6 +567,23 @@ func (s Syscalls) getrusage(ctx context.Context, call Call) Reply {
 		return Reply{Errno: errno.Fault}
 	}
 	return Reply{Value: 0}
+}
+
+func (s Syscalls) faccessat(ctx context.Context, call Call) Reply {
+	if s.Files == nil || s.Memory == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	if call.Args[0] != atCurrentWorkingDirectory {
+		return Reply{Errno: errno.NotSupported}
+	}
+	path, code := s.readPath(ctx, call.Args[1])
+	if code != "" {
+		return Reply{Errno: code}
+	}
+	if _, err := s.Files.Stat(ctx, path); err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	return Reply{}
 }
 
 func (s Syscalls) brk(ctx context.Context, call Call) Reply {

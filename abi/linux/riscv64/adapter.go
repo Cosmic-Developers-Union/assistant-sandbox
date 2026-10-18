@@ -58,6 +58,7 @@ const (
 	numberMunlockall   = 231
 	numberMincore      = 232
 	numberMadvise      = 233
+	numberFaccessat    = 48
 	numberGetrandom    = 278
 )
 
@@ -226,6 +227,8 @@ func syscallOf(number uint64) common.Syscall {
 		return common.SysMincore
 	case numberMadvise:
 		return common.SysMadvise
+	case numberFaccessat:
+		return common.SysFaccessat
 	case numberGetrandom:
 		return common.SysGetrandom
 	case numberExit:

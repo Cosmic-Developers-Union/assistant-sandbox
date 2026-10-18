@@ -81,6 +81,8 @@ const (
 	SysMunlockall
 	SysMincore
 	SysMadvise
+
+	SysFaccessat
 )
 
 func (s Syscall) String() string {
@@ -167,6 +169,8 @@ func (s Syscall) String() string {
 		return "mincore"
 	case SysMadvise:
 		return "madvise"
+	case SysFaccessat:
+		return "faccessat"
 	case SysGetcwd:
 		return "getcwd"
 	case SysGetrandom:
