@@ -64,6 +64,9 @@ const (
 	SysPrlimit64
 
 	SysGetrusage
+
+	SysGetitimer
+	SysSetitimer
 )
 
 func (s Syscall) String() string {
@@ -124,6 +127,10 @@ func (s Syscall) String() string {
 		return "prlimit64"
 	case SysGetrusage:
 		return "getrusage"
+	case SysGetitimer:
+		return "getitimer"
+	case SysSetitimer:
+		return "setitimer"
 	case SysGetcwd:
 		return "getcwd"
 	case SysGetrandom:
