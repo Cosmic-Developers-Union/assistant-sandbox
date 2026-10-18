@@ -95,6 +95,10 @@ const (
 
 	SysUmask
 
+	SysSync
+	SysFsync
+	SysFdatasync
+
 	SysMkdirat
 	SysUnlinkat
 	SysSymlinkat
@@ -219,6 +223,12 @@ func (s Syscall) String() string {
 		return "readlinkat"
 	case SysUmask:
 		return "umask"
+	case SysSync:
+		return "sync"
+	case SysFsync:
+		return "fsync"
+	case SysFdatasync:
+		return "fdatasync"
 	case SysGetcwd:
 		return "getcwd"
 	case SysGetrandom:
