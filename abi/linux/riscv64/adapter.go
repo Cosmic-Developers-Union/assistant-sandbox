@@ -41,6 +41,7 @@ const (
 	numberGetpgrp       = 158
 	numberGethostname   = 161
 	numberGetdomainname = 163
+	numberTimes         = 153
 	numberGetrandom     = 278
 )
 
@@ -175,6 +176,8 @@ func syscallOf(number uint64) common.Syscall {
 		return common.SysGethostname
 	case numberGetdomainname:
 		return common.SysGetdomainname
+	case numberTimes:
+		return common.SysTimes
 	case numberGetrandom:
 		return common.SysGetrandom
 	case numberExit:

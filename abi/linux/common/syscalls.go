@@ -129,6 +129,8 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 		return s.gethostname(ctx, call)
 	case SysGetdomainname:
 		return s.getdomainname(ctx, call)
+	case SysTimes:
+		return s.times(ctx, call)
 	default:
 		return Reply{Errno: errno.NotImplemented}
 	}
@@ -518,6 +520,20 @@ func (s Syscalls) getdomainname(ctx context.Context, call Call) Reply {
 		return Reply{Errno: errno.Fault}
 	}
 	return Reply{Value: uint64(len(name))}
+}
+
+func (s Syscalls) times(ctx context.Context, call Call) Reply {
+	if s.Memory == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	// struct tms: 4 * clock_t (8 bytes each on 64-bit) = 32 bytes, all zero.
+	var encoded [32]byte
+	if call.Args[0] != 0 {
+		if err := s.Memory.Write(ctx, call.Args[0], encoded[:]); err != nil {
+			return Reply{Errno: errno.Fault}
+		}
+	}
+	return Reply{Value: 0}
 }
 
 func (s Syscalls) brk(ctx context.Context, call Call) Reply {

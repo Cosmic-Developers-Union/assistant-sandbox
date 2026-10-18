@@ -56,6 +56,8 @@ const (
 	SysGethostname
 
 	SysGetdomainname
+
+	SysTimes
 )
 
 func (s Syscall) String() string {
@@ -108,6 +110,8 @@ func (s Syscall) String() string {
 		return "gethostname"
 	case SysGetdomainname:
 		return "getdomainname"
+	case SysTimes:
+		return "times"
 	case SysGetcwd:
 		return "getcwd"
 	case SysGetrandom:
