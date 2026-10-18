@@ -68,6 +68,8 @@ const (
 	numberRenameat2    = 276
 	numberFtruncate    = 46
 	numberFcntl        = 25
+	numberPipe         = 59
+	numberPipe2        = 60
 	numberGetdents64   = 61
 	numberReadlinkat   = 78
 	numberUmask        = 166
@@ -268,6 +270,10 @@ func syscallOf(number uint64) common.Syscall {
 		return common.SysFtruncate
 	case numberFcntl:
 		return common.SysFcntl
+	case numberPipe:
+		return common.SysPipe
+	case numberPipe2:
+		return common.SysPipe2
 	case numberGetdents64:
 		return common.SysGetdents64
 	case numberReadlinkat:

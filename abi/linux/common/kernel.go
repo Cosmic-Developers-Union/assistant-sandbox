@@ -119,6 +119,21 @@ func (p ProcessDescriptors) Fcntl(ctx context.Context, descriptor uint64, cmd ui
 	}
 }
 
+func (p ProcessDescriptors) Pipe(ctx context.Context) (uint64, uint64, error) {
+	if p.Table == nil {
+		return 0, 0, errno.Wrap(errno.NotImplemented, "描述符端口未装配")
+	}
+	table, ok := p.Table.(*fd.Table)
+	if !ok {
+		return 0, 0, errno.Wrap(errno.NotSupported, "描述符表不支持 pipe")
+	}
+	r, w, err := table.Pipe(p.PID)
+	if err != nil {
+		return 0, 0, err
+	}
+	return uint64(r), uint64(w), nil
+}
+
 func (p ProcessDescriptors) stream(ctx context.Context, descriptor uint64) (fd.Stream, error) {
 	if p.Table == nil {
 		return nil, errno.Wrap(errno.NotImplemented, "描述符端口未装配")

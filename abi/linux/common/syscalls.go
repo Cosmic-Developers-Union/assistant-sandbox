@@ -31,6 +31,8 @@ type Descriptors interface {
 	Get(ctx context.Context, descriptor uint64) (any, error)
 
 	Fcntl(ctx context.Context, descriptor uint64, cmd uint64, arg uint64) (uint64, error)
+
+	Pipe(ctx context.Context) (uint64, uint64, error)
 }
 
 type SeekWhence int
@@ -198,6 +200,10 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 		return s.ftruncate(ctx, call)
 	case SysFcntl:
 		return s.fcntl(ctx, call)
+	case SysPipe:
+		return s.pipe(ctx, call, false)
+	case SysPipe2:
+		return s.pipe(ctx, call, true)
 	case SysGetdents64:
 		return s.getdents64(ctx, call)
 	case SysReadlinkat:
@@ -930,6 +936,27 @@ func (s Syscalls) fcntl(ctx context.Context, call Call) Reply {
 		return Reply{Errno: errnoOf(err)}
 	}
 	return Reply{Value: value}
+}
+
+func (s Syscalls) pipe(ctx context.Context, call Call, pipe2 bool) Reply {
+	if s.Descriptors == nil || s.Memory == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	r, w, err := s.Descriptors.Pipe(ctx)
+	if err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	if pipe2 && call.Args[1]&0o2000000 != 0 { // O_CLOEXEC
+		_, _ = s.Descriptors.Fcntl(ctx, r, 2, 1)
+		_, _ = s.Descriptors.Fcntl(ctx, w, 2, 1)
+	}
+	var encoded [8]byte
+	binary.LittleEndian.PutUint32(encoded[0:], uint32(r))
+	binary.LittleEndian.PutUint32(encoded[4:], uint32(w))
+	if err := s.Memory.Write(ctx, call.Args[0], encoded[:]); err != nil {
+		return Reply{Errno: errno.Fault}
+	}
+	return Reply{Value: 0}
 }
 
 func (s Syscalls) brk(ctx context.Context, call Call) Reply {

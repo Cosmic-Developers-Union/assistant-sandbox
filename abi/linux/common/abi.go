@@ -114,6 +114,9 @@ const (
 
 	SysFcntl
 
+	SysPipe
+	SysPipe2
+
 	SysGetdents64
 )
 
@@ -237,6 +240,10 @@ func (s Syscall) String() string {
 		return "ftruncate"
 	case SysFcntl:
 		return "fcntl"
+	case SysPipe:
+		return "pipe"
+	case SysPipe2:
+		return "pipe2"
 	case SysGetdents64:
 		return "getdents64"
 	case SysReadlinkat:

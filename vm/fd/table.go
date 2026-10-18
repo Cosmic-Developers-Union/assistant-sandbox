@@ -169,6 +169,38 @@ func (t *Table) Dup(ctx context.Context, pid uint64, from, to uint32) error {
 	return nil
 }
 
+func (t *Table) Pipe(pid uint64) (uint32, uint32, error) {
+	if err := (func() error { return nil })(); err != nil {
+		return 0, 0, err
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	table := t.entries[pid]
+	if table == nil {
+		return 0, 0, errno.NoProcess
+	}
+	r, w := io.Pipe()
+	var readID, writeID uint32
+	for id := uint32(3); id < ^uint32(0); id++ {
+		if _, taken := table[id]; !taken {
+			readID = id
+			table[id] = newEntry(&stream{reader: r}, true)
+			break
+		}
+	}
+	for id := uint32(3); id < ^uint32(0); id++ {
+		if _, taken := table[id]; !taken {
+			writeID = id
+			table[id] = newEntry(&stream{writer: w}, true)
+			break
+		}
+	}
+	if readID == 0 || writeID == 0 {
+		return 0, 0, errno.Limit
+	}
+	return readID, writeID, nil
+}
+
 func (t *Table) Close(ctx context.Context, pid uint64, id uint32) error {
 	if err := ctx.Err(); err != nil {
 		return err
