@@ -142,6 +142,8 @@ const (
 	SysPpoll
 
 	SysPselect6
+
+	SysEventfd2
 )
 
 func (s Syscall) String() string {
@@ -308,6 +310,8 @@ func (s Syscall) String() string {
 		return "ppoll"
 	case SysPselect6:
 		return "pselect6"
+	case SysEventfd2:
+		return "eventfd2"
 	case SysReadlinkat:
 		return "readlinkat"
 	case SysUmask:
