@@ -52,6 +52,12 @@ const (
 	numberGetpriority  = 141
 	numberSetpriority  = 140
 	numberNice         = 34
+	numberMlock        = 228
+	numberMunlock      = 229
+	numberMlockall     = 230
+	numberMunlockall   = 231
+	numberMincore      = 232
+	numberMadvise      = 233
 	numberGetrandom    = 278
 )
 
@@ -208,6 +214,18 @@ func syscallOf(number uint64) common.Syscall {
 		return common.SysSetpriority
 	case numberNice:
 		return common.SysNice
+	case numberMlock:
+		return common.SysMlock
+	case numberMunlock:
+		return common.SysMunlock
+	case numberMlockall:
+		return common.SysMlockall
+	case numberMunlockall:
+		return common.SysMunlockall
+	case numberMincore:
+		return common.SysMincore
+	case numberMadvise:
+		return common.SysMadvise
 	case numberGetrandom:
 		return common.SysGetrandom
 	case numberExit:

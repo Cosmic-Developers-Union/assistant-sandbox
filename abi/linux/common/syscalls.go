@@ -151,6 +151,10 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 		return Reply{Errno: errno.Interrupted}
 	case SysGetpriority, SysSetpriority, SysNice:
 		return Reply{Value: 0}
+	case SysMlock, SysMunlock, SysMlockall, SysMunlockall, SysMadvise:
+		return Reply{Value: 0}
+	case SysMincore:
+		return Reply{Value: 0}
 	default:
 		return Reply{Errno: errno.NotImplemented}
 	}

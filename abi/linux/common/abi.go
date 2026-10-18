@@ -74,6 +74,13 @@ const (
 	SysGetpriority
 	SysSetpriority
 	SysNice
+
+	SysMlock
+	SysMunlock
+	SysMlockall
+	SysMunlockall
+	SysMincore
+	SysMadvise
 )
 
 func (s Syscall) String() string {
@@ -148,6 +155,18 @@ func (s Syscall) String() string {
 		return "setpriority"
 	case SysNice:
 		return "nice"
+	case SysMlock:
+		return "mlock"
+	case SysMunlock:
+		return "munlock"
+	case SysMlockall:
+		return "mlockall"
+	case SysMunlockall:
+		return "munlockall"
+	case SysMincore:
+		return "mincore"
+	case SysMadvise:
+		return "madvise"
 	case SysGetcwd:
 		return "getcwd"
 	case SysGetrandom:
