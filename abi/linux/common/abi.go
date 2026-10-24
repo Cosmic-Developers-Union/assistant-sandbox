@@ -161,6 +161,9 @@ const (
 
 	SysSyslog
 
+	SysAcct
+	SysPtrace
+
 	SysEpollCreate1
 	SysEpollCtl
 	SysEpollPwait
@@ -375,6 +378,10 @@ func (s Syscall) String() string {
 		return "kexec_load"
 	case SysSyslog:
 		return "syslog"
+	case SysAcct:
+		return "acct"
+	case SysPtrace:
+		return "ptrace"
 	case SysEpollCreate1:
 		return "epoll_create1"
 	case SysEpollCtl:

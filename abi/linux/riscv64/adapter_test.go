@@ -214,6 +214,7 @@ func TestSyscallNumberMapping(t *testing.T) {
 		numberGetPID: common.SysGetPID, numberGetPPID: common.SysGetPPID, numberGetTID: common.SysGetTID,
 		numberGetUID: common.SysGetUID, numberGetEUID: common.SysGetEUID,
 		numberGetGID: common.SysGetGID, numberGetEGID: common.SysGetEGID,
+		numberAcct: common.SysAcct, numberPtrace: common.SysPtrace,
 		999: common.SysUnknown,
 	} {
 		if got := syscallOf(number); got != want {

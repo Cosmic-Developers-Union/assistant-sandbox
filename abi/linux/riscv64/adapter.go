@@ -104,6 +104,8 @@ const (
 	numberReboot          = 142
 	numberKexecLoad       = 104
 	numberSyslog          = 116
+	numberAcct            = 89
+	numberPtrace          = 117
 	numberEpollCreate1    = 20
 	numberEpollCtl        = 21
 	numberEpollPwait      = 22
@@ -388,6 +390,10 @@ func syscallOf(number uint64) common.Syscall {
 		return common.SysKexecLoad
 	case numberSyslog:
 		return common.SysSyslog
+	case numberAcct:
+		return common.SysAcct
+	case numberPtrace:
+		return common.SysPtrace
 	case numberEpollCreate1:
 		return common.SysEpollCreate1
 	case numberEpollCtl:
