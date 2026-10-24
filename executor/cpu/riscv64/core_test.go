@@ -1131,7 +1131,6 @@ func TestUnimplementedExtensions(t *testing.T) {
 		label       string
 		instruction uint32
 	}{
-		{"amoadd.w（A）", insAmoadd},
 		{"flw（F）", insFlw},
 		{"fadd.s（F）", insFadd},
 		{"csrrw（Zicsr）", insCSR},
@@ -1176,5 +1175,179 @@ func TestRegisterFilePort(t *testing.T) {
 		if _, err := port.ReadRegister(index); !errors.Is(err, errno.Invalid) {
 			t.Errorf("读寄存器 %d: %v want EINVAL", index, err)
 		}
+	}
+}
+
+func encodeAmo(funct5, funct3 uint32, rs1, rs2, rd int) uint32 {
+	return funct5<<27 | uint32(rs2)<<20 | uint32(rs1)<<15 | funct3<<12 | uint32(rd)<<7 | 0x2F
+}
+
+func TestAmoReadModifyWrite(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name       string
+		width      int
+		funct5     uint32
+		initial    uint64
+		operand    uint64
+		wantMemory uint64
+		wantRD     uint64
+	}{
+		{"swap word", 4, 0x01, 0x11223344, 0xAABBCCDD, 0xAABBCCDD, 0x11223344},
+		{"add word wraps", 4, 0x00, 0x7FFFFFFF, 1, 0x80000000, 0x7FFFFFFF},
+		{"add word truncates", 4, 0x00, 0xFFFFFFFF, 2, 0x00000001, 0xFFFFFFFFFFFFFFFF},
+		{"xor word", 4, 0x04, 0xFF00FF00, 0x0F0F0F0F, 0xF00FF00F, 0xFFFFFFFFFF00FF00},
+		{"and word", 4, 0x08, 0xFF00FF00, 0x0F0F0F0F, 0x0F000F00, 0xFFFFFFFFFF00FF00},
+		{"or word", 4, 0x0C, 0xFF00FF00, 0x0000000F, 0xFF00FF0F, 0xFFFFFFFFFF00FF00},
+		{"min word keeps negative", 4, 0x10, 0xFFFFFFFF, 1, 0xFFFFFFFF, 0xFFFFFFFFFFFFFFFF},
+		{"min word takes smaller", 4, 0x10, 5, 0xFFFFFFFF, 0xFFFFFFFF, 5},
+		{"max word takes larger", 4, 0x14, 1, 0xFFFFFFFF, 1, 1},
+		{"minu word", 4, 0x18, 0x80000000, 1, 1, 0xFFFFFFFF80000000},
+		{"maxu word", 4, 0x1C, 0x80000000, 0x7FFFFFFF, 0x80000000, 0xFFFFFFFF80000000},
+		{"swap double", 8, 0x01, 0x1122334455667788, 0xAABBCCDDEEFF0011, 0xAABBCCDDEEFF0011, 0x1122334455667788},
+		{"add double wraps", 8, 0x00, 0xFFFFFFFFFFFFFFFF, 3, 2, 0xFFFFFFFFFFFFFFFF},
+		{"min double negative", 8, 0x10, 0x8000000000000000, 1, 0x8000000000000000, 0x8000000000000000},
+		{"max double", 8, 0x14, 0x8000000000000000, 0x7FFFFFFFFFFFFFFF, 0x7FFFFFFFFFFFFFFF, 0x8000000000000000},
+		{"minu double", 8, 0x18, 0x8000000000000000, 7, 7, 0x8000000000000000},
+		{"maxu double", 8, 0x1C, 0x8000000000000000, 0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF, 0x8000000000000000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			memory := newSparse()
+			address := uint64(0x800)
+			raw := make([]byte, tc.width)
+			if tc.width == 4 {
+				binary.LittleEndian.PutUint32(raw, uint32(tc.initial))
+			} else {
+				binary.LittleEndian.PutUint64(raw, tc.initial)
+			}
+			if err := memory.Write(ctx, address, raw); err != nil {
+				t.Fatal(err)
+			}
+			port := newPort(t, memory, 0)
+			if err := port.WriteRegister(10, address); err != nil {
+				t.Fatal(err)
+			}
+			if err := port.WriteRegister(11, tc.operand); err != nil {
+				t.Fatal(err)
+			}
+			funct3 := uint32(0x2)
+			if tc.width == 8 {
+				funct3 = 0x3
+			}
+			memory.load(t, 0, encodeAmo(tc.funct5, funct3, 10, 11, 5))
+
+			outcome, err := port.Step(ctx)
+			if err != nil || outcome != cpu.Continued {
+				t.Fatalf("Step: outcome=%v err=%v", outcome, err)
+			}
+			gotRD, err := port.ReadRegister(5)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if gotRD != tc.wantRD {
+				t.Fatalf("rd=%#x want %#x", gotRD, tc.wantRD)
+			}
+			if err := memory.Read(ctx, address, raw); err != nil {
+				t.Fatal(err)
+			}
+			var gotMemory uint64
+			if tc.width == 4 {
+				gotMemory = uint64(binary.LittleEndian.Uint32(raw))
+			} else {
+				gotMemory = binary.LittleEndian.Uint64(raw)
+			}
+			if gotMemory != tc.wantMemory {
+				t.Fatalf("memory=%#x want %#x", gotMemory, tc.wantMemory)
+			}
+		})
+	}
+}
+
+func TestAmoSignExtendsWordResult(t *testing.T) {
+	ctx := context.Background()
+	memory := newSparse()
+	address := uint64(0x1000)
+	if err := memory.Write(ctx, address, []byte{0x01, 0x00, 0x00, 0x80}); err != nil {
+		t.Fatal(err)
+	}
+	port := newPort(t, memory, 0)
+	if err := port.WriteRegister(10, address); err != nil {
+		t.Fatal(err)
+	}
+	memory.load(t, 0, encodeAmo(0x01, 0x2, 10, 0, 5))
+	if outcome, err := port.Step(ctx); err != nil || outcome != cpu.Continued {
+		t.Fatalf("Step: outcome=%v err=%v", outcome, err)
+	}
+	got, err := port.ReadRegister(5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 0xFFFFFFFF80000001 {
+		t.Fatalf("rd=%#x want 符号扩展后的 0xFFFFFFFF80000001", got)
+	}
+}
+
+func TestAmoRejectsMisalignedAndReservedEncodings(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		label       string
+		instruction uint32
+		address     uint64
+		wantKind    cpu.TrapKind
+	}{
+		{"word 未对齐", encodeAmo(0x00, 0x2, 10, 11, 5), 0x802, cpu.TrapMemoryFault},
+		{"double 未对齐", encodeAmo(0x00, 0x3, 10, 11, 5), 0x804, cpu.TrapMemoryFault},
+		{"保留 funct5", encodeAmo(0x02, 0x2, 10, 11, 5), 0x800, cpu.TrapIllegalInstruction},
+		{"保留 funct3", encodeAmo(0x00, 0x0, 10, 11, 5), 0x800, cpu.TrapIllegalInstruction},
+	} {
+		t.Run(tc.label, func(t *testing.T) {
+			memory := newSparse()
+			memory.load(t, 0, tc.instruction)
+			port := newPort(t, memory, 0)
+			if err := port.WriteRegister(10, tc.address); err != nil {
+				t.Fatal(err)
+			}
+			if err := port.WriteRegister(11, 1); err != nil {
+				t.Fatal(err)
+			}
+			outcome, err := port.Step(ctx)
+			if outcome != cpu.Trapped {
+				t.Fatalf("outcome=%v err=%v want Trapped", outcome, err)
+			}
+			var trap cpu.Trap
+			if !errors.As(err, &trap) {
+				t.Fatalf("应产生 trap: %v", err)
+			}
+			if trap.Kind != tc.wantKind {
+				t.Fatalf("trap.Kind=%v want %v", trap.Kind, tc.wantKind)
+			}
+		})
+	}
+}
+
+func TestAmoWritesMemoryWithZeroDestination(t *testing.T) {
+	ctx := context.Background()
+	memory := newSparse()
+	address := uint64(0x900)
+	if err := memory.Write(ctx, address, []byte{7, 0, 0, 0}); err != nil {
+		t.Fatal(err)
+	}
+	port := newPort(t, memory, 0)
+	if err := port.WriteRegister(10, address); err != nil {
+		t.Fatal(err)
+	}
+	if err := port.WriteRegister(11, 9); err != nil {
+		t.Fatal(err)
+	}
+	memory.load(t, 0, encodeAmo(0x00, 0x2, 10, 11, 0))
+	if outcome, err := port.Step(ctx); err != nil || outcome != cpu.Continued {
+		t.Fatalf("Step: outcome=%v err=%v", outcome, err)
+	}
+	var raw [4]byte
+	if err := memory.Read(ctx, address, raw[:]); err != nil {
+		t.Fatal(err)
+	}
+	if got := binary.LittleEndian.Uint32(raw[:]); got != 16 {
+		t.Fatalf("memory=%d want 16(rd=x0 仍需完成 7+9 访存)", got)
 	}
 }

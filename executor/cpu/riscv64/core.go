@@ -175,7 +175,9 @@ func (c *Core) execute(ctx context.Context, pc uint64, instruction uint32) (cpu.
 		return cpu.Continued, nil, nil
 	case 0x73:
 		return c.system(pc, instruction, funct3, rd, rs1)
-	case 0x2F, 0x07, 0x27, 0x43, 0x47, 0x4B, 0x4F, 0x53:
+	case 0x2F:
+		return c.amo(ctx, pc, instruction, rd, rs1, rs2)
+	case 0x07, 0x27, 0x43, 0x47, 0x4B, 0x4F, 0x53:
 
 		return cpu.Trapped, notImplemented(pc, instruction), nil
 	default:
@@ -501,6 +503,98 @@ func (c *Core) system(pc uint64, instruction uint32, funct3 uint32, rd, rs1 int)
 	default:
 
 		return cpu.Trapped, notImplemented(pc, instruction), nil
+	}
+}
+
+func (c *Core) amo(ctx context.Context, pc uint64, instruction uint32, rd, rs1, rs2 int) (cpu.Outcome, *cpu.Trap, error) {
+	operation, ok := amoOperation(instruction >> 27)
+	if !ok {
+		return 0, illegal(pc, instruction), nil
+	}
+	width, word, ok := amoWidth((instruction >> 12) & 0x7)
+	if !ok {
+		return 0, illegal(pc, instruction), nil
+	}
+	address := c.read(rs1)
+	if address%uint64(width) != 0 {
+		return cpu.Trapped, &cpu.Trap{
+			Kind: cpu.TrapMemoryFault, Address: pc, Instruction: instruction, Detail: address,
+			Cause: errno.Wrap(errno.Invalid, "AMO 地址未对齐"),
+		}, nil
+	}
+	var raw [8]byte
+	if err := c.memory.Read(ctx, address, raw[:width]); err != nil {
+		return cpu.Trapped, &cpu.Trap{Kind: cpu.TrapMemoryFault, Address: pc, Instruction: instruction, Detail: address, Cause: err}, nil
+	}
+	old := loadValue(raw[:width], false)
+	updated := operation(old, c.read(rs2), word)
+	if word {
+		binary.LittleEndian.PutUint32(raw[:4], uint32(updated))
+		c.write(rd, signExtend(uint64(uint32(old)), 32))
+	} else {
+		binary.LittleEndian.PutUint64(raw[:8], updated)
+		c.write(rd, old)
+	}
+	if err := c.memory.Write(ctx, address, raw[:width]); err != nil {
+		return cpu.Trapped, &cpu.Trap{Kind: cpu.TrapMemoryFault, Address: pc, Instruction: instruction, Detail: address, Cause: err}, nil
+	}
+	return cpu.Continued, nil, nil
+}
+
+func amoWidth(funct3 uint32) (int, bool, bool) {
+	switch funct3 {
+	case 0x2:
+		return 4, true, true
+	case 0x3:
+		return 8, false, true
+	default:
+		return 0, false, false
+	}
+}
+
+// aq/rl 位在本解释器中为顺序执行的空操作,仅要求非保留编码被接受。
+func amoOperation(funct5 uint32) (func(old, operand uint64, word bool) uint64, bool) {
+	switch funct5 {
+	case 0x01:
+		return func(_, operand uint64, _ bool) uint64 { return operand }, true
+	case 0x00:
+		return func(old, operand uint64, _ bool) uint64 { return old + operand }, true
+	case 0x04:
+		return func(old, operand uint64, _ bool) uint64 { return old ^ operand }, true
+	case 0x08:
+		return func(old, operand uint64, _ bool) uint64 { return old & operand }, true
+	case 0x0C:
+		return func(old, operand uint64, _ bool) uint64 { return old | operand }, true
+	case 0x10:
+		return func(old, operand uint64, word bool) uint64 {
+			if word {
+				return uint64(min(int64(int32(uint32(old))), int64(int32(uint32(operand)))))
+			}
+			return uint64(min(int64(old), int64(operand)))
+		}, true
+	case 0x14:
+		return func(old, operand uint64, word bool) uint64 {
+			if word {
+				return uint64(max(int64(int32(uint32(old))), int64(int32(uint32(operand)))))
+			}
+			return uint64(max(int64(old), int64(operand)))
+		}, true
+	case 0x18:
+		return func(old, operand uint64, word bool) uint64 {
+			if word {
+				return min(uint64(uint32(old)), uint64(uint32(operand)))
+			}
+			return min(old, operand)
+		}, true
+	case 0x1C:
+		return func(old, operand uint64, word bool) uint64 {
+			if word {
+				return max(uint64(uint32(old)), uint64(uint32(operand)))
+			}
+			return max(old, operand)
+		}, true
+	default:
+		return nil, false
 	}
 }
 
