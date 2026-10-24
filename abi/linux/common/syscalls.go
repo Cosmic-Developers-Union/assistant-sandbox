@@ -190,6 +190,14 @@ type Syscalls struct {
 	Core cpu.Port
 
 	Spawner Spawner
+
+	Kills SignalSender
+}
+
+// SignalSender 是 kill/tgkill 的发送端口;实现经内核投递,
+// 自定义处理器经 J03/J04 的边界投递执行。
+type SignalSender interface {
+	Kill(ctx context.Context, pid int64, number uint64) error
 }
 
 // Spawner 是 clone(SIGCHLD) 的进程复制端口;实现复制地址空间、
@@ -358,6 +366,10 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 		return s.sigaltstack(ctx, call)
 	case SysClone:
 		return s.cloneProcess(ctx, call)
+	case SysKill:
+		return s.kill(ctx, call)
+	case SysTgkill:
+		return s.tgkill(ctx, call)
 	case SysFstatfs:
 		return s.fstatfs(ctx, call)
 	case SysFcntl:
@@ -2397,6 +2409,40 @@ func (s Syscalls) rtSigprocmask(ctx context.Context, call Call) Reply {
 		if err := s.Memory.Write(ctx, call.Args[2], encoded[:]); err != nil {
 			return Reply{Errno: errno.Fault}
 		}
+	}
+	return Reply{}
+}
+
+// kill(pid, sig) 与 tgkill(tgid, tid, sig):本兼容配置为单线程进程,
+// tgkill 要求 tid==tgid,否则 ESRCH(与无线程进程的 Linux 行为一致)。
+func (s Syscalls) kill(ctx context.Context, call Call) Reply {
+	if s.Kills == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	sig := call.Args[1]
+	if sig != 0 && !validGuestSignal(sig) {
+		return Reply{Errno: errno.Invalid}
+	}
+	if err := s.Kills.Kill(ctx, int64(call.Args[0]), sig); err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	return Reply{}
+}
+
+func (s Syscalls) tgkill(ctx context.Context, call Call) Reply {
+	if s.Kills == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	sig := call.Args[2]
+	if sig != 0 && !validGuestSignal(sig) {
+		return Reply{Errno: errno.Invalid}
+	}
+	if call.Args[0] != call.Args[1] {
+		// 无线程进程:tid 必须等于 tgid。
+		return Reply{Errno: errno.NoProcess}
+	}
+	if err := s.Kills.Kill(ctx, int64(call.Args[0]), sig); err != nil {
+		return Reply{Errno: errnoOf(err)}
 	}
 	return Reply{}
 }

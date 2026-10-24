@@ -158,6 +158,7 @@ func New(services Services, maxProcesses int) (*Kernel, error) {
 	k.signals = signal.New()
 	k.instances = map[proc.PID]executable.Instance{}
 	k.init = root.ID
+	k.signals.Spawn(uint64(root.ID))
 	if fdt, ok := services.FD.(*fd.Table); ok {
 		k.fds = fdt
 	}
@@ -726,6 +727,19 @@ func (k *Kernel) Signal(target proc.PID, n signal.Number) error {
 	default:
 		return errno.NotSupported
 	}
+}
+
+// SignalAll 向除 except 外的全部进程发送信号(kill(-1) 语义)。
+func (k *Kernel) SignalAll(except proc.PID, n signal.Number) error {
+	for _, p := range k.Processes() {
+		if p.ID == except {
+			continue
+		}
+		if err := k.Signal(p.ID, n); err != nil && !errors.Is(err, errno.NoProcess) {
+			return err
+		}
+	}
+	return nil
 }
 
 func (k *Kernel) SignalGroup(pgid proc.PID, n signal.Number) error {
@@ -1416,6 +1430,56 @@ func (c procControl) Fork() (proc.Proc, *memory.Table, error) {
 		return proc.Proc{}, nil, errno.NoProcess
 	}
 	return c.k.Fork(c.self)
+}
+
+func (c procControl) KillSignal(pid int64, n signal.Number) error {
+	if n != 0 && !n.Valid() {
+		return errno.Invalid
+	}
+	if c.self == 0 {
+		return errno.NoProcess
+	}
+	// sig=0 是存在性探测:目标可寻址即成功,不投递。
+	if n == 0 {
+		switch {
+		case pid > 0:
+			if _, err := c.k.table.Get(proc.PID(pid)); err != nil {
+				return err
+			}
+			return nil
+		case pid == 0:
+			caller, err := c.k.table.Get(c.self)
+			if err != nil {
+				return err
+			}
+			if !job.GroupExists(c.k.table, caller.PGID) {
+				return errno.NoProcess
+			}
+			return nil
+		case pid == -1:
+			// 调用方自身总在可信号集合中。
+			return nil
+		default:
+			if !job.GroupExists(c.k.table, proc.PID(-pid)) {
+				return errno.NoProcess
+			}
+			return nil
+		}
+	}
+	switch {
+	case pid > 0:
+		return c.k.Signal(proc.PID(pid), n)
+	case pid == 0:
+		caller, err := c.k.table.Get(c.self)
+		if err != nil {
+			return err
+		}
+		return c.k.SignalGroup(caller.PGID, n)
+	case pid == -1:
+		return c.k.SignalAll(c.self, n)
+	default:
+		return c.k.SignalGroup(proc.PID(-pid), n)
+	}
 }
 
 func (c procControl) PendingDeliverable() (signal.Number, signal.ActionConfig, bool) {

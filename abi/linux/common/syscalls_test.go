@@ -2880,3 +2880,62 @@ func TestSigaltstackRegistersAndQueries(t *testing.T) {
 		t.Fatalf("未装配: %+v want ENOSYS", reply)
 	}
 }
+
+type fakeKiller struct {
+	calls []struct {
+		pid int64
+		sig uint64
+	}
+	err error
+}
+
+func (f *fakeKiller) Kill(_ context.Context, pid int64, number uint64) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.calls = append(f.calls, struct {
+		pid int64
+		sig uint64
+	}{pid, number})
+	return nil
+}
+
+func TestKillAndTgkillValidateAndDelegate(t *testing.T) {
+	ctx := context.Background()
+	syscalls := Syscalls{Kills: &fakeKiller{}}
+
+	// 基本投递:kill(pid, sig) 原样委托。
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysKill, Args: [6]uint64{42, 15}}); reply.Errno != "" {
+		t.Fatalf("kill: %+v", reply)
+	}
+	// sig=0 存在性探测透传。
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysKill, Args: [6]uint64{42, 0}}); reply.Errno != "" {
+		t.Fatalf("sig=0: %+v", reply)
+	}
+	// 非法信号号(0 除外)EINVAL。
+	for _, sig := range []uint64{65, 1 << 20} {
+		if reply := syscalls.Handle(ctx, Call{Syscall: SysKill, Args: [6]uint64{42, sig}}); reply.Errno != errno.Invalid {
+			t.Fatalf("sig=%d: %+v want EINVAL", sig, reply)
+		}
+	}
+	// 负数 pid 原样传递(进程组/全进程语义由端口实现)。
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysKill, Args: [6]uint64{^uint64(6), 9}}); reply.Errno != "" {
+		t.Fatalf("负 pid: %+v", reply)
+	}
+	// 端口错误透传(ESRCH 等)。
+	failing := Syscalls{Kills: &fakeKiller{err: errno.NoProcess}}
+	if reply := failing.Handle(ctx, Call{Syscall: SysKill, Args: [6]uint64{99, 9}}); reply.Errno != errno.NoProcess {
+		t.Fatalf("ESRCH: %+v want ESRCH", reply)
+	}
+	// tgkill:tid≠tgid 报 ESRCH(无线程进程)。
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysTgkill, Args: [6]uint64{7, 8, 15}}); reply.Errno != errno.NoProcess {
+		t.Fatalf("tgkill tid≠tgid: %+v want ESRCH", reply)
+	}
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysTgkill, Args: [6]uint64{7, 7, 15}}); reply.Errno != "" {
+		t.Fatalf("tgkill tid==tgid: %+v", reply)
+	}
+	// 未装配端口 ENOSYS。
+	if reply := (Syscalls{}).Handle(ctx, Call{Syscall: SysKill}); reply.Errno != errno.NotImplemented {
+		t.Fatalf("未装配: %+v want ENOSYS", reply)
+	}
+}

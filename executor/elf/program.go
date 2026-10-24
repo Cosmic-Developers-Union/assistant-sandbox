@@ -204,6 +204,9 @@ func syscalls(ctx context.Context, process proc.Proc, space *memory.Table, plan 
 	if dispositions, ok := process.Control.(proc.SignalDispositionControl); ok {
 		handler.Signals = processSignals{control: dispositions}
 	}
+	if killer, ok := process.Control.(proc.SignalKillControl); ok {
+		handler.Kills = processKiller{control: killer}
+	}
 	if forker, ok := process.Control.(proc.ForkControl); ok {
 		handler.Spawner = processForker{
 			parent: process, space: space, plan: plan, core: core,
@@ -605,4 +608,16 @@ func (f processForker) Fork(ctx context.Context) (uint64, error) {
 		_ = child.Control.Finish(f.parent.ID, child.ID, uint8(code))
 	}()
 	return uint64(child.ID), nil
+}
+
+// processKiller 把进程控制端口的信号发送能力适配为 kill/tgkill 端口。
+type processKiller struct {
+	control proc.SignalKillControl
+}
+
+func (p processKiller) Kill(ctx context.Context, pid int64, number uint64) error {
+	if number != 0 && !signal.Number(number).Valid() {
+		return errno.Invalid
+	}
+	return p.control.KillSignal(pid, signal.Number(number))
 }

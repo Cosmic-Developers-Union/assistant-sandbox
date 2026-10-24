@@ -96,6 +96,13 @@ type SignalDeliveryControl interface {
 	SetAlternateStack(signal.AltStack) error
 }
 
+// SignalKillControl 是 kill/tgkill/进程组发送的投递端口。
+type SignalKillControl interface {
+	// KillSignal 按 kill(2) 的 pid 语义发送:pid>0 目标进程,
+	// pid=0 调用方进程组,pid=-1 除调用方外的全部进程,pid<-1 进程组 -pid。
+	KillSignal(pid int64, number signal.Number) error
+}
+
 // SignalDispositionControl 是 rt_sigaction/rt_sigprocmask 的登记端口。
 type SignalDispositionControl interface {
 	SetSignalAction(signal.Number, signal.ActionConfig) error

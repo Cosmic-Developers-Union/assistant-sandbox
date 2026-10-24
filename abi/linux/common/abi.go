@@ -210,6 +210,8 @@ const (
 	SysRtSigreturn
 	SysSigaltstack
 	SysClone
+	SysKill
+	SysTgkill
 )
 
 func (s Syscall) String() string {
@@ -480,6 +482,10 @@ func (s Syscall) String() string {
 		return "sigaltstack"
 	case SysClone:
 		return "clone"
+	case SysKill:
+		return "kill"
+	case SysTgkill:
+		return "tgkill"
 	case SysReadlinkat:
 		return "readlinkat"
 	case SysUmask:

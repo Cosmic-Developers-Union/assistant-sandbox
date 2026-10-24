@@ -1144,3 +1144,61 @@ type pipeCountingHandle struct{ closed int }
 func (h *pipeCountingHandle) Read(p []byte) (int, error)  { return 0, io.EOF }
 func (h *pipeCountingHandle) Write(p []byte) (int, error) { return len(p), nil }
 func (h *pipeCountingHandle) Close() error                { h.closed++; return nil }
+
+func TestKillSignalDispatchSemantics(t *testing.T) {
+	reg, _ := registryFor("long")
+	kernel, _ := New(Services{Set: capability.Set{FD: fd.New()}, Programs: reg}, 4)
+	parent, err := kernel.Begin(0, "long", nil, "/", nil, fd.Streams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	control := parent.Control.(proc.SignalKillControl)
+
+	// pid>0:目标存在探测(sig=0)成功,缺失报 ESRCH。
+	if err := control.KillSignal(int64(parent.ID), 0); err != nil {
+		t.Fatalf("sig=0 探测: %v", err)
+	}
+	if err := control.KillSignal(int64(parent.ID+50), 0); !errors.Is(err, errno.NoProcess) {
+		t.Fatalf("缺失目标: %v want ESRCH", err)
+	}
+	// 非法信号号 EINVAL。
+	if err := control.KillSignal(int64(parent.ID), signal.Number(64)); !errors.Is(err, errno.Invalid) {
+		t.Fatalf("非法信号: %v want EINVAL", err)
+	}
+	// pid>0 投递:登记处理器的信号保持挂起待边界投递。
+	_ = kernel.signals.SetAction(uint64(parent.ID), signal.USR1, signal.ActionConfig{Handler: 0x4040})
+	if err := control.KillSignal(int64(parent.ID), signal.USR1); err != nil {
+		t.Fatal(err)
+	}
+	if pending, _ := kernel.signals.Pending(uint64(parent.ID)); len(pending) != 1 || pending[0] != signal.USR1 {
+		t.Fatalf("挂起=%v", pending)
+	}
+	// pid=0:调用方进程组(默认 PGID=自身)。
+	if err := control.KillSignal(0, signal.USR2); err != nil {
+		t.Fatal(err)
+	}
+	if pending, _ := kernel.signals.Pending(uint64(parent.ID)); len(pending) != 2 {
+		t.Fatalf("进程组发送后挂起=%v", pending)
+	}
+	// pid<-1:进程组 -pid;空组按 Linux 报 ESRCH。
+	if err := control.KillSignal(-int64(parent.ID+10), signal.TERM); !errors.Is(err, errno.NoProcess) {
+		t.Fatalf("空组: %v want ESRCH", err)
+	}
+	// pid=-1:全部进程除自身。
+	if err := control.KillSignal(-1, signal.USR1); err != nil {
+		t.Fatal(err)
+	}
+	// sig=0 组探测:调用方组存在、全集合非空成功;空组 ESRCH。
+	if err := control.KillSignal(0, 0); err != nil {
+		t.Fatalf("sig=0 pid=0: %v", err)
+	}
+	if err := control.KillSignal(-1, 0); err != nil {
+		t.Fatalf("sig=0 pid=-1: %v", err)
+	}
+	if err := control.KillSignal(-int64(parent.ID+10), 0); !errors.Is(err, errno.NoProcess) {
+		t.Fatalf("sig=0 空组: %v want ESRCH", err)
+	}
+	if err := kernel.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
