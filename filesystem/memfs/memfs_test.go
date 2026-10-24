@@ -87,7 +87,8 @@ func TestOpenFlagSemantics(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := f.Open(ctx, "/x", vmfs.Append, 0); !errors.Is(err, errno.Invalid) {
+	// O_APPEND|O_RDONLY 对已存在文件允许打开(Linux 语义)。
+	if _, err := f.Open(ctx, "/x", vmfs.Append, 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -756,9 +757,7 @@ func TestOpenFlagAndTraversalErrors(t *testing.T) {
 	if _, err := f.Open(ctx, "/x", vmfs.Exclusive, 0o644); !errors.Is(err, errno.Invalid) {
 		t.Fatalf("Exclusive 无 Create: %v", err)
 	}
-	if _, err := f.Open(ctx, "/x", vmfs.Append, 0o644); !errors.Is(err, errno.Invalid) {
-		t.Fatalf("Append 无读写: %v", err)
-	}
+	// O_APPEND|O_RDONLY 允许打开已存在文件(写入时 EBADF)。
 	if _, err := f.Open(ctx, "/x", vmfs.Exclusive|vmfs.Create|vmfs.ReadWrite, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -1314,5 +1313,124 @@ func TestHandleTruncateSyncAndSetTimes(t *testing.T) {
 	}
 	if err := small.(interface{ Truncate(int64) error }).Truncate(9); !errors.Is(err, errno.NoSpace) {
 		t.Fatalf("单文件预算=%v want ENOSPC", err)
+	}
+}
+
+// I03:open 标志组合矩阵——创建/独占/截断/追加/目录与访问模式逐项
+// 对齐 Linux 语义。
+func TestOpenFlagCombinationsMatchLinux(t *testing.T) {
+	f, _ := newFS(t)
+	ctx := context.Background()
+	write := func(path, content string) {
+		file, err := f.Open(ctx, path, vmfs.Create|vmfs.WriteOnly, 0o644)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := file.Write([]byte(content)); err != nil {
+			t.Fatal(err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("/existing", "data")
+	if err := f.Mkdir(ctx, "/d", 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// 已存在文件:访问模式自由组合成功。
+	for _, flags := range []uint32{vmfs.ReadOnly, vmfs.WriteOnly, vmfs.ReadWrite} {
+		if _, err := f.Open(ctx, "/existing", flags, 0); err != nil {
+			t.Fatalf("flags=%d: %v", flags, err)
+		}
+	}
+
+	// O_CREAT 对已存在文件成功(无 EXCL),对缺失文件创建。
+	if _, err := f.Open(ctx, "/existing", vmfs.Create|vmfs.ReadOnly, 0); err != nil {
+		t.Fatal(err)
+	}
+	created, err := f.Open(ctx, "/fresh", vmfs.Create|vmfs.ReadWrite, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := created.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// O_EXCL|O_CREAT:已存在 EEXIST,缺失创建成功。
+	if _, err := f.Open(ctx, "/existing", vmfs.Create|vmfs.Exclusive|vmfs.ReadWrite, 0o644); !errors.Is(err, errno.Exist) {
+		t.Fatalf("EXCL 已存在: %v want EEXIST", err)
+	}
+	exclusive, err := f.Open(ctx, "/exclusive", vmfs.Create|vmfs.Exclusive|vmfs.ReadWrite, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := exclusive.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// EXCL 无 CREATE → EINVAL(参数组合无效)。
+	if _, err := f.Open(ctx, "/exclusive", vmfs.Exclusive|vmfs.ReadWrite, 0); !errors.Is(err, errno.Invalid) {
+		t.Fatalf("EXCL 无 CREATE: %v want EINVAL", err)
+	}
+
+	// O_TRUNC:收缩内容,与访问模式无关(Linux 语义)。
+	if _, err := f.Open(ctx, "/existing", vmfs.Truncate|vmfs.ReadOnly, 0); err != nil {
+		t.Fatalf("TRUNC|RDONLY: %v", err)
+	}
+	if stat, err := f.Stat(ctx, "/existing"); err != nil || stat.Size() != 0 {
+		t.Fatalf("O_TRUNC|O_RDONLY 应截断: size=%d err=%v", stat.Size(), err)
+	}
+	write("/existing", "data")
+	if _, err := f.Open(ctx, "/existing", vmfs.Truncate|vmfs.ReadWrite, 0); err != nil {
+		t.Fatal(err)
+	}
+	if stat, err := f.Stat(ctx, "/existing"); err != nil || stat.Size() != 0 {
+		t.Fatalf("O_TRUNC|O_RDWR 应截断: size=%d err=%v", stat.Size(), err)
+	}
+
+	// O_APPEND|O_RDONLY 打开成功,写入报 EBADF。
+	appendOnly, err := f.Open(ctx, "/existing", vmfs.Append|vmfs.ReadOnly, 0)
+	if err != nil {
+		t.Fatalf("APPEND|RDONLY: %v", err)
+	}
+	if _, err := appendOnly.Write([]byte("x")); !errors.Is(err, errno.BadHandle) {
+		t.Fatalf("追加只读写入: %v want EBADF", err)
+	}
+	if err := appendOnly.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// O_APPEND|O_WRONLY 写入落在末尾。
+	write("/existing", "ab")
+	appender, err := f.Open(ctx, "/existing", vmfs.Append|vmfs.WriteOnly, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := appender.Write([]byte("c")); err != nil {
+		t.Fatal(err)
+	}
+	if err := appender.Close(); err != nil {
+		t.Fatal(err)
+	}
+	file, err := f.Open(ctx, "/existing", vmfs.ReadOnly, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := make([]byte, 8)
+	loaded, _ := file.Read(content)
+	if string(content[:loaded]) != "abc" {
+		t.Fatalf("追加结果=%q want abc", content[:loaded])
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// 目录组合:O_TRUNC/O_APPEND 均报 EISDIR,O_CREAT(无 EXCL)打开成功。
+	for _, flags := range []uint32{vmfs.Truncate | vmfs.ReadOnly, vmfs.Append | vmfs.ReadOnly, vmfs.ReadWrite} {
+		if _, err := f.Open(ctx, "/d", flags, 0); !errors.Is(err, errno.IsDirectory) {
+			t.Fatalf("目录 flags=%d: %v want EISDIR", flags, err)
+		}
+	}
+	if _, err := f.Open(ctx, "/d", vmfs.Create|vmfs.ReadOnly, 0); err != nil {
+		t.Fatalf("O_CREAT 打开目录: %v", err)
 	}
 }

@@ -99,3 +99,49 @@ func readAll(ctx context.Context, system vmfs.System, path string) (data []byte,
 	data, resultErr = io.ReadAll(file)
 	return data, errors.Join(resultErr, file.Close())
 }
+
+// I03:只读挂载上的 open 标志矩阵——任何写意图(访问位、创建、
+// 截断、追加)都报 EROFS;纯读组合透传底层。
+func TestOpenFlagMatrixOnReadOnlyMount(t *testing.T) {
+	ctx := context.Background()
+	base, err := memfs.New(&clock.Virtual{}, memfs.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := base.Open(ctx, "/f", vmfs.Create|vmfs.WriteOnly, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write([]byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ro, err := New(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, flags := range []uint32{
+		vmfs.WriteOnly,
+		vmfs.ReadWrite,
+		vmfs.Create | vmfs.ReadOnly,
+		vmfs.Truncate | vmfs.ReadOnly,
+		vmfs.Append | vmfs.WriteOnly,
+		vmfs.Create | vmfs.Exclusive | vmfs.ReadWrite,
+	} {
+		if _, err := ro.Open(ctx, "/f", flags, 0); !errors.Is(err, errno.ReadOnlyFS) {
+			t.Fatalf("flags=%d: err=%v want EROFS", flags, err)
+		}
+	}
+	// 纯读组合透传底层。
+	readable, err := ro.Open(ctx, "/f", vmfs.ReadOnly, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := make([]byte, 4)
+	if loaded, _ := readable.Read(content); string(content[:loaded]) != "x" {
+		t.Fatalf("只读读取=%q", content[:loaded])
+	}
+}

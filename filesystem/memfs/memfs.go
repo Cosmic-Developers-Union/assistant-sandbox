@@ -302,9 +302,7 @@ func (f *FS) Open(ctx context.Context, p string, flags uint32, mode stdfs.FileMo
 	if exclusive && !create {
 		return nil, errno.Invalid
 	}
-	if append && access == 0 {
-		return nil, errno.Invalid
-	}
+	// O_APPEND|O_RDONLY 在 Linux 允许打开(写入时才报 EBADF)。
 	node, _, _, err := f.lookup(p, true)
 	created := false
 	if err != nil {
@@ -352,7 +350,7 @@ func (f *FS) Open(ctx context.Context, p string, flags uint32, mode stdfs.FileMo
 			return nil, errno.Permission
 		}
 	}
-	if truncate && access != 0 {
+	if truncate {
 		if len(node.data) > f.maxBytes {
 			return nil, errno.NoSpace
 		}

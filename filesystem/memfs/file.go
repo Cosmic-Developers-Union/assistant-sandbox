@@ -60,6 +60,10 @@ func (h *handle) Write(p []byte) (int, error) {
 		// 目录句柄只以只读方式打开;write(2) 返回 EBADF。
 		return 0, errno.BadHandle
 	}
+	if !h.writable {
+		// fd 未以写方式打开(含 O_APPEND|O_RDONLY)。
+		return 0, errno.BadHandle
+	}
 	if h.appendMode {
 		h.off = int64(len(h.node.data))
 	}
