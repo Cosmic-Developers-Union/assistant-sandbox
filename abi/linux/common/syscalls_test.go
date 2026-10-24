@@ -75,6 +75,13 @@ func (d *fakeDescriptors) Dup2(_ context.Context, oldfd, newfd uint64, cloexec b
 	return d.seekErr
 }
 
+func (d *fakeDescriptors) DupFrom(_ context.Context, descriptor uint64) (uint64, error) {
+	if d.seekErr != nil {
+		return 0, d.seekErr
+	}
+	return descriptor + 1, nil
+}
+
 func (d *fakeDescriptors) EventFD(ctx context.Context, initialValue, flags uint64) (uint64, error) {
 	d.eventfd = append(d.eventfd, [2]uint64{initialValue, flags})
 	return 33, d.eventfdErr

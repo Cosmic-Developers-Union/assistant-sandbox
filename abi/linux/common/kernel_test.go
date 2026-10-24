@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"io"
 	stdfs "io/fs"
 	"math"
 	"testing"
@@ -532,4 +533,81 @@ func TestStatfsAgainstRealQuota(t *testing.T) {
 
 func readByte(memory *fakeMemory, address uint64) byte {
 	return memory.data[address]
+}
+
+func TestDupAndFcntlFlagsAgainstRealFileSystem(t *testing.T) {
+	ctx := context.Background()
+	system, err := memfs.New(&clock.Virtual{}, memfs.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const pid = 51
+	table := fd.New()
+	table.Attach(pid, fd.Streams{})
+	files := ProcessFiles{System: system, Store: table, PID: pid, Dir: "/"}
+	descriptors := ProcessDescriptors{Table: table, PID: pid}
+	syscalls := Syscalls{Memory: newFakeMemory(), Descriptors: descriptors, Files: files}
+
+	origin, err := files.Open(ctx, OpenRequest{Path: "/f", Flags: OpenFlags{Mode: OpenReadWrite, Create: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// dup:最低空闲编号且共享偏移。
+	dupReply := syscalls.Handle(ctx, call(SysDup, origin, 0, 0))
+	if dupReply.Errno != "" {
+		t.Fatalf("dup: %+v", dupReply)
+	}
+	duped := dupReply.Value
+	if duped <= origin {
+		t.Fatalf("dup 编号=%d 应大于 %d", duped, origin)
+	}
+	if _, err := descriptors.Write(ctx, origin, []byte("hello")); err != nil {
+		t.Fatal(err)
+	}
+	// 共享偏移:原描述符写到位置 5,副本从同一位置读 → 立即 EOF。
+	buffer := make([]byte, 5)
+	if loaded, err := descriptors.Read(ctx, duped, buffer); !errors.Is(err, io.EOF) || loaded != 0 {
+		t.Fatalf("dup 应共享偏移(读到 EOF): 读=%d err=%v", loaded, err)
+	}
+
+	// F_GETFL:读写模式。
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysFcntl, Args: [6]uint64{origin, fGetFL}}); reply.Errno != "" || reply.Value != 2 {
+		t.Fatalf("F_GETFL: %+v want O_RDWR", reply)
+	}
+
+	// F_SETFL:O_NONBLOCK 对常规文件无效果地成功,O_APPEND 生效。
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysFcntl, Args: [6]uint64{origin, fSetFL, oNonBlock}}); reply.Errno != "" {
+		t.Fatalf("F_SETFL NONBLOCK: %+v", reply)
+	}
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysFcntl, Args: [6]uint64{origin, fSetFL, oAppend}}); reply.Errno != "" {
+		t.Fatalf("F_SETFL APPEND: %+v", reply)
+	}
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysFcntl, Args: [6]uint64{origin, fGetFL}}); reply.Errno != "" || reply.Value != 2|oAppend {
+		t.Fatalf("F_GETFL 应含 O_APPEND: %+v", reply)
+	}
+	// 追加写落在末尾。
+	if _, err := descriptors.Write(ctx, origin, []byte("!")); err != nil {
+		t.Fatal(err)
+	}
+	if stat, err := system.Stat(ctx, "/f"); err != nil || stat.Size() != 6 {
+		t.Fatalf("追加后尺寸=%d err=%v", stat.Size(), err)
+	}
+
+	// F_DUPFD_CLOEXEC:起始编号与 CLOEXEC 标志。
+	cloexecReply := syscalls.Handle(ctx, Call{Syscall: SysFcntl, Args: [6]uint64{origin, fDupFDCloexec, 200}})
+	if cloexecReply.Errno != "" || cloexecReply.Value < 200 {
+		t.Fatalf("F_DUPFD_CLOEXEC: %+v", cloexecReply)
+	}
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysFcntl, Args: [6]uint64{cloexecReply.Value, fGetFD}}); reply.Errno != "" || reply.Value != 1 {
+		t.Fatalf("CLOEXEC 标志: %+v", reply)
+	}
+
+	// 关闭副本不影响原描述符。
+	if reply := syscalls.Handle(ctx, call(SysClose, duped, 0, 0)); reply.Errno != "" {
+		t.Fatalf("close dup: %+v", reply)
+	}
+	if _, err := descriptors.Get(ctx, origin); err != nil {
+		t.Fatalf("原描述符失效: %v", err)
+	}
 }

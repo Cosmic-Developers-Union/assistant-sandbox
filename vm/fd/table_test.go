@@ -308,3 +308,53 @@ func TestEventFDDescriptorLifecycle(t *testing.T) {
 		t.Fatalf("未知进程应报 ESRCH: %v", err)
 	}
 }
+
+func TestDupAtSharesHandleFromMinimum(t *testing.T) {
+	table := New()
+	const pid = 5
+	table.Attach(pid, Streams{})
+	first := &countingHandle{}
+	installed, err := table.InstallNext(pid, first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// min=100:得到 ≥100 的最低编号。
+	duped, err := table.DupAt(context.Background(), pid, uint64(installed), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if duped < 100 {
+		t.Fatalf("dup=%d want ≥100", duped)
+	}
+	// 共享句柄:经任一描述符关闭后引用计数保护另一描述符。
+	if _, err := table.Get(context.Background(), pid, duped); err != nil {
+		t.Fatal(err)
+	}
+	if err := table.Close(context.Background(), pid, installed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := table.Get(context.Background(), pid, duped); err != nil {
+		t.Fatalf("dup 引用计数失效: %v", err)
+	}
+	if err := table.Close(context.Background(), pid, duped); err != nil {
+		t.Fatal(err)
+	}
+	if first.closed != 1 {
+		t.Fatalf("句柄应恰好关闭一次: %d", first.closed)
+	}
+	// 坏来源与越界起点。
+	if _, err := table.DupAt(context.Background(), pid, 99, 0); !errors.Is(err, errno.BadHandle) {
+		t.Fatalf("坏来源: %v want EBADF", err)
+	}
+	if _, err := table.DupAt(context.Background(), 999, uint64(installed), 0); !errors.Is(err, errno.NoProcess) {
+		t.Fatalf("未装配进程: %v", err)
+	}
+}
+
+type countingHandle struct {
+	closed int
+}
+
+func (h *countingHandle) Read(p []byte) (int, error)  { return 0, io.EOF }
+func (h *countingHandle) Write(p []byte) (int, error) { return len(p), nil }
+func (h *countingHandle) Close() error                { h.closed++; return nil }

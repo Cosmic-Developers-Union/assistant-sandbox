@@ -69,6 +69,29 @@ func (p ProcessDescriptors) Get(ctx context.Context, descriptor uint64) (any, er
 	return p.Table.Get(ctx, p.PID, uint32(descriptor))
 }
 
+// asm-generic 的 fcntl 命令与文件状态标志。
+const (
+	fDupFD        = 0
+	fGetFD        = 1
+	fSetFD        = 2
+	fGetFL        = 3
+	fSetFL        = 4
+	fDupFDCloexec = 1030
+
+	oAppend   = 0o2000
+	oNonBlock = 0o4000
+)
+
+// statusFlagger 是句柄的可选能力:报告打开状态标志(F_GETFL)。
+type statusFlagger interface {
+	StatusFlags() (uint32, error)
+}
+
+// statusFlagSetter 是句柄的可选能力:应用 F_SETFL。
+type statusFlagSetter interface {
+	SetStatusFlags(flags uint32) error
+}
+
 func (p ProcessDescriptors) Fcntl(ctx context.Context, descriptor uint64, cmd uint64, arg uint64) (uint64, error) {
 	if p.Table == nil {
 		return 0, errno.Wrap(errno.NotImplemented, "描述符端口未装配")
@@ -81,7 +104,7 @@ func (p ProcessDescriptors) Fcntl(ctx context.Context, descriptor uint64, cmd ui
 		return 0, errno.Wrap(errno.NotSupported, "描述符表不支持 fcntl")
 	}
 	switch cmd {
-	case 1: // F_GETFD
+	case fGetFD: // F_GETFD
 		cloexec, err := table.Cloexec(p.PID, uint32(descriptor))
 		if err != nil {
 			return 0, err
@@ -90,14 +113,75 @@ func (p ProcessDescriptors) Fcntl(ctx context.Context, descriptor uint64, cmd ui
 			return 1, nil // FD_CLOEXEC
 		}
 		return 0, nil
-	case 2: // F_SETFD
+	case fSetFD: // F_SETFD
 		if err := table.SetCloexec(p.PID, uint32(descriptor), arg&1 != 0); err != nil {
+			return 0, err
+		}
+		return 0, nil
+	case fDupFD: // F_DUPFD
+		return p.dupAt(ctx, table, descriptor, arg)
+	case fDupFDCloexec: // F_DUPFD_CLOEXEC
+		id, err := p.dupAt(ctx, table, descriptor, arg)
+		if err != nil {
+			return 0, err
+		}
+		if err := table.SetCloexec(p.PID, uint32(id), true); err != nil {
+			return 0, err
+		}
+		return id, nil
+	case fGetFL: // F_GETFL
+		if p.Table == nil {
+			return 0, errno.Wrap(errno.NotImplemented, "描述符端口未装配")
+		}
+		handle, err := p.Table.Get(ctx, p.PID, uint32(descriptor))
+		if err != nil {
+			return 0, err
+		}
+		flagger, ok := handle.(statusFlagger)
+		if !ok {
+			return 0, errno.Wrap(errno.NotSupported, "描述符不支持状态标志查询")
+		}
+		flags, err := flagger.StatusFlags()
+		return uint64(flags), err
+	case fSetFL: // F_SETFL
+		handle, err := p.Table.Get(ctx, p.PID, uint32(descriptor))
+		if err != nil {
+			return 0, err
+		}
+		setter, ok := handle.(statusFlagSetter)
+		if !ok {
+			// 管道/eventfd 的非阻塞切换未纳入兼容配置,明确拒绝。
+			return 0, errno.Wrap(errno.NotSupported, "描述符不支持状态标志设置")
+		}
+		if err := setter.SetStatusFlags(uint32(arg)); err != nil {
 			return 0, err
 		}
 		return 0, nil
 	default:
 		return 0, errno.Wrap(errno.NotSupported, "fcntl 命令不被支持")
 	}
+}
+
+func (p ProcessDescriptors) dupAt(ctx context.Context, table *fd.Table, descriptor, minID uint64) (uint64, error) {
+	if minID > math.MaxUint32 {
+		return 0, errno.Wrap(errno.Invalid, "起始描述符超出表示范围")
+	}
+	id, err := table.DupAt(ctx, p.PID, descriptor, minID)
+	return uint64(id), err
+}
+
+func (p ProcessDescriptors) DupFrom(ctx context.Context, descriptor uint64) (uint64, error) {
+	if p.Table == nil {
+		return 0, errno.Wrap(errno.NotImplemented, "描述符端口未装配")
+	}
+	if descriptor > math.MaxUint32 {
+		return 0, errno.Wrap(errno.BadHandle, "描述符编号超出表示范围")
+	}
+	table, ok := p.Table.(*fd.Table)
+	if !ok {
+		return 0, errno.Wrap(errno.NotSupported, "描述符表不支持 dup")
+	}
+	return p.dupAt(ctx, table, descriptor, 0)
 }
 
 func (p ProcessDescriptors) Pipe(ctx context.Context) (uint64, uint64, error) {

@@ -38,6 +38,9 @@ type Descriptors interface {
 	EventFD(ctx context.Context, initialValue, flags uint64) (uint64, error)
 
 	Dup2(ctx context.Context, oldfd, newfd uint64, cloexec bool) error
+
+	// DupFrom 复制描述符到 ≥ 0 的最低空闲编号,共享底层句柄。
+	DupFrom(ctx context.Context, descriptor uint64) (uint64, error)
 }
 
 type SeekWhence int
@@ -313,6 +316,8 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 		return s.pipe(ctx, call, true)
 	case SysEventfd2:
 		return s.eventfd2(ctx, call)
+	case SysDup:
+		return s.dup(ctx, call)
 	case SysDup3:
 		return s.dup3(ctx, call)
 	case SysGetdents64:
@@ -2409,6 +2414,18 @@ func (s Syscalls) eventfd2(ctx context.Context, call Call) Reply {
 		return Reply{Errno: errnoOf(err)}
 	}
 	return Reply{Value: descriptor}
+}
+
+// dup(f) 复制到最低空闲编号,共享文件偏移与状态。
+func (s Syscalls) dup(ctx context.Context, call Call) Reply {
+	if s.Descriptors == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	id, err := s.Descriptors.DupFrom(ctx, call.Args[0])
+	if err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	return Reply{Value: id}
 }
 
 func (s Syscalls) dup3(ctx context.Context, call Call) Reply {

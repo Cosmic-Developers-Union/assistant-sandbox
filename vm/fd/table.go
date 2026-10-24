@@ -1,6 +1,8 @@
 package fd
 
 import (
+	"math"
+
 	"context"
 	"errors"
 	"io"
@@ -168,6 +170,35 @@ func (t *Table) Dup(ctx context.Context, pid uint64, from, to uint32) error {
 	source.ref.refs++
 	table[to] = &entry{ref: source.ref}
 	return nil
+}
+
+// DupAt 把 from 复制到 ≥ min 的最低空闲编号并返回该编号;
+// 复制共享同一底层句柄(偏移与状态共享),与 dup/fcntl F_DUPFD 一致。
+func (t *Table) DupAt(ctx context.Context, pid, from, min uint64) (uint32, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	table := t.entries[pid]
+	if table == nil {
+		return 0, errno.NoProcess
+	}
+	if from > math.MaxUint32 {
+		return 0, errno.BadHandle
+	}
+	source := table[uint32(from)]
+	if source == nil {
+		return 0, errno.BadHandle
+	}
+	for id := uint32(min); id < ^uint32(0); id++ {
+		if _, taken := table[id]; !taken {
+			source.ref.refs++
+			table[id] = &entry{ref: source.ref}
+			return id, nil
+		}
+	}
+	return 0, errno.Limit
 }
 
 func (t *Table) Pipe(pid uint64) (uint32, uint32, error) {

@@ -360,7 +360,7 @@ func (f *FS) Open(ctx context.Context, p string, flags uint32, mode stdfs.FileMo
 		node.mtime = f.now()
 	}
 	node.opened++
-	return &handle{fs: f, node: node, appendMode: append, writable: access != 0}, nil
+	return &handle{fs: f, node: node, appendMode: append, writable: access != 0, accessMode: access}, nil
 }
 
 func (f *FS) Stat(ctx context.Context, p string) (stdfs.FileInfo, error) {

@@ -89,6 +89,7 @@ const (
 	numberSchedGetAffinity = 123
 	numberGetCPU           = 168
 	numberWaitid           = 95
+	numberDup              = 23
 	numberSocket           = 198
 	numberBind             = 200
 	numberListen           = 201
@@ -377,6 +378,8 @@ func syscallOf(number uint64) common.Syscall {
 		return common.SysGetCPU
 	case numberWaitid:
 		return common.SysWaitid
+	case numberDup:
+		return common.SysDup
 	case numberSocket:
 		return common.SysSocket
 	case numberBind:

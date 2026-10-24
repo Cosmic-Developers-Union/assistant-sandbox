@@ -21,6 +21,7 @@ type handle struct {
 	dirPos     uint64
 	appendMode bool
 	writable   bool
+	accessMode uint32
 	closed     bool
 }
 
@@ -217,6 +218,38 @@ func (h *handle) Truncate(size int64) error {
 	now := h.fs.now()
 	h.node.mtime = now
 	h.node.atime = now
+	return nil
+}
+
+// StatusFlags 报告句柄的打开状态标志(F_GETFL 视图):
+// 访问模式 + O_APPEND。
+func (h *handle) StatusFlags() (uint32, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.closed {
+		return 0, errno.BadHandle
+	}
+	flags := h.accessMode
+	if h.appendMode {
+		flags |= 0o2000 // O_APPEND
+	}
+	return flags, nil
+}
+
+// SetStatusFlags 应用 F_SETFL:访问模式位不可改(忽略),
+// O_APPEND 切换追加写,O_NONBLOCK 对常规文件是无效果的成功
+// (与 Linux 语义一致),其余位忽略。
+func (h *handle) SetStatusFlags(flags uint32) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.closed {
+		return errno.BadHandle
+	}
+	if flags&0o2000 != 0 {
+		h.appendMode = true
+	} else {
+		h.appendMode = false
+	}
 	return nil
 }
 
