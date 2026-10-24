@@ -59,6 +59,10 @@ type Options struct {
 
 	LoadBias uint64
 
+	// InterpreterBase 是动态解释器的装载基址:非零时初始栈的
+	// AT_BASE 记录该值(F06),静态程序保持 0。
+	InterpreterBase uint64
+
 	StackSize uint64
 
 	StackTop uint64
@@ -104,6 +108,10 @@ type Plan struct {
 
 	ProgramEntrySize uint64
 	ProgramCount     uint64
+
+	// InterpreterPath 是 PT_INTERP 记录的动态解释器客体路径;
+	// 静态程序为空(F05)。
+	InterpreterPath string
 }
 
 func Load(raw []byte, options Options) (*Plan, error) {
@@ -132,6 +140,7 @@ func Load(raw []byte, options Options) (*Plan, error) {
 		ProgramAddress:   image.programAddress,
 		ProgramEntrySize: image.programEntrySize,
 		ProgramCount:     image.programCount,
+		InterpreterPath:  image.interpreter,
 	}, nil
 }
 
@@ -169,6 +178,7 @@ type loadedImage struct {
 	programAddress   uint64
 	programEntrySize uint64
 	programCount     uint64
+	interpreter      string
 }
 
 func loadImage(raw []byte, options Options) (*loadedImage, error) {
@@ -188,7 +198,7 @@ func loadImage(raw []byte, options Options) (*loadedImage, error) {
 	if !ok {
 		return nil, overflow("入口地址溢出")
 	}
-	raws, err := collectSegments(r, head, bias)
+	raws, interpreter, err := collectSegments(r, head, bias)
 	if err != nil {
 		return nil, err
 	}
@@ -209,31 +219,42 @@ func loadImage(raw []byte, options Options) (*loadedImage, error) {
 		programAddress:   programAddress,
 		programEntrySize: uint64(head.entrySize),
 		programCount:     uint64(head.count),
+		interpreter:      interpreter,
 	}, nil
 }
 
-func collectSegments(r reader, head header, bias uint64) ([]Segment, error) {
+func collectSegments(r reader, head header, bias uint64) ([]Segment, string, error) {
 	if uint64(head.count) > maxSegments {
-		return nil, limit(fmt.Sprintf("程序头 %d 个超过上限 %d", head.count, maxSegments))
+		return nil, "", limit(fmt.Sprintf("程序头 %d 个超过上限 %d", head.count, maxSegments))
 	}
 
 	if _, err := r.slice(head.programAt, uint64(head.count)*uint64(head.entrySize)); err != nil {
-		return nil, err
+		return nil, "", err
 	}
+	interpreter := ""
 	segments := make([]Segment, 0, head.count)
 	for index := uint64(0); index < uint64(head.count); index++ {
 		program := r.programHeaderAt(head.programAt, uint64(head.entrySize), index)
 		switch program.typeID {
 		case programLoad:
 		case programInterp:
-			return nil, notSupported("动态链接（PT_INTERP）未实现")
+			// F05:记录解释器客体路径;路径串不产生可装载段。
+			path, err := interpPath(r, program)
+			if err != nil {
+				return nil, "", err
+			}
+			if interpreter != "" {
+				return nil, "", malformed("映像声明了多个 PT_INTERP")
+			}
+			interpreter = path
+			continue
 		case programDynamic:
-			return nil, notSupported("动态链接（PT_DYNAMIC）未实现")
+			return nil, "", notSupported("动态链接（PT_DYNAMIC）未实现")
 		case programTLS:
-			return nil, notSupported("线程局部存储（PT_TLS）未实现")
+			return nil, "", notSupported("线程局部存储（PT_TLS）未实现")
 		case programGNUStack:
 			if program.flags&flagExec != 0 {
-				return nil, invalid("映像请求可执行栈")
+				return nil, "", invalid("映像请求可执行栈")
 			}
 			continue
 		default:
@@ -246,15 +267,34 @@ func collectSegments(r reader, head header, bias uint64) ([]Segment, error) {
 		}
 		segment, err := buildSegment(r, program, bias)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		segments = append(segments, segment)
 	}
 	if len(segments) == 0 {
-		return nil, malformed("没有可装载的 PT_LOAD 段")
+		return nil, "", malformed("没有可装载的 PT_LOAD 段")
 	}
 	sort.Slice(segments, func(i, j int) bool { return segments[i].Region.Start < segments[j].Region.Start })
-	return segments, nil
+	return segments, interpreter, nil
+}
+
+// interpPath 读取 PT_INTERP 记录的 NUL 终止解释器路径。
+func interpPath(r reader, program programHeader) (string, error) {
+	if program.filesz == 0 || program.filesz > 4096 {
+		return "", malformed(fmt.Sprintf("PT_INTERP 长度 %d 非法", program.filesz))
+	}
+	raw, err := r.slice(program.offset, program.filesz)
+	if err != nil {
+		return "", err
+	}
+	if raw[len(raw)-1] != 0 {
+		return "", malformed("PT_INTERP 缺少 NUL 终止")
+	}
+	path := string(raw[:len(raw)-1])
+	if path == "" || path[0] != '/' {
+		return "", malformed(fmt.Sprintf("PT_INTERP 路径 %q 必须是客体绝对路径", path))
+	}
+	return path, nil
 }
 
 // clusterPiece 是页簇内一个段的文件内容片段(按虚拟地址定位)。

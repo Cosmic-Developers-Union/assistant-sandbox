@@ -494,7 +494,8 @@ func TestLoadRejections(t *testing.T) {
 			},
 		},
 		{
-			label: "动态链接解释器", want: errno.NotSupported, detail: "PT_INTERP",
+			// F05:PT_INTERP 不再整体拒绝;路径串必须 NUL 终止。
+			label: "解释器路径缺少 NUL 终止", want: errno.NoExec, detail: "NUL",
 			mutate: func(t *testing.T, raw []byte) {
 				patchProgramHeader(t, raw, 1, func(program *programHeader) { program.typeID = programInterp })
 			},
@@ -773,5 +774,88 @@ func TestSamePageLoadSegmentsShareOneCluster(t *testing.T) {
 	}
 	if cluster.Data[codeSize:roOffset][0] != 0 {
 		t.Fatalf("段间空隙应保持零填充")
+	}
+}
+
+// TestPTInterpCapturedAndAtBaseWired 验证 F05/F06:装载器记录
+// PT_INTERP 的解释器客体路径;InterpreterBase 写入初始栈的 AT_BASE,
+// AT_ENTRY/AT_PHDR 保持主程序的值(供 ld.so 启动主程序)。
+func TestPTInterpCapturedAndAtBaseWired(t *testing.T) {
+	raw := make([]byte, 0x2000)
+	copy(raw[0:4], "\x7fELF")
+	raw[offIdentClass] = classELF64
+	raw[offIdentData] = dataLittleEndian
+	raw[offIdentVersion] = versionCurrent
+	binary.LittleEndian.PutUint16(raw[offType:], typeExecutable)
+	binary.LittleEndian.PutUint16(raw[offMachine:], machineRISCV)
+	binary.LittleEndian.PutUint32(raw[offVersion:], versionCurrent)
+	binary.LittleEndian.PutUint64(raw[offEntry:], imageCodeBase+0x10)
+	binary.LittleEndian.PutUint64(raw[offProgramOffset:], imagePhdrOffset)
+	binary.LittleEndian.PutUint32(raw[offFlags:], riscvFloatABISoft)
+	binary.LittleEndian.PutUint16(raw[offHeaderSize:], headerSize)
+	binary.LittleEndian.PutUint16(raw[offProgramEntry:], programHeaderSize)
+	binary.LittleEndian.PutUint16(raw[offProgramCount:], 3)
+
+	const interpOffset = 0x900 // 文件内:解释器路径串
+	interpPath := "/lib/ld-test.so"
+	copy(raw[interpOffset:], append([]byte(interpPath), 0))
+	putProgramHeader(raw[imagePhdrOffset:], programHeader{
+		typeID: programLoad, flags: flagRead | flagExec,
+		offset: 0, vaddr: imageCodeBase, filesz: 0x800, memsz: 0x800, align: PageSize,
+	})
+	putProgramHeader(raw[imagePhdrOffset+programHeaderSize:], programHeader{
+		typeID: programInterp, flags: flagRead,
+		offset: interpOffset, vaddr: imageCodeBase + interpOffset,
+		filesz: uint64(len(interpPath) + 1), memsz: uint64(len(interpPath) + 1), align: 1,
+	})
+	putProgramHeader(raw[imagePhdrOffset+2*programHeaderSize:], programHeader{
+		typeID: programLoad, flags: flagRead | flagWrite,
+		offset: 0x1000, vaddr: imageDataBase, filesz: 0x40, memsz: 0x100, align: PageSize,
+	})
+
+	const bias = uint64(0x40000000)
+	plan, err := Load(raw, Options{InterpreterBase: bias, Random: [16]byte{}})
+	if err != nil {
+		t.Fatalf("含 PT_INTERP 的映像应装载成功: %v", err)
+	}
+	if plan.InterpreterPath != interpPath {
+		t.Fatalf("解释器路径=%q want %q", plan.InterpreterPath, interpPath)
+	}
+
+	// 初始栈:argc → argv[] → NULL → envp[] → NULL → auxv 对;
+	// 找 AT_BASE(7) 并断言其值为解释器基址,AT_ENTRY(9) 为主程序入口。
+	content := plan.Stack.Content
+	at := func(address uint64) uint64 {
+		return binary.LittleEndian.Uint64(content[address-plan.Stack.ContentBase:])
+	}
+	cursor := plan.Stack.SP
+	argc := at(cursor)
+	position := cursor + 8 + argc*8 + 8 // 跳过 argv 数组与 NULL
+	for at(position) != 0 {
+		position += 8
+	}
+	position += 8 // envp 的 NULL
+	foundBase, foundEntry := false, false
+	for {
+		kind, value := at(position), at(position+8)
+		if kind == 0 {
+			break
+		}
+		if kind == 7 {
+			if value != bias {
+				t.Fatalf("AT_BASE=%#x want %#x", value, bias)
+			}
+			foundBase = true
+		}
+		if kind == 9 {
+			if value != imageCodeBase+0x10 {
+				t.Fatalf("AT_ENTRY=%#x want 主程序入口", value)
+			}
+			foundEntry = true
+		}
+		position += 16
+	}
+	if !foundBase || !foundEntry {
+		t.Fatalf("auxv 缺失项: AT_BASE=%v AT_ENTRY=%v", foundBase, foundEntry)
 	}
 }

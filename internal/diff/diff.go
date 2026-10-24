@@ -7,6 +7,7 @@ package diff
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -61,7 +62,7 @@ func Compare(programDigest, input string, expected, actual Result) []Finding {
 			continue
 		}
 		if got != want {
-			findings = append(findings, Finding{programDigest, input, "file-content:"+path, want, got})
+			findings = append(findings, Finding{programDigest, input, "file-content:" + path, want, got})
 		}
 	}
 	for _, path := range sortedKeys(actual.Files) {
@@ -89,7 +90,7 @@ func ReferenceLinux(ctx context.Context, image []byte, stdin string) (Result, er
 	if err != nil {
 		return Result{}, err
 	}
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 	path := dir + "/guest"
 	if err := os.WriteFile(path, image, 0o755); err != nil {
 		return Result{}, err
@@ -111,7 +112,8 @@ func ReferenceLinux(ctx context.Context, image []byte, stdin string) (Result, er
 	command.Stderr = &stderr
 	runErr := command.Run()
 	code := 0
-	if exitErr, ok := runErr.(*exec.ExitError); ok {
+	var exitErr *exec.ExitError
+	if errors.As(runErr, &exitErr) {
 		code = exitErr.ExitCode()
 	} else if runErr != nil {
 		return Result{}, fmt.Errorf("参考执行失败: %w", runErr)

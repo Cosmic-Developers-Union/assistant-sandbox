@@ -64,7 +64,8 @@ func buildStack(options Options, facts auxFacts) (Stack, error) {
 		{atPhent, facts.programEntrySize},
 		{atPhnum, facts.programCount},
 		{atPagesz, PageSize},
-		{atBase, 0},
+		// AT_BASE:动态解释器装载基址(静态程序为 0)。
+		{atBase, options.InterpreterBase},
 		{atFlags, 0},
 		{atEntry, facts.entry},
 

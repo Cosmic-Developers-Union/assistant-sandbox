@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	loaderelf "github.com/Cosmic-Developers-Union/assistant-sandbox/loader/elf"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/executable"
 	vmfs "github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fs"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/signal"
@@ -297,4 +298,87 @@ func parseSiAddr(t *testing.T, detail string) uint64 {
 		t.Fatalf("si_addr 解析失败: %v", err)
 	}
 	return address
+}
+
+// buildDynImage 构造 ET_DYN 解释器映像(装载时叠加解释器基址)。
+func buildDynImage(t *testing.T, program []uint32) []byte {
+	t.Helper()
+	raw := buildImageWith(t, program, "")
+	binary.LittleEndian.PutUint16(raw[16:], 3) // ET_DYN
+	return raw
+}
+
+// buildInterpMainImage 构造携带 PT_INTERP 的主程序映像:解释器路径
+// 串位于数据段,第三个程序头记录其文件偏移与长度。
+func buildInterpMainImage(t *testing.T, interpreterPath string, program []uint32) []byte {
+	t.Helper()
+	raw := make([]byte, imageDataOffset+0x100)
+	copy(raw[0:4], "\x7fELF")
+	raw[4] = 2
+	raw[5] = 1
+	raw[6] = 1
+	binary.LittleEndian.PutUint16(raw[16:], 2)
+	binary.LittleEndian.PutUint16(raw[18:], 243)
+	binary.LittleEndian.PutUint32(raw[20:], 1)
+	binary.LittleEndian.PutUint64(raw[24:], imageEntry)
+	binary.LittleEndian.PutUint64(raw[32:], imagePhdrOffset)
+	binary.LittleEndian.PutUint16(raw[52:], imageHeaderSize)
+	binary.LittleEndian.PutUint16(raw[54:], imagePhdrSize)
+	binary.LittleEndian.PutUint16(raw[56:], 3) // LOAD + INTERP + LOAD
+	putProgramHeader(raw[imagePhdrOffset:], 1, 5, 0, imageCodeBase, imageCodeSize, imageCodeSize, 0x1000)
+	interpOffset := uint64(imageDataOffset + 0x80)
+	putProgramHeader(raw[imagePhdrOffset+imagePhdrSize:], 3, 4, interpOffset,
+		imageDataBase+0x80, uint64(len(interpreterPath)+1), uint64(len(interpreterPath)+1), 1)
+	putProgramHeader(raw[imagePhdrOffset+2*imagePhdrSize:], 1, 6, imageDataOffset, imageDataBase, 0x10, 0x100, 0x1000)
+	copy(raw[interpOffset:], append([]byte(interpreterPath), 0))
+	// 主程序若被错误执行会以 0x7E 退出;正确流程由解释器接管。
+	for index, instruction := range append(program, []uint32{0x07E00513, 0x05D00893, 0x00000073}...) {
+		binary.LittleEndian.PutUint32(raw[imageProgramAt+index*4:], instruction)
+	}
+	return raw
+}
+
+// TestRealELFDynamicProgramRunsInterpreter 验证 F05/F06:带 PT_INTERP
+// 的主程序从客体文件系统解析解释器,解释器映像以固定槽位装载并
+// 接管入口;主程序自身不执行(其退出码 0x7E 未出现)。
+func TestRealELFDynamicProgramRunsInterpreter(t *testing.T) {
+	// 解释器:exit(0x77)。
+	interp := buildDynImage(t, []uint32{
+		0x07700513, // li a0, 0x77
+		0x05D00893, // li a7, 93 (exit)
+		0x00000073, // ecall
+	})
+	main := buildInterpMainImage(t, "/interp", []uint32{
+		0x04200513, // li a0, 0x42(不应执行)
+		0x05D00893, // li a7, 93
+		0x00000073, // ecall
+	})
+	harness := newHarness(t, main, nil)
+	writeGuestFile(t, harness.system, "/interp", interp)
+	guest, _, err := Factory{}.New("/program")
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, runErr := guest.Run(context.Background(), harness.process)
+	if runErr != nil {
+		t.Fatalf("run: %v", runErr)
+	}
+	if code != 0x77 {
+		t.Fatalf("退出码=%#x want 0x77(解释器接管入口)", code)
+	}
+}
+
+// TestRealELFMissingInterpreterFailsClearly 验证 F05:PT_INTERP 指向
+// 的解释器在客体文件系统中缺失时返回明确加载错误(ENOENT)。
+func TestRealELFMissingInterpreterFailsClearly(t *testing.T) {
+	main := buildInterpMainImage(t, "/nope", nil)
+	harness := newHarness(t, main, nil)
+	guest, _, err := Factory{}.New("/program")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, runErr := guest.Run(context.Background(), harness.process)
+	if !errors.Is(runErr, errno.NotFound) {
+		t.Fatalf("err=%v want ENOENT", runErr)
+	}
 }

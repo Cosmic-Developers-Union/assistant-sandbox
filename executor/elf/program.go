@@ -37,25 +37,21 @@ func (Factory) New(path string) (executable.Program, []string, error) {
 type program struct{ path string }
 
 func (p *program) Run(ctx context.Context, process proc.Proc) (uint8, error) {
-	image, err := p.image(ctx, process)
+	loaded, err := loadProgram(ctx, process, p.path, argv(process, p.path), environment(process))
 	if err != nil {
 		return 0, err
 	}
-	plan, err := loaderelf.Load(image, loaderelf.Options{
-		Argv:     argv(process, p.path),
-		Env:      environment(process),
-		ExecPath: p.path,
-		Random:   randomBytesFor(ctx, process),
-	})
-	if err != nil {
-		return 0, err
-	}
+	plan := loaded.main
 
 	if err := chargeMemory(ctx, process, plan); err != nil {
 		return 0, err
 	}
+	chargeSegments(ctx, process, loaded.interpreterSegments())
 	space, err := addressSpace(ctx, plan)
 	if err != nil {
+		return 0, err
+	}
+	if err := populateSegments(ctx, space, loaded.interpreterSegments()); err != nil {
 		return 0, err
 	}
 
@@ -72,8 +68,9 @@ func (p *program) Run(ctx context.Context, process proc.Proc) (uint8, error) {
 	if err != nil {
 		return 0, err
 	}
-	// 初始机器状态:入口 + 装载器布置的栈指针(argv/envp/auxv 顶)。
-	initial := cpu.Machine{PC: plan.Entry, Registers: make([]uint64, 32), Floats: make([]uint64, 32)}
+	// 初始机器状态:动态时入口是解释器(AT_BASE/AT_ENTRY/AT_PHDR
+	// 由装载器写入主计划初始栈,F06);静态时是主程序入口。
+	initial := cpu.Machine{PC: loaded.Entry(), Registers: make([]uint64, 32), Floats: make([]uint64, 32)}
 	initial.Registers[regSp] = plan.Stack.SP
 	if err := core.Reset(ctx, initial); err != nil {
 		return 0, err
@@ -110,10 +107,6 @@ func (p *program) Run(ctx context.Context, process proc.Proc) (uint8, error) {
 	return uint8(status), nil
 }
 
-func (p *program) image(ctx context.Context, process proc.Proc) ([]byte, error) {
-	return readImage(ctx, process, p.path)
-}
-
 func readImage(ctx context.Context, process proc.Proc, path string) (content []byte, resultErr error) {
 	if process.Resources == nil {
 
@@ -146,15 +139,49 @@ func chargeMemory(ctx context.Context, process proc.Proc, plan *loaderelf.Plan) 
 	if meters == nil {
 		return nil
 	}
-	var total uint64
-	for _, segment := range plan.Segments {
-		total += segment.Region.End - segment.Region.Start
-	}
-	total += plan.Stack.Region.End - plan.Stack.Region.Start
+	total := segmentsBytes(plan.Segments) + plan.Stack.Region.Size()
 	if total == 0 {
 		return nil
 	}
 	return meters.ChargeKind(ctx, uint64(process.ID), resources.KindMemory, total)
+}
+
+// chargeSegments 按段区间为动态解释器补充内存计量(F06)。
+func chargeSegments(ctx context.Context, process proc.Proc, segments []loaderelf.Segment) {
+	meters := metersOf(process)
+	if meters == nil || len(segments) == 0 {
+		return
+	}
+	_ = meters.ChargeKind(ctx, uint64(process.ID), resources.KindMemory, segmentsBytes(segments))
+}
+
+func segmentsBytes(segments []loaderelf.Segment) uint64 {
+	var total uint64
+	for _, segment := range segments {
+		total += segment.Region.End - segment.Region.Start
+	}
+	return total
+}
+
+// populateSegments 把既有段集(动态解释器)装入地址空间,不携带
+// 独立栈(解释器沿用主计划的初始栈)。
+func populateSegments(ctx context.Context, space *memory.Table, segments []loaderelf.Segment) error {
+	for _, segment := range segments {
+		populate := segment.Region
+		populate.Prot = memory.ProtRead | memory.ProtWrite
+		if err := space.Map(ctx, populate); err != nil {
+			return err
+		}
+		if err := space.Write(ctx, segment.Address, segment.Data); err != nil {
+			return err
+		}
+		if segment.Region.Prot != populate.Prot {
+			if err := space.Protect(ctx, segment.Region.Start, segment.Region.End, segment.Region.Prot); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func addressSpace(ctx context.Context, plan *loaderelf.Plan) (*memory.Table, error) {
@@ -168,6 +195,100 @@ func addressSpace(ctx context.Context, plan *loaderelf.Plan) (*memory.Table, err
 // stackGuardBytes 是栈低端的保护页大小:栈溢出触达保护页时报
 // 保护错误(SEGV/ACCERR),不会写入相邻映射(E13)。
 const stackGuardBytes = memory.PageSize
+
+// interpreterBase 是动态解释器的固定装载槽位:与主程序段(低位)、
+// mmap 区(4GiB 起)、堆与栈(高位)均不重叠(F06)。真实 ld.so
+// 接入后由顶层分配器替代。
+const interpreterBase = uint64(0x40) << 24
+
+// loadedProgram 汇总一次装载的产物:主计划(含初始栈与 auxv)与
+// 可选的动态解释器计划(F05/F06)。
+type loadedProgram struct {
+	main   *loaderelf.Plan
+	interp *loaderelf.Plan
+}
+
+// Entry 返回初始执行入口:有解释器时为解释器入口(ld.so 先行)。
+func (l *loadedProgram) Entry() uint64 {
+	if l.interp != nil {
+		return l.interp.Entry
+	}
+	return l.main.Entry
+}
+
+// interpreterSegments 返回解释器的可装载段;静态程序返回空。
+func (l *loadedProgram) interpreterSegments() []loaderelf.Segment {
+	if l.interp != nil {
+		return l.interp.Segments
+	}
+	return nil
+}
+
+// loadProgram 从客体文件系统装载 path 的映像;PT_INTERP 指向的
+// 动态解释器同样从客体文件系统装载(F05),主计划初始栈的 AT_BASE
+// 记录解释器基址(F06)。路径不可达宿主,缺失报明确加载错误。
+func loadProgram(ctx context.Context, process proc.Proc, path string, argv, envp []string) (*loadedProgram, error) {
+	content, err := readImage(ctx, process, path)
+	if err != nil {
+		return nil, err
+	}
+	options := loaderelf.Options{
+		Argv:     argv,
+		Env:      envp,
+		ExecPath: path,
+		Random:   randomBytesFor(ctx, process),
+	}
+	plan, err := loaderelf.Load(content, options)
+	if err != nil {
+		return nil, err
+	}
+	out := &loadedProgram{main: plan}
+	if plan.InterpreterPath == "" {
+		return out, nil
+	}
+	interpContent, err := readImage(ctx, process, plan.InterpreterPath)
+	if err != nil {
+		return nil, err
+	}
+	interpPlan, err := loaderelf.Load(interpContent, loaderelf.Options{
+		Argv:     argv,
+		Env:      envp,
+		ExecPath: path,
+		Random:   randomBytesFor(ctx, process),
+		LoadBias: interpreterBase,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if overlaps(plan.Segments, interpPlan.Segments) {
+		return nil, errno.Wrap(errno.NoExec, "解释器装载槽位与主程序映射重叠")
+	}
+	// 主计划初始栈需携带解释器基址:以 AT_BASE 重新构建。
+	plan, err = loaderelf.Load(content, loaderelf.Options{
+		Argv:            argv,
+		Env:             envp,
+		ExecPath:        path,
+		Random:          randomBytesFor(ctx, process),
+		InterpreterBase: interpPlan.Bias,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out.main = plan
+	out.interp = interpPlan
+	return out, nil
+}
+
+func overlaps(left, right []loaderelf.Segment) bool {
+	for _, a := range left {
+		for _, b := range right {
+			if a.Region.Overlaps(b.Region) {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 // populateSpace 把映像段、栈与栈保护页装入既有地址空间;execve
 // 原地替换复用同一装载逻辑(H07)。
@@ -795,10 +916,11 @@ type processExec struct {
 const maxShebangDepth = 4
 
 func (p *processExec) Exec(ctx context.Context, path string, argv, envp []string) error {
-	plan, finalArgv, err := p.load(ctx, path, argv, envp, 0)
+	loaded, finalArgv, err := p.load(ctx, path, argv, envp, 0)
 	if err != nil {
 		return err
 	}
+	plan := loaded.main
 	// 原子边界:装载已成功。先回吐旧映像的内存计量,再为新映像记账;
 	// 记账失败(配额耗尽)恢复旧计量,旧程序继续执行。此后释放旧空间、
 	// 装入新映像并重置执行流。
@@ -807,15 +929,21 @@ func (p *processExec) Exec(ctx context.Context, path string, argv, envp []string
 		p.recharge(ctx, released)
 		return err
 	}
+	chargeSegments(ctx, p.process, loaded.interpreterSegments())
 	if err := p.clearSpace(ctx); err != nil {
 		return err
 	}
 	if err := populateSpace(ctx, p.space, plan); err != nil {
 		return err
 	}
+	if err := populateSegments(ctx, p.space, loaded.interpreterSegments()); err != nil {
+		return err
+	}
 	// brk 随新映像布局重建,堆起始不得沿用旧布局。
 	p.handler.Heap = newHeap(p.space, p.process, plan)
-	initial := cpu.Machine{PC: plan.Entry, Registers: make([]uint64, 32), Floats: make([]uint64, 32)}
+	// 动态程序入口为解释器(AT_BASE/AT_ENTRY/AT_PHDR 已在主计划
+	// 初始栈,见 F06);静态程序为主程序入口。
+	initial := cpu.Machine{PC: loaded.Entry(), Registers: make([]uint64, 32), Floats: make([]uint64, 32)}
 	initial.Registers[regSp] = plan.Stack.SP
 	if err := p.core.Reset(ctx, initial); err != nil {
 		return err
@@ -829,7 +957,7 @@ func (p *processExec) Exec(ctx context.Context, path string, argv, envp []string
 // load 读取客体路径的映像并装载;非 ELF 的 "#!" 脚本按 Linux 语义
 // 解析解释器与可选参数,最终 argv 为 [解释器(,参数), 脚本路径,
 // 原 argv[1:]...],随后装载解释器映像(嵌套上限 4 层)。
-func (p *processExec) load(ctx context.Context, path string, argv, envp []string, depth int) (*loaderelf.Plan, []string, error) {
+func (p *processExec) load(ctx context.Context, path string, argv, envp []string, depth int) (*loadedProgram, []string, error) {
 	if depth > maxShebangDepth {
 		return nil, nil, errno.Wrap(errno.NoExec, "shebang 解释器嵌套过深")
 	}
@@ -838,13 +966,8 @@ func (p *processExec) load(ctx context.Context, path string, argv, envp []string
 		return nil, nil, err
 	}
 	if !bytes.HasPrefix(content, []byte("#!")) {
-		plan, err := loaderelf.Load(content, loaderelf.Options{
-			Argv:     argv,
-			Env:      envp,
-			ExecPath: path,
-			Random:   randomBytesFor(ctx, p.process),
-		})
-		return plan, argv, err
+		loaded, err := loadProgram(ctx, p.process, path, argv, envp)
+		return loaded, argv, err
 	}
 	interp, arg, ok := parseShebang(content)
 	if !ok {
