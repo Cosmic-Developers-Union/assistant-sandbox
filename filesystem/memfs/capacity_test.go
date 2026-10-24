@@ -3,6 +3,7 @@ package memfs
 import (
 	"context"
 	"errors"
+	"io"
 	"testing"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/clock"
@@ -214,5 +215,61 @@ func TestRestoreRebuildsUsageAccounting(t *testing.T) {
 	}
 	if _, err := f.Stat(ctx, "/a.txt"); err != nil {
 		t.Fatalf("恢复出来的文件必须可读: %v", err)
+	}
+}
+
+// TestWriteFitsAvailableSpaceThenReportsNoSpace 验证 I06 的 Linux
+// 短写语义:写入按可用空间截断并返回已完成量,只有完全写不进才报
+// ENOSPC;零长度写在满盘时同样成功。EOF 与零长度读在此一并覆盖。
+func TestWriteFitsAvailableSpaceThenReportsNoSpace(t *testing.T) {
+	clk := &clock.Virtual{}
+	f, err := New(clk, Options{TotalBytes: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	file, err := f.Open(ctx, "/a", vmfs.Create|vmfs.ReadWrite, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 已占 6 字节:再写 8 字节只写入 4 字节(短写,无错误)。
+	if n, err := file.Write([]byte("abcdef")); n != 6 || err != nil {
+		t.Fatalf("n=%d err=%v", n, err)
+	}
+	if n, err := file.Write([]byte("12345678")); n != 4 || err != nil {
+		t.Fatalf("短写应返回已完成量: n=%d err=%v", n, err)
+	}
+	info, err := file.Stat()
+	if err != nil || info.Size() != 10 {
+		t.Fatalf("短写后尺寸=%d err=%v", info.Size(), err)
+	}
+	// 已满:报 ENOSPC 且不写入。
+	if n, err := file.Write([]byte("x")); n != 0 || !errors.Is(err, errno.NoSpace) {
+		t.Fatalf("满盘写: n=%d err=%v want ENOSPC", n, err)
+	}
+	// 满盘零长度写恒成功。
+	if n, err := file.Write(nil); n != 0 || err != nil {
+		t.Fatalf("零长度写: n=%d err=%v", n, err)
+	}
+	// 短读:越过 EOF 只返回剩余字节;EOF 后返回 (0, EOF)。
+	if _, err := file.Seek(8, 0); err != nil {
+		t.Fatal(err)
+	}
+	buffer := make([]byte, 8)
+	n, err := file.Read(buffer)
+	if n != 2 || err != nil || string(buffer[:2]) != "34" {
+		t.Fatalf("短读: n=%d err=%v data=%q", n, err, buffer[:n])
+	}
+	if _, err := file.Seek(0, 0); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := file.Read(nil); n != 0 || err != nil {
+		t.Fatalf("零长度读: n=%d err=%v", n, err)
+	}
+	if _, err := file.Seek(0, 2); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := file.Read(buffer); n != 0 || !errors.Is(err, io.EOF) {
+		t.Fatalf("EOF 读: n=%d err=%v", n, err)
 	}
 }

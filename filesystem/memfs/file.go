@@ -70,23 +70,31 @@ func (h *handle) Write(p []byte) (int, error) {
 	if h.off < 0 {
 		return 0, errno.Invalid
 	}
-	end := h.off + int64(len(p))
-	if end > int64(h.fs.maxBytes) {
-		return 0, errno.NoSpace
+	// Linux 语义:常规文件按可用空间短写,返回已完成字节数;
+	// 只有一字节都写不进才报 ENOSPC(I06)。零长度写恒成功。
+	allowed := int64(len(p))
+	if limit := int64(h.fs.maxBytes) - h.off; limit < allowed {
+		allowed = limit
 	}
-
 	if h.fs.maxTotalBytes > 0 {
 		used := h.fs.usedBytes() - int64(len(h.node.data))
-		if used+end > h.fs.maxTotalBytes {
-			return 0, errno.NoSpace
+		if limit := h.fs.maxTotalBytes - used - h.off; limit < allowed {
+			allowed = limit
 		}
 	}
+	if allowed <= 0 {
+		if len(p) == 0 {
+			return 0, nil
+		}
+		return 0, errno.NoSpace
+	}
+	end := h.off + allowed
 	if end > int64(len(h.node.data)) {
 		grown := make([]byte, end)
 		copy(grown, h.node.data)
 		h.node.data = grown
 	}
-	n := copy(h.node.data[h.off:], p)
+	n := copy(h.node.data[h.off:], p[:allowed])
 	h.off += int64(n)
 	now := h.fs.now()
 	h.node.mtime = now

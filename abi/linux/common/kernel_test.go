@@ -733,3 +733,49 @@ func TestDirectoryOperationsAgainstRealFileSystem(t *testing.T) {
 		t.Fatalf("RENAME_NOREPLACE: %+v want EINVAL", reply)
 	}
 }
+
+// TestReadWriteShortSemanticsAgainstRealFileSystem 验证 I06:write(2)
+// 按配额短写返回已完成量,后续写报 ENOSPC;read(2) 在 EOF 返回 0;
+// 零长度读写恒成功。
+func TestReadWriteShortSemanticsAgainstRealFileSystem(t *testing.T) {
+	ctx := context.Background()
+	system, err := memfs.New(&clock.Virtual{}, memfs.Options{TotalBytes: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const pid = 51
+	table := fd.New()
+	table.Attach(pid, fd.Streams{})
+	files := ProcessFiles{System: system, Store: table, PID: pid, Dir: "/"}
+	descriptors := ProcessDescriptors{Table: table, PID: pid}
+	syscalls := Syscalls{Memory: newFakeMemory(), Descriptors: descriptors, Files: files}
+
+	fd, err := files.Open(ctx, OpenRequest{Path: "/log", Flags: OpenFlags{Mode: OpenReadWrite, Create: true}, Perm: 0o644})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 写入 8 字节后写 4 字节:短写 2,write(2) 返回 2 且无错误。
+	if err := syscalls.Memory.Write(ctx, 0x2000, []byte("abcdefgh")); err != nil {
+		t.Fatal(err)
+	}
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysWrite, Args: [6]uint64{fd, 0x2000, 8}}); reply.Value != 8 || reply.Errno != "" {
+		t.Fatalf("首次写: %+v", reply)
+	}
+	if err := syscalls.Memory.Write(ctx, 0x2000, []byte("WXYZ")); err != nil {
+		t.Fatal(err)
+	}
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysWrite, Args: [6]uint64{fd, 0x2000, 4}}); reply.Value != 2 || reply.Errno != "" {
+		t.Fatalf("短写应返回已完成量 2: %+v", reply)
+	}
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysWrite, Args: [6]uint64{fd, 0x2000, 1}}); reply.Errno != errno.NoSpace {
+		t.Fatalf("满盘写: %+v want ENOSPC", reply)
+	}
+	// 零长度写在满盘时成功。
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysWrite, Args: [6]uint64{fd, 0x2000, 0}}); reply.Errno != "" || reply.Value != 0 {
+		t.Fatalf("零长度写: %+v", reply)
+	}
+	// EOF 读返回 0。
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysRead, Args: [6]uint64{fd, 0x2000, 4}}); reply.Errno != "" || reply.Value != 0 {
+		t.Fatalf("EOF 读: %+v want 0", reply)
+	}
+}

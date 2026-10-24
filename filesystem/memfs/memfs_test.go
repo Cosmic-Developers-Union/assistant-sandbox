@@ -455,11 +455,13 @@ func TestBudgets(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := big.Write([]byte("12345")); !errors.Is(err, errno.NoSpace) {
-		t.Fatal(err)
+	// Linux 语义:按可用空间短写,写满 4 字节返回已完成量;
+	// 再无一字节可写时报 ENOSPC(I06)。
+	if n, err := big.Write([]byte("12345")); n != 4 || err != nil {
+		t.Fatalf("n=%d err=%v", n, err)
 	}
-	if _, err := big.Write([]byte("1234")); err != nil {
-		t.Fatal(err)
+	if n, err := big.Write([]byte("x")); n != 0 || !errors.Is(err, errno.NoSpace) {
+		t.Fatalf("n=%d err=%v", n, err)
 	}
 }
 
@@ -975,10 +977,10 @@ func TestFileHandleErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n, err := small.Write([]byte("abcde")); n != 0 || !errors.Is(err, errno.NoSpace) {
+	if n, err := small.Write([]byte("abcde")); n != 4 || err != nil {
 		t.Fatalf("n=%d err=%v", n, err)
 	}
-	if n, err := small.Write([]byte("abcd")); n != 4 || err != nil {
+	if n, err := small.Write([]byte("abcd")); n != 0 || !errors.Is(err, errno.NoSpace) {
 		t.Fatalf("n=%d err=%v", n, err)
 	}
 	if err := small.Close(); err != nil {
