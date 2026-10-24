@@ -35,6 +35,9 @@ const (
 	numberGetEGID         = 177
 	numberGetTID          = 178
 	numberBrk             = 214
+	numberMmap            = 222
+	numberMunmap          = 215
+	numberMprotect        = 226
 	numberUname           = 160
 	numberGetcwd          = 17
 	numberSysinfo         = 179
@@ -250,6 +253,12 @@ func syscallOf(number uint64) common.Syscall {
 		return common.SysGetTID
 	case numberBrk:
 		return common.SysBrk
+	case numberMmap:
+		return common.SysMmap
+	case numberMunmap:
+		return common.SysMunmap
+	case numberMprotect:
+		return common.SysMprotect
 	case numberRead:
 		return common.SysRead
 	case numberWrite:

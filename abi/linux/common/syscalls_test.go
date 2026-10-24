@@ -761,3 +761,102 @@ func TestBrkQueryGrowAndFailure(t *testing.T) {
 		t.Fatalf("缺端口: reply=%+v want ENOSYS", reply)
 	}
 }
+
+type fakeMapper struct {
+	mapped   []MapRequest
+	unmapped [][2]uint64
+	reply    uint64
+	err      error
+}
+
+func (m *fakeMapper) Anonymous(_ context.Context, request MapRequest) (uint64, error) {
+	m.mapped = append(m.mapped, request)
+	if m.err != nil {
+		return 0, m.err
+	}
+	return m.reply, nil
+}
+
+func (m *fakeMapper) Unmap(_ context.Context, start, end uint64) error {
+	m.unmapped = append(m.unmapped, [2]uint64{start, end})
+	return m.err
+}
+
+func TestMmapValidatesAndDelegates(t *testing.T) {
+	ctx := context.Background()
+	anon := uint64(mapPrivate | mapAnonymous)
+	for _, tc := range []struct {
+		label string
+		args  [6]uint64
+		want  errno.Code
+	}{
+		{"零长度", [6]uint64{0, 0, ProtRead, anon, ^uint64(0), 0}, errno.Invalid},
+		{"未知标志", [6]uint64{0, 4096, ProtRead, anon | 0x4000, ^uint64(0), 0}, errno.Invalid},
+		{"共享映射", [6]uint64{0, 4096, ProtRead, mapAnonymous, ^uint64(0), 0}, errno.NotSupported},
+		{"文件映射", [6]uint64{0, 4096, ProtRead, mapPrivate, 3, 0}, errno.NotSupported},
+		{"非零偏移", [6]uint64{0, 4096, ProtRead, anon, ^uint64(0), 4096}, errno.Invalid},
+		{"提示未对齐", [6]uint64{4097, 4096, ProtRead, anon, ^uint64(0), 0}, errno.Invalid},
+	} {
+		mapper := &fakeMapper{}
+		handler := Syscalls{Mapper: mapper}
+		if reply := handler.Handle(ctx, Call{Syscall: SysMmap, Args: tc.args}); reply.Errno != tc.want {
+			t.Errorf("%s: err=%v want %v", tc.label, reply.Errno, tc.want)
+		}
+		if len(mapper.mapped) != 0 {
+			t.Errorf("%s: 被拒绝的调用不得触达地址空间", tc.label)
+		}
+	}
+
+	if reply := (Syscalls{}).Handle(ctx, Call{Syscall: SysMmap}); reply.Errno != errno.NotImplemented {
+		t.Fatalf("未装配 Mapper 应报 ENOSYS: %v", reply.Errno)
+	}
+
+	mapper := &fakeMapper{reply: 0x1000}
+	handler := Syscalls{Mapper: mapper}
+	reply := handler.Handle(ctx, Call{Syscall: SysMmap, Args: [6]uint64{0, 4097, ProtRead | ProtWrite, anon, ^uint64(0), 0}})
+	if reply.Errno != "" || reply.Value != 0x1000 {
+		t.Fatalf("正常映射: %+v", reply)
+	}
+	if len(mapper.mapped) != 1 || mapper.mapped[0].Length != 8192 {
+		t.Fatalf("长度应向上取整到页: %+v", mapper.mapped)
+	}
+
+	if reply := handler.Handle(ctx, Call{Syscall: SysMmap, Args: [6]uint64{0x5000, 4096, ProtRead, anon | mapFixed | mapFixedNoReplace, ^uint64(0), 0}}); reply.Errno != "" {
+		t.Fatalf("固定映射: %v", reply.Errno)
+	}
+	request := mapper.mapped[1]
+	if !request.Fixed || !request.NoReplace || request.Hint != 0x5000 {
+		t.Fatalf("FIXED/NOREPLACE 标志应传递: %+v", request)
+	}
+}
+
+func TestMunmapValidatesAndDelegates(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		label string
+		args  [6]uint64
+		want  errno.Code
+	}{
+		{"起始未对齐", [6]uint64{4097, 4096}, errno.Invalid},
+		{"零长度", [6]uint64{4096, 0}, errno.Invalid},
+		{"范围溢出", [6]uint64{^uint64(0) - 4095, 1 << 63}, errno.Overflow},
+	} {
+		mapper := &fakeMapper{}
+		handler := Syscalls{Mapper: mapper}
+		if reply := handler.Handle(ctx, Call{Syscall: SysMunmap, Args: tc.args}); reply.Errno != tc.want {
+			t.Errorf("%s: err=%v want %v", tc.label, reply.Errno, tc.want)
+		}
+		if len(mapper.unmapped) != 0 {
+			t.Errorf("%s: 被拒绝的调用不得触达地址空间", tc.label)
+		}
+	}
+
+	mapper := &fakeMapper{}
+	handler := Syscalls{Mapper: mapper}
+	if reply := handler.Handle(ctx, Call{Syscall: SysMunmap, Args: [6]uint64{4096, 5000}}); reply.Errno != "" {
+		t.Fatalf("正常解除: %v", reply.Errno)
+	}
+	if len(mapper.unmapped) != 1 || mapper.unmapped[0] != [2]uint64{4096, 12288} {
+		t.Fatalf("解除范围应页对齐: %+v", mapper.unmapped)
+	}
+}

@@ -56,7 +56,7 @@ func TestLinuxMappingIsStable(t *testing.T) {
 		Permission: 13, NotFound: 2, NoProcess: 3, Interrupted: 4, NoDevice: 6,
 		NoExec: 8, BadHandle: 9, NoChild: 10, Limit: 11, WouldBlock: 11, Busy: 16,
 		Exist: 17, CrossDevice: 18, NotDirectory: 20, IsDirectory: 21, Invalid: 22,
-		NoSpace: 28, ReadOnlyFS: 30, BrokenPipe: 32, Range: 34, NameTooLong: 36,
+		NoSpace: 28, NoMemory: 12, ReadOnlyFS: 30, BrokenPipe: 32, Range: 34, NameTooLong: 36,
 		NotImplemented: 38, NotEmpty: 39, LinkLoop: 40, Version: 71, Overflow: 75,
 		NotSupported: 95, NetworkUnreachable: 101, TimedOut: 110, Cancelled: 125,
 		Fault: 14, IO: 5, Seek: 29,

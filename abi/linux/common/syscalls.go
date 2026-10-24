@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/memory"
 )
 
 type Memory interface {
@@ -109,6 +110,8 @@ type Syscalls struct {
 
 	Heap Heap
 
+	Mapper Mappable
+
 	BufferLimit uint64
 
 	Random Random
@@ -147,6 +150,10 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 		return s.gettimeofday(ctx, call)
 	case SysBrk:
 		return s.brk(ctx, call)
+	case SysMmap:
+		return s.mmap(ctx, call)
+	case SysMunmap:
+		return s.munmap(ctx, call)
 	case SysUname:
 		return s.uname(ctx, call)
 	case SysGetrandom:
@@ -448,6 +455,103 @@ type Heap interface {
 	Break(ctx context.Context) (uint64, error)
 
 	Grow(ctx context.Context, target uint64) (uint64, error)
+}
+
+// Mappable 由内核地址空间实现,承接 mmap/munmap 的区域管理。
+// start/end 与返回地址必须页对齐;length 由调用方先行对齐。
+type Mappable interface {
+	// Anonymous 映射零填充的匿名私有区间并返回映射起始地址。
+	// request.Hint 为 0 时由内核选址;Fixed 时必须落在 Hint 且替换重叠映射;
+	// NoReplace 与 Fixed 组合时,重叠返回 EEXIST 且不改动任何映射。
+	Anonymous(ctx context.Context, request MapRequest) (uint64, error)
+
+	// Unmap 解除页对齐范围;范围未被完整映射时报 ENOMEM 且不改动。
+	Unmap(ctx context.Context, start, end uint64) error
+}
+
+type MapRequest struct {
+	Length uint64
+	Prot   uint64
+	Hint   uint64
+	Fixed  bool
+	// NoReplace 对应 MAP_FIXED_NOREPLACE。
+	NoReplace bool
+}
+
+// riscv64 采用 asm-generic 的 mmap 标志与保护位定义。
+const (
+	ProtRead  = 0x1
+	ProtWrite = 0x2
+	ProtExec  = 0x4
+
+	mapPrivate        = 0x02
+	mapFixed          = 0x10
+	mapAnonymous      = 0x20
+	mapFixedNoReplace = 0x100000
+	mapSupportedMask  = mapPrivate | mapFixed | mapAnonymous | mapFixedNoReplace
+)
+
+func (s Syscalls) mmap(ctx context.Context, call Call) Reply {
+	if s.Mapper == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	length := call.Args[1]
+	if length == 0 {
+		return Reply{Errno: errno.Invalid}
+	}
+	flags := call.Args[3]
+	if flags&mapSupportedMask != flags {
+		return Reply{Errno: errno.Invalid}
+	}
+	if flags&mapPrivate == 0 {
+		// MAP_SHARED 匿名映射需要跨进程共享页,未纳入当前兼容配置,明确拒绝。
+		return Reply{Errno: errno.NotSupported}
+	}
+	if flags&mapAnonymous == 0 {
+		// 文件映射未纳入当前兼容配置(E09 未完成),明确拒绝而非伪成功。
+		return Reply{Errno: errno.NotSupported}
+	}
+	if call.Args[5] != 0 {
+		return Reply{Errno: errno.Invalid}
+	}
+	hint := call.Args[0]
+	if hint%memory.PageSize != 0 {
+		return Reply{Errno: errno.Invalid}
+	}
+	length = alignPageUp(length)
+	start, err := s.Mapper.Anonymous(ctx, MapRequest{
+		Length: length, Prot: call.Args[2], Hint: hint,
+		Fixed: flags&mapFixed != 0, NoReplace: flags&mapFixedNoReplace != 0,
+	})
+	if err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	return Reply{Value: start}
+}
+
+func (s Syscalls) munmap(ctx context.Context, call Call) Reply {
+	if s.Mapper == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	start := call.Args[0]
+	if start%memory.PageSize != 0 {
+		return Reply{Errno: errno.Invalid}
+	}
+	length := alignPageUp(call.Args[1])
+	if length == 0 {
+		return Reply{Errno: errno.Invalid}
+	}
+	if start+length <= start {
+		return Reply{Errno: errno.Overflow}
+	}
+	if err := s.Mapper.Unmap(ctx, start, start+length); err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	return Reply{}
+}
+
+func alignPageUp(value uint64) uint64 {
+	return (value + memory.PageSize - 1) &^ (memory.PageSize - 1)
 }
 
 func (s Syscalls) uname(ctx context.Context, call Call) Reply {

@@ -415,3 +415,94 @@ func contains(haystack, needle string) bool {
 	}
 	return false
 }
+
+func TestReplaceOverwritesOverlap(t *testing.T) {
+	ctx := context.Background()
+	table := New(0)
+	if err := table.Map(ctx, Region{Start: page(1), End: page(4), Prot: ProtRead | ProtWrite}); err != nil {
+		t.Fatal(err)
+	}
+	if err := table.Write(ctx, page(1), []byte("KEEP")); err != nil {
+		t.Fatal(err)
+	}
+	if err := table.Write(ctx, page(2), []byte("STALE")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := table.Replace(ctx, Region{Start: page(2), End: page(4), Prot: ProtRead}, false); err != nil {
+		t.Fatalf("替换映射应成功: %v", err)
+	}
+	regions, err := table.Regions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(regions) != 2 || regions[0].Start != page(1) || regions[0].End != page(2) ||
+		regions[1].Start != page(2) || regions[1].End != page(4) {
+		t.Fatalf("替换后应保留区间外部分: %+v", regions)
+	}
+	got := make([]byte, 4)
+	if err := table.Read(ctx, page(1), got); err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "KEEP" {
+		t.Fatalf("区间外数据应保留: %q", got)
+	}
+	got = make([]byte, 5)
+	if err := table.Read(ctx, page(2), got); err != nil {
+		t.Fatalf("替换后的页应可读: %v", err)
+	}
+	for _, b := range got {
+		if b != 0 {
+			t.Fatalf("替换应丢弃旧页数据: %x", got)
+		}
+	}
+	if err := table.Write(ctx, page(2), make([]byte, 8)); !errors.Is(err, errno.Permission) {
+		t.Fatalf("替换后的页应不可写: %v", err)
+	}
+}
+
+func TestReplaceNoReplaceFailsAtomically(t *testing.T) {
+	ctx := context.Background()
+	table := New(0)
+	if err := table.Map(ctx, Region{Start: page(2), End: page(4), Prot: ProtRead}); err != nil {
+		t.Fatal(err)
+	}
+	if err := table.Replace(ctx, Region{Start: page(1), End: page(3), Prot: ProtRead | ProtWrite}, true); !errors.Is(err, errno.Exist) {
+		t.Fatalf("NOREPLACE 命中重叠应报 EEXIST: %v", err)
+	}
+	regions, _ := table.Regions(ctx)
+	if len(regions) != 1 || regions[0].Start != page(2) || regions[0].End != page(4) {
+		t.Fatalf("失败时不得改动映射: %+v", regions)
+	}
+	if err := table.Check(ctx, page(1), 1, ProtWrite); !errors.Is(err, errno.Range) {
+		t.Fatalf("失败时不得产生新映射: %v", err)
+	}
+	if err := table.Replace(ctx, Region{Start: page(0), End: page(1), Prot: ProtRead}, true); err != nil {
+		t.Fatalf("无重叠时 NOREPLACE 应成功: %v", err)
+	}
+	if err := table.Replace(ctx, Region{Start: page(9), End: page(10), Prot: ProtRead | ProtWrite | ProtExec}, false); !errors.Is(err, errno.Permission) {
+		t.Fatalf("W^X 替换应报 EACCES: %v", err)
+	}
+}
+
+func TestReplaceRespectsBudget(t *testing.T) {
+	ctx := context.Background()
+	table := New(3 * PageSize)
+	if err := table.Map(ctx, Region{Start: page(1), End: page(3), Prot: ProtRead}); err != nil {
+		t.Fatal(err)
+	}
+	if err := table.Replace(ctx, Region{Start: page(3), End: page(6), Prot: ProtRead}, false); !errors.Is(err, errno.NoSpace) {
+		t.Fatalf("净增超预算应报 ENOSPC: %v", err)
+	}
+	regions, _ := table.Regions(ctx)
+	if len(regions) != 1 {
+		t.Fatalf("失败时不得改动映射: %+v", regions)
+	}
+	if err := table.Replace(ctx, Region{Start: page(3), End: page(4), Prot: ProtRead}, false); err != nil {
+		t.Fatalf("预算内替换应成功: %v", err)
+	}
+	account, _ := table.Account(ctx)
+	if account.Mapped != 3*PageSize {
+		t.Fatalf("替换后净映射应不变: %+v", account)
+	}
+}

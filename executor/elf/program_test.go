@@ -701,3 +701,117 @@ func TestRunsProgramThatGrowsHeap(t *testing.T) {
 		t.Fatalf("退出状态=%#x want 0x41（堆上新映射的字节）", status)
 	}
 }
+
+func TestMapperPlacesAndReplacesAnonymous(t *testing.T) {
+	ctx := context.Background()
+	space := memory.New(0)
+	m := &mapper{table: space, ceiling: 1 << 40}
+
+	first, err := m.Anonymous(ctx, common.MapRequest{Length: 2 * memory.PageSize, Prot: common.ProtRead | common.ProtWrite})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != mmapFloor {
+		t.Fatalf("首个匿名映射应从 floor 开始: %#x want %#x", first, uint64(mmapFloor))
+	}
+	if err := space.Write(ctx, first, []byte("HELLO")); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := m.Anonymous(ctx, common.MapRequest{Length: memory.PageSize, Prot: common.ProtRead})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second != first+2*memory.PageSize {
+		t.Fatalf("第二个映射应紧随其后: %#x want %#x", second, first+2*memory.PageSize)
+	}
+
+	hinted, err := m.Anonymous(ctx, common.MapRequest{Length: memory.PageSize, Prot: common.ProtRead, Hint: mmapFloor + 8*memory.PageSize})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hinted != mmapFloor+8*memory.PageSize {
+		t.Fatalf("空闲提示应被采纳: %#x", hinted)
+	}
+
+	blocked, err := m.Anonymous(ctx, common.MapRequest{Length: 3 * memory.PageSize, Prot: common.ProtRead, Hint: first})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blocked == first {
+		t.Fatalf("被占用提示应改由内核选址: %#x", blocked)
+	}
+	if blocked != first+3*memory.PageSize {
+		t.Fatalf("应跳过占用区间放到下一空隙: %#x want %#x", blocked, first+3*memory.PageSize)
+	}
+}
+
+func TestMapperFixedAndNoReplace(t *testing.T) {
+	ctx := context.Background()
+	space := memory.New(0)
+	m := &mapper{table: space, ceiling: 1 << 40}
+	address, err := m.Anonymous(ctx, common.MapRequest{Length: memory.PageSize, Prot: common.ProtRead | common.ProtWrite})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := space.Write(ctx, address, []byte("OLD")); err != nil {
+		t.Fatal(err)
+	}
+
+	replaced, err := m.Anonymous(ctx, common.MapRequest{Length: memory.PageSize, Prot: common.ProtRead, Hint: address, Fixed: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replaced != address {
+		t.Fatalf("MAP_FIXED 必须落在指定地址: %#x want %#x", replaced, address)
+	}
+	got := make([]byte, 3)
+	if err := space.Read(ctx, address, got); err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "\x00\x00\x00" {
+		t.Fatalf("替换后旧数据应清零: %q", got)
+	}
+
+	if _, err := m.Anonymous(ctx, common.MapRequest{Length: memory.PageSize, Prot: common.ProtRead | common.ProtWrite, Hint: address, Fixed: true, NoReplace: true}); !errors.Is(err, errno.Exist) {
+		t.Fatalf("NOREPLACE 命中应报 EEXIST: %v", err)
+	}
+	got = make([]byte, 1)
+	if err := space.Read(ctx, address, got); err != nil {
+		t.Fatalf("失败时原映射应保留: %v", err)
+	}
+}
+
+func TestMapperValidatesProtAndBounds(t *testing.T) {
+	ctx := context.Background()
+	space := memory.New(0)
+	m := &mapper{table: space, ceiling: mmapFloor + 4*memory.PageSize}
+
+	if _, err := m.Anonymous(ctx, common.MapRequest{Length: memory.PageSize, Prot: common.ProtRead | 0x8}); !errors.Is(err, errno.Invalid) {
+		t.Fatalf("未知保护位应报 EINVAL: %v", err)
+	}
+	if _, err := m.Anonymous(ctx, common.MapRequest{Length: memory.PageSize, Prot: common.ProtRead | common.ProtWrite | common.ProtExec}); !errors.Is(err, errno.Permission) {
+		t.Fatalf("W^X 组合应报 EACCES: %v", err)
+	}
+	if _, err := m.Anonymous(ctx, common.MapRequest{Length: 8 * memory.PageSize, Prot: common.ProtRead}); !errors.Is(err, errno.NoMemory) {
+		t.Fatalf("超出 ceiling 应报 ENOMEM: %v", err)
+	}
+
+	freed := &mapper{table: space, ceiling: 1 << 40}
+	address, err := freed.Anonymous(ctx, common.MapRequest{Length: 2 * memory.PageSize, Prot: common.ProtRead})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := freed.Unmap(ctx, address+memory.PageSize, address+2*memory.PageSize); err != nil {
+		t.Fatal(err)
+	}
+	if err := space.Check(ctx, address, 1, memory.ProtRead); err != nil {
+		t.Fatalf("未解除的前半段应保留: %v", err)
+	}
+	if err := space.Check(ctx, address+memory.PageSize, 1, memory.ProtRead); !errors.Is(err, errno.Range) {
+		t.Fatalf("解除的后半段应未映射: %v", err)
+	}
+	if err := freed.Unmap(ctx, address+memory.PageSize, address+2*memory.PageSize); !errors.Is(err, errno.Range) {
+		t.Fatalf("重复解除应报未映射: %v", err)
+	}
+}

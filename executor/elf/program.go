@@ -181,6 +181,9 @@ func syscalls(ctx context.Context, process proc.Proc, space *memory.Table, plan 
 	if heap := newHeap(space, process, plan); heap != nil {
 		handler.Heap = heap
 	}
+	if m := newMapper(space, process, plan); m != nil {
+		handler.Mapper = m
+	}
 	if source, err := process.Resources.Time(); err == nil {
 		handler.Clock = source
 	}

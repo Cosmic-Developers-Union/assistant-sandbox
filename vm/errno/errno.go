@@ -30,6 +30,7 @@ const (
 	LinkLoop     Code = "ELOOP：符号链接解析过深"
 	NoDevice     Code = "ENXIO：设备不存在或没有控制终端"
 	NoSpace      Code = "ENOSPC：客体存储预算耗尽"
+	NoMemory     Code = "ENOMEM：客体地址空间或内存预算耗尽"
 
 	CrossDevice Code = "EXDEV：跨挂载操作不被支持"
 	Cancelled   Code = "ECANCELED：操作被取消"
@@ -52,8 +53,8 @@ const (
 var declared = []Code{
 	NotImplemented, NotSupported, NetworkUnreachable, Invalid, NoProcess, NoChild, Busy, Limit, NotFound,
 	Permission, Exist, NotDirectory, IsDirectory, NotEmpty, BadHandle, BrokenPipe, NameTooLong, ReadOnlyFS,
-	LinkLoop, NoDevice, NoSpace, CrossDevice, Cancelled, Interrupted, WouldBlock, Range, Overflow, TimedOut,
-	NoExec, Version, Fault, IO, Seek,
+	LinkLoop, NoDevice, NoSpace, NoMemory, CrossDevice, Cancelled, Interrupted, WouldBlock, Range, Overflow,
+	TimedOut, NoExec, Version, Fault, IO, Seek,
 }
 
 func Codes() []Code { return slices.Clone(declared) }
@@ -128,6 +129,7 @@ var linuxNumbers = map[Code]int32{
 	IsDirectory:        21,
 	Invalid:            22,
 	NoSpace:            28,
+	NoMemory:           12,
 	ReadOnlyFS:         30,
 	BrokenPipe:         32,
 	Range:              34,

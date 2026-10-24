@@ -45,6 +45,10 @@ const (
 
 	SysBrk
 
+	SysMmap
+	SysMunmap
+	SysMprotect
+
 	SysUname
 
 	SysSysinfo
@@ -226,6 +230,12 @@ func (s Syscall) String() string {
 		return "gettimeofday"
 	case SysBrk:
 		return "brk"
+	case SysMmap:
+		return "mmap"
+	case SysMunmap:
+		return "munmap"
+	case SysMprotect:
+		return "mprotect"
 	case SysUname:
 		return "uname"
 	case SysSysinfo:

@@ -1,7 +1,9 @@
 package memory
 
 import (
+	"cmp"
 	"context"
+	"slices"
 	"sort"
 	"sync"
 
@@ -340,6 +342,61 @@ func (t *Table) insertLocked(region Region) {
 	t.regions = append(t.regions, Region{})
 	copy(t.regions[index+1:], t.regions[index:])
 	t.regions[index] = region
+}
+
+// Replace 映射 region 并替换与其重叠的既有映射,对应 Linux MAP_FIXED;
+// noReplace 时遇到重叠返回 EEXIST 且不产生任何改动,失败不留半成品。
+func (t *Table) Replace(ctx context.Context, region Region, noReplace bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := validateRegion(region); err != nil {
+		return err
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	kept := make([]Region, 0, len(t.regions)+1)
+	for _, existing := range t.regions {
+		if !existing.Overlaps(region) {
+			kept = append(kept, existing)
+			continue
+		}
+		if noReplace {
+			return errno.Wrap(errno.Exist, "NOREPLACE 命中既有映射: "+utoa(existing.Start)+"-"+utoa(existing.End))
+		}
+		if existing.Start < region.Start {
+			left := existing
+			left.End = region.Start
+			kept = append(kept, left)
+		}
+		if region.End < existing.End {
+			right := existing
+			right.Start = region.End
+			kept = append(kept, right)
+		}
+	}
+	if err := t.checkBudgetAfterLocked(kept, region.Size()); err != nil {
+		return err
+	}
+	kept = append(kept, region)
+	slices.SortFunc(kept, func(a, b Region) int { return cmp.Compare(a.Start, b.Start) })
+	t.regions = kept
+	t.dropPagesLocked(region.Start, region.End)
+	return nil
+}
+
+func (t *Table) checkBudgetAfterLocked(kept []Region, size uint64) error {
+	if t.limit == 0 {
+		return nil
+	}
+	var mapped uint64
+	for _, region := range kept {
+		mapped += region.Size()
+	}
+	if mapped+size > t.limit {
+		return errno.Wrap(errno.NoSpace, "映射超出地址空间预算")
+	}
+	return nil
 }
 
 func (t *Table) findCoveringLocked(start, end uint64) int {
