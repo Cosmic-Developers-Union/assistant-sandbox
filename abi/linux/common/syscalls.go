@@ -262,6 +262,10 @@ type Waiter interface {
 }
 
 func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
+	// 未登记的系统调用一律 ENOSYS:登记表见 registry.go(G01)。
+	if !handled[call.Syscall] {
+		return Reply{Errno: errno.NotImplemented}
+	}
 	switch call.Syscall {
 	case SysExit, SysExitGroup:
 		return Reply{Exit: true, Value: call.Args[0]}

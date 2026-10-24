@@ -368,8 +368,10 @@ func syscallOf(number uint64) common.Syscall {
 		return common.SysSymlinkat
 	case numberLinkat:
 		return common.SysLinkat
-	case numberRenameat, numberRenameat2:
+	case numberRenameat:
 		return common.SysRenameat
+	case numberRenameat2:
+		return common.SysRenameat2
 	case numberFtruncate:
 		return common.SysFtruncate
 	case numberFcntl:

@@ -549,3 +549,71 @@ func TestRunsIdentityAndClockProgram(t *testing.T) {
 		t.Fatalf("退出状态=%d want pid=%d", status, pid)
 	}
 }
+
+// TestRegistryMatchesAdapterMapping 验证 G01:编号、名称、分派与
+// 适配器映射一一对应——登记项都有确定编号与稳定名称;适配器认识
+// 但未实现的编号固定登记为 ENOSYS 清单;未知调用统一 ENOSYS。
+func TestRegistryMatchesAdapterMapping(t *testing.T) {
+	registered := common.Registered()
+	if len(registered) == 0 {
+		t.Fatal("登记表为空")
+	}
+	inverse := map[common.Syscall]uint64{}
+	for number := uint64(0); number < 500; number++ {
+		call := syscallOf(number)
+		if call == common.SysUnknown {
+			continue
+		}
+		if prev, ok := inverse[call]; ok {
+			t.Fatalf("系统调用 %v 由编号 %d 与 %d 同时映射", call, prev, number)
+		}
+		inverse[call] = number
+	}
+	for _, call := range registered {
+		if _, ok := inverse[call]; !ok {
+			t.Fatalf("登记的 %v 没有适配器编号映射", call)
+		}
+		if name := call.String(); name == "" {
+			t.Fatalf("登记的 %v 缺少稳定名称", call)
+		}
+	}
+	// 适配器认识但未实现的编号:明确登记为 ENOSYS 清单(新增映射
+	// 必须同时实现或显式进入本清单,防止伪成功)。
+	unimplemented := map[string]bool{
+		"accept4": true, "acct": true, "chroot": true, "close_range": true,
+		"clone3": true, "epoll_create1": true, "epoll_ctl": true, "epoll_pwait": true,
+		"faccessat2": true, "fadvise64": true, "fallocate": true, "inotify_add_watch": true,
+		"inotify_init1": true, "inotify_rm_watch": true, "kexec_load": true, "memfd_create": true,
+		"mount": true, "openat2": true, "perf_event_open": true, "pidfd_getfd": true,
+		"pidfd_open": true, "pivot_root": true, "ppoll": true, "pselect6": true,
+		"ptrace": true, "reboot": true, "signalfd4": true, "sync": true,
+		"syslog": true, "timerfd_create": true, "timerfd_gettime": true, "timerfd_settime": true,
+		"umount2": true, "userfaultfd": true,
+	}
+	for call := range inverse {
+		name := call.String()
+		if !common.IsRegistered(call) && !unimplemented[name] {
+			t.Fatalf("适配器映射 %v 既未实现也未登记为 ENOSYS 清单", call)
+		}
+		if common.IsRegistered(call) && unimplemented[name] {
+			t.Fatalf("%v 已实现,应从 ENOSYS 清单移除", call)
+		}
+	}
+	// 未登记调用在 ABI 层统一 ENOSYS(包括已分配但未实现的编号)。
+	unregistered := common.Syscall(0)
+	for candidate := common.Syscall(1); candidate <= common.Syscall(500); candidate++ {
+		if common.IsRegistered(candidate) {
+			continue
+		}
+		unregistered = candidate
+		break
+	}
+	handler := common.Syscalls{}
+	if reply := handler.Handle(context.Background(), common.Call{Syscall: unregistered}); reply.Errno != errno.NotImplemented {
+		t.Fatalf("未登记调用: %+v want ENOSYS", reply)
+	}
+	// 登记项全部可安全查询(零端口下不 panic,返回守卫错误)。
+	for _, call := range registered {
+		_ = handler.Handle(context.Background(), common.Call{Syscall: call})
+	}
+}

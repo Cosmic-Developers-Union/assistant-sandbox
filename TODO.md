@@ -144,7 +144,7 @@ Python 和 Node.js 的验收必须执行客体运行时，不能通过调用宿�
 
 依赖：A03、A09、D01、E01。后续系统调用任务都依赖本组基础。
 
-- [ ] G01 建立系统调用登记与能力查询。验收：编号、名称、实现状态、测试一一对应，未知调用返回 ENOSYS。
+- [x] G01 建立系统调用登记与能力查询。验收：编号、名称、实现状态、测试一一对应，未知调用返回 ENOSYS。 证据:abi/linux/common/registry.go handled 登记表(Handle 只分派登记项,未登记一律 ENOSYS)+ Registered()/IsRegistered() 能力查询(供追踪清单与差分执行器判定实现状态)、abi/linux/riscv64/adapter_test.go TestRegistryMatchesAdapterMapping(编号↔名称↔分派↔适配器四方一一对应:登记项均有唯一编号与稳定名称;适配器认识但未实现的 34 个编号固定登记为 ENOSYS 清单,新增映射必须实现或显式入清单;未知编号统一 ENOSYS;登记项零端口查询不 panic)。顺带修复真实缺陷:适配器将 renameat2(276) 与 renameat(38) 映射到同一分派,客体重 renameat2 的 flags 被静默忽略,拆分为独立 SysRenameat2 后 flags 校验(I10)真正生效。测试:`go test ./abi/...`。CI:Test 工作流。
 - [x] G02 审计参数寄存器和返回值编码。验收：六参数、64 位值、负 errno 与目标架构一致。 证据:abi/linux/riscv64/adapter.go 分派编码(六参数/负 errno)、adapter_test.go TestDispatchDecodesArguments、TestDispatchWritesHandlerValue、TestDispatchUnknownSyscallWritesENOSYS。测试:`go test ./abi/linux/riscv64/`。CI:Test 工作流。
 - [x] G03 实现有界用户指针复制。验收：无效、跨页和溢出指针返回 EFAULT，不触发宿主 panic。 证据:abi/linux/common/syscalls.go 有界内存复制(坏地址/超限返回 EFAULT)、errno.go Fault 身份,syscalls_test.go TestGuestAddressFaults、TestBufferLimitRejectsOversizedCount。测试:`go test ./abi/linux/common/`。CI:Test 工作流。
 - [x] G04 实现有界字符串与向量读取。验收：路径、argv、envp 超长或缺少终止符时行为明确，不能无限分配。 证据:abi/linux/common/syscalls.go readStringVector(NULL 终止指针向量:条目上限 VectorLimit/4096、总字节 ≤ BufferLimit、超限 E2BIG、数组越界 EFAULT、空串合法)与 readVectorString、readIovecs(IOV_MAX=1024 校验、EFAULT);errno.go 新增 E2BIG(asm-generic 7 / WASI 57);syscalls_test.go TestReadStringVectorBoundsAndTermination、TestReadIovecsBounds。测试:`make docker-test TEST_ARGS=./abi/linux/common/`。CI:Test 工作流。备注:消费方为 H06/H07 execve,落地后以真实客体参数传递复核。
