@@ -905,3 +905,68 @@ func TestLinkSymlinkLifecycleAgainstRealFileSystem(t *testing.T) {
 		t.Fatalf("悬空链接打开: %v want ENOENT", err)
 	}
 }
+
+// TestDupAndSeparateOpensOffsetMatrix 验证 I04:dup 共享打开文件
+// 描述(任一描述符的读写推进共享偏移),分别 open 拥有独立偏移。
+func TestDupAndSeparateOpensOffsetMatrix(t *testing.T) {
+	ctx := context.Background()
+	system, err := memfs.New(&clock.Virtual{}, memfs.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const pid = 71
+	table := fd.New()
+	table.Attach(pid, fd.Streams{})
+	files := ProcessFiles{System: system, Store: table, PID: pid, Dir: "/"}
+	descriptors := ProcessDescriptors{Table: table, PID: pid}
+	syscalls := Syscalls{Memory: newFakeMemory(), Descriptors: descriptors, Files: files}
+
+	note, err := files.Open(ctx, OpenRequest{Path: "/f", Flags: OpenFlags{Mode: OpenReadWrite, Create: true}, Perm: 0o644})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := descriptors.Write(ctx, note, []byte("abcdef")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := descriptors.Seek(ctx, note, 0, SeekSet); err != nil {
+		t.Fatal(err)
+	}
+	// dup:新描述符共享同一打开文件描述。
+	duped, err := descriptors.DupFrom(ctx, note)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readThree := func(descriptor uint64) string {
+		t.Helper()
+		buffer := make([]byte, 3)
+		n, err := descriptors.Read(ctx, descriptor, buffer)
+		if err != nil && !errors.Is(err, io.EOF) {
+			t.Fatalf("读 fd=%d: %v", descriptor, err)
+		}
+		return string(buffer[:n])
+	}
+	if got := readThree(note); got != "abc" {
+		t.Fatalf("原描述符读=%q", got)
+	}
+	// dup 出的描述符续接共享偏移(应为 def 而非 abc)。
+	if got := readThree(duped); got != "def" {
+		t.Fatalf("dup 读=%q want def(共享偏移)", got)
+	}
+	// 回到原描述符:偏移已在文件尾(read 返回 0,即 EOF)。
+	if got := readThree(note); got != "" {
+		t.Fatalf("共享偏移读=%q want 空(EOF)", got)
+	}
+	// 分别 open:独立偏移,从头读取。
+	independent, err := files.Open(ctx, OpenRequest{Path: "/f", Flags: OpenFlags{Mode: OpenRead}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := readThree(independent); got != "abc" {
+		t.Fatalf("独立打开读=%q want abc", got)
+	}
+	// 独立描述符的推进不影响 dup 链:dup 链仍在 EOF。
+	if got := readThree(duped); got != "" {
+		t.Fatalf("独立偏移不应影响共享链: %q", got)
+	}
+	_ = syscalls
+}

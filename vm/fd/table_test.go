@@ -11,8 +11,11 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/filesystem/memfs"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/clock"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/eventfd"
+	vmfs "github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fs"
 )
 
 func TestDescriptorLifecycleAndOwnership(t *testing.T) {
@@ -358,3 +361,82 @@ type countingHandle struct {
 func (h *countingHandle) Read(p []byte) (int, error)  { return 0, io.EOF }
 func (h *countingHandle) Write(p []byte) (int, error) { return len(p), nil }
 func (h *countingHandle) Close() error                { h.closed++; return nil }
+
+// TestForkSharesOpenFileDescription 验证 I04:fork 复制的描述符共享
+// 同一打开文件描述——子进程读取推进的偏移对父进程可见(与 Linux
+// fork 语义一致),引用计数保证底层句柄恰好关闭一次。
+func TestForkSharesOpenFileDescription(t *testing.T) {
+	ctx := context.Background()
+	system, err := memfs.New(&clock.Virtual{}, memfs.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := system.Open(ctx, "/data", vmfs.Create|vmfs.ReadWrite, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write([]byte("abcdef")); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	source, err := system.Open(ctx, "/data", vmfs.ReadOnly, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counted := &memfsCloseCounter{File: source}
+
+	table := New()
+	const parent, child = 20, 21
+	table.Attach(parent, Streams{})
+	if err := table.Install(parent, 3, counted); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := table.Fork(parent, child); err != nil {
+		t.Fatal(err)
+	}
+
+	// 子进程经复制的描述符读取:推进的是共享偏移。
+	childHandle, err := table.Get(ctx, child, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	buffer := make([]byte, 2)
+	if n, _ := childHandle.Read(buffer); string(buffer[:n]) != "ab" {
+		t.Fatalf("子进程读=%q", buffer[:n])
+	}
+	// 父进程同一编号读取:偏移已被子进程推进,续接 "cd"。
+	parentHandle, err := table.Get(ctx, parent, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := parentHandle.Read(buffer); string(buffer[:n]) != "cd" {
+		t.Fatalf("父进程读=%q want cd(共享偏移)", buffer[:n])
+	}
+
+	// 引用计数:父侧关闭不影响子侧,子侧关闭后底层句柄恰好关闭一次。
+	if err := table.Close(ctx, parent, 3); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := table.Get(ctx, child, 3); err != nil {
+		t.Fatalf("父侧关闭不应影响子侧: %v", err)
+	}
+	if err := table.Close(ctx, child, 3); err != nil {
+		t.Fatal(err)
+	}
+	if counted.closeCalls != 1 {
+		t.Fatalf("底层句柄关闭次数=%d want 1", counted.closeCalls)
+	}
+}
+
+// memfsCloseCounter 包装句柄统计底层 Close 次数。
+type memfsCloseCounter struct {
+	vmfs.File
+	closeCalls int
+}
+
+func (c *memfsCloseCounter) Close() error {
+	c.closeCalls++
+	return c.File.Close()
+}
