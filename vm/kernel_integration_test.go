@@ -1315,3 +1315,106 @@ func waitForProgress(t *testing.T, progress *atomic.Int64, target int64) {
 		time.Sleep(time.Millisecond)
 	}
 }
+
+// TestKernelSIGCHLDNotifiesParentOnChildState 验证 J08:子进程状态
+// 变化按 Linux 语义通知父进程——默认处置忽略不可观察;登记处理器
+// 时退出/驻停/继续各产生一条挂起 SIGCHLD;显式 SIG_IGN 的退出自动
+// 回收不留僵尸(此后 waitid 报 ECHILD,不重复回收)。
+func TestKernelSIGCHLDNotifiesParentOnChildState(t *testing.T) {
+	reg, _ := registryFor("long", "echo")
+	kernel, _ := New(Services{Set: capability.Set{FD: fd.New()}, Programs: reg}, 8)
+	parent, err := kernel.Begin(0, "long", nil, "/", nil, fd.Streams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := t.Context()
+
+	// (a) 默认处置:子进程退出后父进程无挂起 SIGCHLD。
+	var firstOut bytes.Buffer
+	first, err := kernel.Begin(parent.ID, "echo", []string{"x"}, "/", nil, fd.Streams{Output: &firstOut})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := kernel.RunRegistered(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	pending, _ := kernel.signals.Pending(uint64(parent.ID))
+	for _, n := range pending {
+		if n == signal.CHLD {
+			t.Fatalf("默认处置下父进程不应收到 SIGCHLD: %v", pending)
+		}
+	}
+
+	// (b) 登记处理器:子进程退出产生一条挂起 SIGCHLD。
+	if err := kernel.signals.SetAction(uint64(parent.ID), signal.CHLD,
+		signal.ActionConfig{Handler: 0x4040}); err != nil {
+		t.Fatal(err)
+	}
+	var secondOut bytes.Buffer
+	second, err := kernel.Begin(parent.ID, "echo", []string{"x"}, "/", nil, fd.Streams{Output: &secondOut})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := kernel.RunRegistered(ctx, second); err != nil {
+		t.Fatal(err)
+	}
+	pending, _ = kernel.signals.Pending(uint64(parent.ID))
+	if len(pending) != 1 || pending[0] != signal.CHLD {
+		t.Fatalf("退出通知: pending=%v want [SIGCHLD]", pending)
+	}
+
+	// (c) 子进程驻停/继续各产生一条 SIGCHLD。
+	third, err := kernel.Begin(parent.ID, "long", nil, "/", nil, fd.Streams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		_, _ = kernel.RunRegistered(ctx, third)
+		close(done)
+	}()
+	time.Sleep(20 * time.Millisecond)
+	if err := kernel.Signal(third.ID, signal.STOP); err != nil {
+		t.Fatal(err)
+	}
+	// 标准信号在投递前合并(Linux 语义):退出/驻停/继续的多次
+	// 通知在父进程挂起集中仍是一个 SIGCHLD 位。
+	pending, _ = kernel.signals.Pending(uint64(parent.ID))
+	if len(pending) != 1 || pending[0] != signal.CHLD {
+		t.Fatalf("驻停通知: pending=%v want [SIGCHLD]", pending)
+	}
+	if err := kernel.Signal(third.ID, signal.CONT); err != nil {
+		t.Fatal(err)
+	}
+	pending, _ = kernel.signals.Pending(uint64(parent.ID))
+	if len(pending) != 1 || pending[0] != signal.CHLD {
+		t.Fatalf("继续通知: pending=%v want [SIGCHLD]", pending)
+	}
+	if err := kernel.Signal(third.ID, signal.KILL); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("KILL 未终止子进程")
+	}
+
+	// (d) 显式 SIG_IGN:子进程退出自动回收,waitid 报 ECHILD。
+	if err := kernel.signals.SetIgnored(uint64(parent.ID), signal.CHLD, true); err != nil {
+		t.Fatal(err)
+	}
+	var fourthOut bytes.Buffer
+	fourth, err := kernel.Begin(parent.ID, "echo", []string{"x"}, "/", nil, fd.Streams{Output: &fourthOut})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := kernel.RunRegistered(ctx, fourth); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := kernel.WaitChild(ctx, parent.ID, fourth.ID, true); !errors.Is(err, errno.NoChild) {
+		t.Fatalf("SIG_IGN 自动回收后: err=%v want ECHILD", err)
+	}
+	if err := kernel.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+}

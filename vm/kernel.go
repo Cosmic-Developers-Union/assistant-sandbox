@@ -469,8 +469,13 @@ func (k *Kernel) resolve(name string) (executable.Resolved, error) {
 
 func (k *Kernel) Finish(parent, id proc.PID, status ExitStatus) (err error) {
 	k.mu.Lock()
+	notified := false
 	defer func() {
 		k.mu.Unlock()
+		// 通知在锁外:childStateChanged 内部重新加锁,持锁调用会死锁。
+		if notified {
+			k.childStateChanged(id, true)
+		}
 		if err == nil {
 			k.children.WakeAll(wait.Data)
 		}
@@ -507,6 +512,9 @@ func (k *Kernel) Finish(parent, id proc.PID, status ExitStatus) (err error) {
 	}
 	closeErr := k.afterReapLocked(reaped)
 	k.emitLocked(scheduler.KindExit, id, scheduler.ExitDetail(status.Code, status.Signal))
+	if closeErr == nil {
+		notified = true
+	}
 	return closeErr
 }
 
@@ -729,6 +737,7 @@ func (k *Kernel) Signal(target proc.PID, n signal.Number) error {
 			k.signals.Consume(uint64(target), stopped)
 		}
 		k.signals.Interrupt(uint64(target), n)
+		k.childStateChanged(target, false)
 		return nil
 	case action == signal.Terminate, action == signal.Core:
 		k.signals.Interrupt(uint64(target), n)
@@ -741,6 +750,7 @@ func (k *Kernel) Signal(target proc.PID, n signal.Number) error {
 		}
 		k.signals.Consume(uint64(target), signal.CONT)
 		k.signals.Interrupt(uint64(target), n)
+		k.childStateChanged(target, false)
 		return nil
 	case action == signal.Ignore:
 		return nil
@@ -1107,6 +1117,7 @@ func (k *Kernel) RunRegistered(ctx context.Context, p proc.Proc) (ExitStatus, er
 		if err := k.table.Exit(pid, status.Code, uint8(status.Signal)); err == nil {
 			k.emitLocked(scheduler.KindExit, pid, scheduler.ExitDetail(status.Code, status.Signal))
 			k.mu.Unlock()
+			k.childStateChanged(pid, true)
 			k.children.WakeAll(wait.Data)
 			return status, runErr
 		} else {
@@ -1125,8 +1136,37 @@ func (k *Kernel) RunRegistered(ctx context.Context, p proc.Proc) (ExitStatus, er
 	}
 	k.emitLocked(scheduler.KindExit, pid, scheduler.ExitDetail(code, status.Signal))
 	k.mu.Unlock()
+	k.childStateChanged(pid, true)
 	k.children.WakeAll(wait.Data)
 	return status, errors.Join(runErr, ctx.Err())
+}
+
+// childStateChanged 在子进程退出或驻停/恢复后按 Linux 语义通知父
+// 进程(J08):SIGCHLD 默认处置忽略——不产生可观察信号;显式
+// SIG_IGN 的退出自动回收不留僵尸;登记处理器时经边界投递。通知与
+// wait 竞争安全:回收以僵尸状态为准恰好一次,信号不承载回收责任。
+// 必须在未持有 k.mu 时调用(内部会重新加锁)。
+func (k *Kernel) childStateChanged(child proc.PID, exited bool) {
+	k.mu.Lock()
+	p, err := k.table.Get(child)
+	if err != nil {
+		k.mu.Unlock()
+		return
+	}
+	parent := p.Parent
+	k.mu.Unlock()
+	if parent == 0 || parent == child {
+		return
+	}
+	ignored := k.signals.Ignored(uint64(parent), signal.CHLD)
+	config, err := k.signals.Action(uint64(parent), signal.CHLD)
+	explicitIgnore := err == nil && config.Handler == signal.SigIgnore
+	switch {
+	case exited && (ignored || explicitIgnore):
+		_, _, _ = k.WaitChild(context.Background(), parent, child, true)
+	case err == nil && config.Handler > signal.SigIgnore:
+		_ = k.Signal(parent, signal.CHLD)
+	}
 }
 
 func instanceErr(result executable.Result, waitErr error) error {
