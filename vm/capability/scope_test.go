@@ -655,8 +655,25 @@ func TestScopeChargesOpenButNotRead(t *testing.T) {
 		t.Fatalf("读取本身不应计费: %d -> %d", before, meter.charges)
 	}
 
+	// O_RDONLY 句柄写入按 Linux 报 EBADF;计量器按尝试扣费,失败仍计费。
 	before = meter.charges
-	if _, err := file.Write([]byte("more")); err != nil {
+	if _, err := file.Write([]byte("more")); !errors.Is(err, errno.BadHandle) {
+		t.Fatalf("只读句柄写入: %v want EBADF", err)
+	}
+	if meter.charges != before+1 {
+		t.Fatalf("失败的写入仍应计费: %d -> %d", before, meter.charges)
+	}
+	writable, err := system.Open(ctx, "/data", vmfs.ReadWrite, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := writable.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	before = meter.charges
+	if _, err := writable.Write([]byte("more")); err != nil {
 		t.Fatal(err)
 	}
 	if meter.charges != before+1 {
@@ -664,7 +681,7 @@ func TestScopeChargesOpenButNotRead(t *testing.T) {
 	}
 
 	before = meter.charges
-	if _, err := file.Write(make([]byte, costWriteBucket*2+1)); err != nil {
+	if _, err := writable.Write(make([]byte, costWriteBucket*2+1)); err != nil {
 		t.Fatal(err)
 	}
 	if meter.charges != before+1 {
