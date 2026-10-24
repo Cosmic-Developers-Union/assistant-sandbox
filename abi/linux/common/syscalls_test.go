@@ -3042,3 +3042,23 @@ func TestClockNanosleepAbsoluteNotInterruptedBySignal(t *testing.T) {
 		t.Fatalf("应继续等待至期限: %+v", sleeper.durations)
 	}
 }
+
+// TestUnsupportedCallsAreHonestENOTSUP 锁定 A03 兼容配置:未交付语义的
+// 已登记调用明确 ENOTSUP,不以无操作成功伪装完成(H11/T03/E15/I13/O01)。
+func TestUnsupportedCallsAreHonestENOTSUP(t *testing.T) {
+	unsupported := []Syscall{
+		SysSetpgid, SysSetsid,
+		SysGetitimer, SysSetitimer,
+		SysGetpriority, SysSetpriority,
+		SysMlock, SysMunlock, SysMlockall, SysMunlockall,
+		SysMincore, SysUmask,
+		SysSetuid, SysSetgid, SysSetreuid, SysSetregid,
+		SysSetresuid, SysSetresgid, SysSetfsuid, SysSetfsgid,
+	}
+	syscalls := Syscalls{Memory: newFakeMemory(), Identity: &Identity{PID: 1}}
+	for _, call := range unsupported {
+		if reply := syscalls.Handle(context.Background(), Call{Syscall: call}); reply.Errno != errno.NotSupported {
+			t.Fatalf("%v: reply=%+v want ENOTSUP", call, reply)
+		}
+	}
+}

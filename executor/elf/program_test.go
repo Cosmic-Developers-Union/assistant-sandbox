@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"sync"
 	"testing"
 	"time"
 
@@ -957,6 +958,7 @@ type sigControlStub struct {
 	mask         uint64
 	signal       signal.Number
 	deliverAfter int
+	pollMu       sync.Mutex
 	polls        int
 	delivered    bool
 	alt          signal.AltStack
@@ -1036,6 +1038,9 @@ func (s *sigControlStub) SignalMask() (uint64, error) { return s.mask, nil }
 
 // SignalDeliveryControl:边界投递轮询;deliverAfter 次轮询后可投递。
 func (s *sigControlStub) PendingDeliverable() (signal.Number, signal.ActionConfig, bool) {
+	// fork 后父子两个运行器并发轮询同一替身:polls/delivered 需原子访问。
+	s.pollMu.Lock()
+	defer s.pollMu.Unlock()
 	s.polls++
 	if s.delivered || s.polls < s.deliverAfter {
 		return 0, signal.ActionConfig{}, false
@@ -1048,6 +1053,8 @@ func (s *sigControlStub) PendingDeliverable() (signal.Number, signal.ActionConfi
 }
 
 func (s *sigControlStub) ConsumeSignal(n signal.Number) {
+	s.pollMu.Lock()
+	defer s.pollMu.Unlock()
 	s.delivered = true
 }
 

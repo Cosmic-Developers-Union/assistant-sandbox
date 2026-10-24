@@ -329,13 +329,12 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 		return s.times(ctx, call)
 	case SysGetgroups:
 		return s.getgroups(ctx, call)
-	case SysSetpgid:
-		return Reply{}
-	case SysSetsid:
-		if s.Identity == nil {
-			return Reply{Errno: errno.NotImplemented}
-		}
-		return Reply{Value: s.Identity.PID}
+	// 以下调用按兼容配置 linux-rv64gc-1(A03)声明为不支持:
+	// 会话/组管理、itimer、nice、锁定、mincore、umask 与身份变更的
+	// 真实语义分别由 H11、T03、E15、I13、O01 承接;在此之前明确
+	// ENOTSUP,不以无操作成功伪装完成。
+	case SysSetpgid, SysSetsid:
+		return Reply{Errno: errno.NotSupported}
 	case SysSchedYield:
 		return Reply{}
 	case SysPrlimit64:
@@ -347,13 +346,13 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 	case SysGetrusage:
 		return s.getrusage(ctx, call)
 	case SysGetitimer, SysSetitimer:
-		return Reply{Value: 0}
+		return Reply{Errno: errno.NotSupported}
 	case SysGetpriority, SysSetpriority:
-		return Reply{Value: 0}
+		return Reply{Errno: errno.NotSupported}
 	case SysMlock, SysMunlock, SysMlockall, SysMunlockall:
-		return Reply{Value: 0}
+		return Reply{Errno: errno.NotSupported}
 	case SysMincore:
-		return Reply{Value: 0}
+		return Reply{Errno: errno.NotSupported}
 	case SysFaccessat:
 		return s.faccessat(ctx, call)
 	case SysMkdirat:
@@ -425,13 +424,15 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 	case SysReadlinkat:
 		return s.readlinkat(ctx, call)
 	case SysUmask:
-		return Reply{Value: 0}
+		// 文件创建掩码由 I13 交付;未落地前明确 ENOTSUP。
+		return Reply{Errno: errno.NotSupported}
 	case SysFsync:
 		return s.fsync(ctx, call, false)
 	case SysFdatasync:
 		return s.fsync(ctx, call, true)
 	case SysSetuid, SysSetgid, SysSetreuid, SysSetregid, SysSetresuid, SysSetresgid, SysSetfsuid, SysSetfsgid:
-		return Reply{Value: 0}
+		// 客体身份模型由 O01 交付;未落地前明确 ENOTSUP。
+		return Reply{Errno: errno.NotSupported}
 	default:
 		return Reply{Errno: errno.NotImplemented}
 	}
