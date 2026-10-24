@@ -3,6 +3,7 @@ package elf
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"slices"
 
@@ -81,9 +82,14 @@ func (p *program) Run(ctx context.Context, process proc.Proc) (uint8, error) {
 	if delivery, ok := process.Control.(proc.SignalDeliveryControl); ok {
 		deliverer.control = delivery
 	}
+	if dispositions, ok := process.Control.(proc.SignalDispositionControl); ok {
+		deliverer.disposition = dispositions
+	}
 	runner, err := common.NewRunner(common.Config{
-		Core:       core,
-		Dispatcher: &linuxriscv64.Adapter{Handler: handler, Registers: core},
+		Core: core,
+		// 同步 CPU 故障(非法指令/无效访问/保护错误)经 faultDispatching
+		// 转换为客体信号(J06);ecall 仍由适配器分派系统调用。
+		Dispatcher: faultDispatching{next: &linuxriscv64.Adapter{Handler: handler, Registers: core}, deliver: deliverer},
 		Boundary:   deliverer.boundary,
 	})
 	if err != nil {
@@ -477,25 +483,89 @@ func (p processSignals) SetAltStack(ctx context.Context, stack common.SignalAltS
 
 // signalDeliverer 在指令边界投递登记了客户态处理器的信号:
 // 保存完整机器状态进 rt_sigframe,重定向 PC 到处理器,
-// rt_sigreturn 经同一帧恢复(J03/J04)。
+// rt_sigreturn 经同一帧恢复(J03/J04);同步 CPU 故障经同一
+// 帧机制转换为客体信号(J06)。
 type signalDeliverer struct {
-	space   *memory.Table
-	core    cpu.Port
-	control proc.SignalDeliveryControl
+	space       *memory.Table
+	core        cpu.Port
+	control     proc.SignalDeliveryControl
+	disposition proc.SignalDispositionControl
 }
 
-func (d *signalDeliverer) boundary(ctx context.Context) error {
-	if d.control == nil {
+// errUnhandledFault 标记不可转换为客体信号的同步故障(内核未实现
+// 指令等缺口):保持 fail-closed,不以信号投递掩盖内核缺口。
+var errUnhandledFault = errors.New("未转换的客体故障")
+
+// faultSignal 把同步 CPU 故障映射为客体信号与 siginfo 类别/地址。
+// 取指故障未记录指令编码:si_addr 即取指地址;数据故障以 Detail 为准
+// (空指针解引用的故障地址 0 不得被取指地址顶替)。
+func faultSignal(trap cpu.Trap) (signal.Number, common.FaultInfo, bool) {
+	switch trap.Kind {
+	case cpu.TrapIllegalInstruction:
+		return signal.ILL, common.FaultInfo{Code: common.SigInfoIllIllegalOp, Addr: trap.Address}, true
+	case cpu.TrapBreakpoint:
+		return signal.TRAP, common.FaultInfo{Code: common.SigInfoTrapBreak, Addr: trap.Address}, true
+	case cpu.TrapMemoryFault:
+		address := trap.Detail
+		if trap.Instruction == 0 {
+			address = trap.Address
+		}
+		switch {
+		case errors.Is(trap.Cause, memory.FaultMisaligned):
+			return signal.BUS, common.FaultInfo{Code: common.SigInfoBusAdraln, Addr: address}, true
+		case errors.Is(trap.Cause, memory.FaultProtection):
+			return signal.SEGV, common.FaultInfo{Code: common.SigInfoSegvAccErr, Addr: address}, true
+		default:
+			return signal.SEGV, common.FaultInfo{Code: common.SigInfoSegvMapErr, Addr: address}, true
+		}
+	default:
+		return 0, common.FaultInfo{}, false
+	}
+}
+
+// synchronous 在同步故障点投递客体信号:登记了处理器的信号在故障
+// 指令处开帧(处理器返回后经 rt_sigreturn 重新执行故障指令,与
+// Linux 一致);SIG_IGN 丢弃并重新执行;默认终止/核心转储的信号
+// 返回 Death 由执行层归类为被信号终止。
+func (d *signalDeliverer) synchronous(ctx context.Context, trap cpu.Trap) error {
+	number, info, convertible := faultSignal(trap)
+	if !convertible || d.control == nil || d.disposition == nil {
+		return errUnhandledFault
+	}
+	config, err := d.disposition.SignalAction(number)
+	if err != nil {
+		return err
+	}
+	if config.Handler > signal.SigIgnore {
+		return d.enterHandler(ctx, number, config, trap.Address, &info)
+	}
+	if config.Handler == signal.SigIgnore {
 		return nil
 	}
-	number, action, ok := d.control.PendingDeliverable()
-	if !ok || action.Handler <= signal.SigIgnore {
-		return nil
+	action, err := signal.Default(number)
+	if err != nil {
+		return err
 	}
+	switch action {
+	case signal.Terminate, signal.Core:
+		return executable.Death{Signal: number,
+			Detail: fmt.Sprintf("%v si_addr=%#x", trap, info.Addr)}
+	case signal.Ignore:
+		return nil
+	default:
+		return errUnhandledFault
+	}
+}
+
+// enterHandler 保存机器状态并跳转到处理器:fault 非空时 siginfo
+// 携带同步故障类别与地址;savedPC 是处理器返回后恢复的指令地址
+// (边界投递为待执行指令,故障投递为触发故障的指令)。
+func (d *signalDeliverer) enterHandler(ctx context.Context, number signal.Number, action signal.ActionConfig, savedPC uint64, fault *common.FaultInfo) error {
 	machine, err := d.core.State(ctx)
 	if err != nil {
 		return err
 	}
+	machine.PC = savedPC
 	// SA_ONSTACK 且登记了备用栈时在备用栈上开帧。
 	sp := machine.Registers[regSp]
 	base := common.AlignFrameBase(sp)
@@ -514,6 +584,7 @@ func (d *signalDeliverer) boundary(ctx context.Context) error {
 		Machine:   machine,
 		OldMask:   oldMask,
 		AltStack:  common.SignalAltStack{Sp: altStack.Sp, Size: altStack.Size, Present: present},
+		Fault:     fault,
 	})
 	if err != nil {
 		return err
@@ -526,11 +597,54 @@ func (d *signalDeliverer) boundary(ctx context.Context) error {
 		next.Registers[regArgument0+1] = infoAddress
 		next.Registers[regArgument0+2] = ucontextAddress
 	}
-	if err := d.core.Reset(ctx, next); err != nil {
+	return d.core.Reset(ctx, next)
+}
+
+func (d *signalDeliverer) boundary(ctx context.Context) error {
+	if d.control == nil {
+		return nil
+	}
+	number, action, ok := d.control.PendingDeliverable()
+	if !ok || action.Handler <= signal.SigIgnore {
+		return nil
+	}
+	machine, err := d.core.State(ctx)
+	if err != nil {
+		return err
+	}
+	if err := d.enterHandler(ctx, number, action, machine.PC, nil); err != nil {
 		return err
 	}
 	d.control.ConsumeSignal(number)
 	return nil
+}
+
+// faultDispatching 包装系统调用适配器:非 ecall 的同步故障经
+// signalDeliverer 转换为客体信号投递;未转换的按原样上抛
+// (Runner 视为致命故障,fail-closed)。
+type faultDispatching struct {
+	next    common.Dispatcher
+	deliver *signalDeliverer
+}
+
+func (f faultDispatching) Dispatch(ctx context.Context, trap cpu.Trap) (common.Exit, error) {
+	exit, err := f.next.Dispatch(ctx, trap)
+	if err == nil {
+		return exit, nil
+	}
+	var fault common.Fault
+	if !errors.As(err, &fault) {
+		return exit, err
+	}
+	raised := f.deliver.synchronous(ctx, fault.Trap)
+	switch {
+	case raised == nil:
+		return common.Exit{}, nil
+	case errors.Is(raised, errUnhandledFault):
+		return common.Exit{}, err
+	default:
+		return common.Exit{}, raised
+	}
 }
 
 const (
@@ -592,9 +706,12 @@ func (f processForker) Fork(ctx context.Context) (uint64, error) {
 		if delivery, ok := child.Control.(proc.SignalDeliveryControl); ok {
 			deliverer.control = delivery
 		}
+		if dispositions, ok := child.Control.(proc.SignalDispositionControl); ok {
+			deliverer.disposition = dispositions
+		}
 		runner, err := common.NewRunner(common.Config{
 			Core:       childCore,
-			Dispatcher: &linuxriscv64.Adapter{Handler: childHandler, Registers: childCore},
+			Dispatcher: faultDispatching{next: &linuxriscv64.Adapter{Handler: childHandler, Registers: childCore}, deliver: deliverer},
 			Boundary:   deliverer.boundary,
 		})
 		if err != nil {

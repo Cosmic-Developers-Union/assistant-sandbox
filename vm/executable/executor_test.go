@@ -250,3 +250,50 @@ func TestBuiltinWaitCancelDuringRun(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestDeathClassifiesAsSignaled 验证程序返回 Death(同步故障默认处置)
+// 时,实例以被信号终止归类:父进程 wait 观察到信号而非普通退出。
+func TestDeathClassifiesAsSignaled(t *testing.T) {
+	b := NewBuiltin()
+	program := Func(func(context.Context, proc.Proc) (uint8, error) {
+		return 0, Death{Signal: signal.SEGV, Detail: "memory-fault@0x1000: si_addr=0x30000"}
+	})
+	inst, err := b.Start(t.Context(), program, testProc())
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := inst.Wait(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Reason != Signaled || result.Signal != signal.SEGV {
+		t.Fatalf("result=%+v want signaled/SIGSEGV", result)
+	}
+	if result.Code != uint8(128+signal.SEGV) {
+		t.Fatalf("code=%d want %d", result.Code, 128+signal.SEGV)
+	}
+	if err := inst.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestDeathInvalidSignalStaysFatal 验证无效信号号的 Death 不被归类,
+// 保持原错误上抛(fail-closed)。
+func TestDeathInvalidSignalStaysFatal(t *testing.T) {
+	b := NewBuiltin()
+	program := Func(func(context.Context, proc.Proc) (uint8, error) {
+		return 0, Death{Signal: signal.Number(64)}
+	})
+	inst, err := b.Start(t.Context(), program, testProc())
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, runErr := inst.Wait(t.Context())
+	if runErr == nil {
+		t.Fatal("无效 Death 应保持原错误")
+	}
+	if result.Reason != Exited || result.Code != 125 {
+		t.Fatalf("result=%+v want exited/125", result)
+	}
+	_ = inst.Close()
+}

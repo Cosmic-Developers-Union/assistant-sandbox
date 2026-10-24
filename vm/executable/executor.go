@@ -60,6 +60,23 @@ type interrupt struct{ n signal.Number }
 
 func (i interrupt) Error() string { return fmt.Sprintf("信号 %v 终止", i.n) }
 
+// Death 报告客体进程按默认处置被信号终止(典型来源:同步故障,
+// 如非法指令→SIGILL、无效访问→SIGSEGV)。执行器据此把退出归类为
+// Signaled,父进程经 wait 观察到信号终止而非普通退出。
+type Death struct {
+	Signal signal.Number
+
+	// Detail 携带诊断上下文(故障类别与地址),不进入 wait 状态。
+	Detail string
+}
+
+func (d Death) Error() string {
+	if d.Detail == "" {
+		return fmt.Sprintf("信号 %v 终止", d.Signal)
+	}
+	return fmt.Sprintf("信号 %v 终止: %s", d.Signal, d.Detail)
+}
+
 type Builtin struct{}
 
 func NewBuiltin() *Builtin { return &Builtin{} }
@@ -98,6 +115,13 @@ func (Builtin) Start(ctx context.Context, program Program, p Proc) (Instance, er
 			var sig interrupt
 			if errors.As(cause, &sig) {
 				result = Result{Code: signal.ExitCode(sig.n), Signal: sig.n, Reason: Signaled}
+				runErr = nil
+			}
+		}
+		if runErr != nil && result.Reason == Exited {
+			var death Death
+			if errors.As(runErr, &death) && death.Signal.Valid() {
+				result = Result{Code: signal.ExitCode(death.Signal), Signal: death.Signal, Reason: Signaled}
 				runErr = nil
 			}
 		}

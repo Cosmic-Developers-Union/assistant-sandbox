@@ -47,8 +47,24 @@ const (
 	SignalStackDisable = ssDisable
 )
 
-// SI_USER 是 kill/raise 发送信号时的 si_code。
+// SI_USER 是 kill/raise 发送信号时的 si_code;同步故障携带
+// asm-generic 的故障类别码与故障地址。
 const siUser = 0
+
+// asm-generic si_code:同步故障的类别(与信号无关,各类内部自 1 起编)。
+const (
+	SigInfoIllIllegalOp = 1 // ILL_ILLOPC:非法操作码
+	SigInfoSegvMapErr   = 1 // SEGV_MAPERR:地址未映射
+	SigInfoSegvAccErr   = 2 // SEGV_ACCERR:映射存在但权限不足
+	SigInfoBusAdraln    = 1 // BUS_ADRALN:地址不对齐
+	SigInfoTrapBreak    = 1 // TRAP_BRKPT:断点陷阱
+)
+
+// FaultInfo 是同步故障投递的 siginfo 类别与地址。
+type FaultInfo struct {
+	Code int32
+	Addr uint64
+}
 
 // SignalAltStack 是 sigaltstack 登记的备用栈(stack_t 的端口表示)。
 type SignalAltStack struct {
@@ -65,6 +81,9 @@ type SignalFrameInput struct {
 	Machine   cpu.Machine
 	OldMask   uint64
 	AltStack  SignalAltStack
+
+	// Fault 是同步故障投递的类别与地址;为空时 siginfo 记 SI_USER。
+	Fault *FaultInfo
 }
 
 // SignalReturnState 是 rt_sigreturn 从帧中恢复的状态。
@@ -85,9 +104,15 @@ func WriteSignalFrame(ctx context.Context, memory Memory, input SignalFrameInput
 	putU64 := func(offset int, value uint64) {
 		binary.LittleEndian.PutUint64(frame[offset:], value)
 	}
-	// siginfo:si_signo + si_code=SI_USER,其余字段零填充。
+	// siginfo:si_signo、si_errno、si_code 与 _sigfault._addr;
+	// 异步投递(Fault 为空)按 SI_USER 记类别、地址置零。
+	code, faultAddress := int32(siUser), uint64(0)
+	if input.Fault != nil {
+		code, faultAddress = input.Fault.Code, input.Fault.Addr
+	}
 	binary.LittleEndian.PutUint32(frame[0:], uint32(input.Signal))
-	binary.LittleEndian.PutUint32(frame[8:], siUser)
+	binary.LittleEndian.PutUint32(frame[8:], uint32(code))
+	binary.LittleEndian.PutUint64(frame[16:], faultAddress)
 
 	putU64(rtSigframeUCOff+ucFlagsOff, 0)
 	putU64(rtSigframeUCOff+ucLinkOff, 0)

@@ -820,3 +820,29 @@ func TestCloneCopiesRegionsAndPrivatesPages(t *testing.T) {
 		t.Fatalf("克隆预算: err=%v want ENOSPC", err)
 	}
 }
+
+// TestFaultErrorsExposeKindAndErrno 验证访存故障错误同时保留具体
+// 故障类别(J06 同步故障→信号的分类依据)与 errno 身份。
+func TestFaultErrorsExposeKindAndErrno(t *testing.T) {
+	ctx := context.Background()
+	table := New(0)
+	if err := table.Map(ctx, Region{Start: 0x10000, End: 0x11000, Prot: ProtRead, Name: "ro"}); err != nil {
+		t.Fatal(err)
+	}
+	unmapped := table.Read(ctx, 0x90000, make([]byte, 4))
+	if !errors.Is(unmapped, FaultUnmapped) || !errors.Is(unmapped, errno.Range) {
+		t.Fatalf("未映射: %v want FaultUnmapped+ERANGE", unmapped)
+	}
+	protection := table.Write(ctx, 0x10000, []byte{1})
+	if !errors.Is(protection, FaultProtection) || !errors.Is(protection, errno.Permission) {
+		t.Fatalf("保护: %v want FaultProtection+EACCES", protection)
+	}
+	misaligned := table.Unmap(ctx, 0x10004, 0x11000)
+	if !errors.Is(misaligned, FaultMisaligned) || !errors.Is(misaligned, errno.Invalid) {
+		t.Fatalf("不对齐: %v want FaultMisaligned+EINVAL", misaligned)
+	}
+	overflow := table.Read(ctx, ^uint64(0)-2, make([]byte, 8))
+	if !errors.Is(overflow, FaultOverflow) || !errors.Is(overflow, errno.Invalid) {
+		t.Fatalf("溢出: %v want FaultOverflow+EINVAL", overflow)
+	}
+}

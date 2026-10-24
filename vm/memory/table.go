@@ -336,6 +336,17 @@ func addNoOverflow(left, right uint64) (uint64, error) {
 	return sum, nil
 }
 
+// faultWithKind 让调用方经 errors.Is 同时识别具体故障类别
+// (SEGV 映射错/保护错的分类依据)与 errno 身份。
+type faultWithKind struct {
+	kind Fault
+	body error
+}
+
+func (e faultWithKind) Error() string { return e.body.Error() }
+
+func (e faultWithKind) Unwrap() []error { return []error{e.kind, e.body} }
+
 func faultError(fault Fault, address uint64, detail string) error {
 	identity := errno.Range
 	switch fault {
@@ -344,7 +355,8 @@ func faultError(fault Fault, address uint64, detail string) error {
 	case FaultProtection:
 		identity = errno.Permission
 	}
-	return errno.Wrap(identity, fault.String()+"@"+utoa(address)+": "+detail)
+	return faultWithKind{kind: fault,
+		body: errno.Wrap(identity, fault.String()+"@"+utoa(address)+": "+detail)}
 }
 
 func (t *Table) checkOverlapLocked(region Region) error {
