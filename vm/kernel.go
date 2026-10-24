@@ -358,7 +358,7 @@ func (k *Kernel) Begin(parent proc.PID, name string, args []string, dir string, 
 	k.signals.Spawn(uint64(p.ID))
 	p.State = proc.Running
 	p.Resources = capability.Scope(uint64(p.ID), k.services.Set, k.meters)
-	p.Control = procControl{k}
+	p.Control = procControl{k: k, self: p.ID}
 	if k.fds != nil {
 		k.fds.Attach(uint64(p.ID), streams)
 	}
@@ -497,6 +497,75 @@ func (k *Kernel) Wait(ctx context.Context, parent, target proc.PID) (proc.Proc, 
 		}
 
 	}
+}
+
+// WaitChild 按 wait4/waitid 语义等待或探测子进程:
+// target=0 表示任意子进程;nohang 时不阻塞,found=false 表示尚无
+// 可回收的子进程。返回的状态携带退出码与终止信号。
+func (k *Kernel) WaitChild(ctx context.Context, parent, target proc.PID, nohang bool) (proc.ChildState, bool, error) {
+	if parent == 0 {
+		parent = k.init
+	}
+	if nohang {
+		k.mu.Lock()
+		if k.closed {
+			k.mu.Unlock()
+			return proc.ChildState{}, false, errno.Cancelled
+		}
+		var found proc.PID
+		if target != 0 {
+			p, err := k.table.Get(target)
+			if err != nil || p.Parent != parent {
+				k.mu.Unlock()
+				return proc.ChildState{}, false, errno.NoChild
+			}
+			if p.State != proc.Zombie {
+				k.mu.Unlock()
+				return proc.ChildState{}, false, nil
+			}
+			found = target
+		} else {
+			p, ok := k.table.WaitAny(parent)
+			if !ok {
+				if !k.table.HasChildren(parent) {
+					k.mu.Unlock()
+					return proc.ChildState{}, false, errno.NoChild
+				}
+				k.mu.Unlock()
+				return proc.ChildState{}, false, nil
+			}
+			found = p.ID
+		}
+		reaped, err := k.table.Reap(parent, found)
+		if err != nil {
+			k.mu.Unlock()
+			return proc.ChildState{}, false, err
+		}
+		closeErr := k.afterReapLocked(reaped)
+		k.mu.Unlock()
+		k.children.WakeAll(wait.Data)
+		state := proc.ChildState{PID: reaped.ID, ExitCode: reaped.ExitCode, ExitSignal: reaped.ExitSignal}
+		return state, true, closeErr
+	}
+	reaped, err := k.Wait(ctx, parent, target)
+	if err != nil {
+		return proc.ChildState{}, true, err
+	}
+	state := proc.ChildState{PID: reaped.ID, ExitCode: reaped.ExitCode, ExitSignal: reaped.ExitSignal}
+	return state, true, nil
+}
+
+// HasChildren 报告进程是否还有子进程。
+func (k *Kernel) HasChildren(parent proc.PID) bool {
+	if parent == 0 {
+		parent = k.init
+	}
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.closed {
+		return false
+	}
+	return k.table.HasChildren(parent)
 }
 
 func (k *Kernel) Signal(target proc.PID, n signal.Number) error {
@@ -857,7 +926,7 @@ func (k *Kernel) RunRegistered(ctx context.Context, p proc.Proc) (ExitStatus, er
 	}
 
 	actual.Resources = capability.Scope(uint64(actual.ID), k.services.Set, k.meters)
-	actual.Control = procControl{k}
+	actual.Control = procControl{k: k, self: actual.ID}
 	runCtx, cancel := context.WithCancelCause(ctx)
 
 	instance, err := executable.NewBuiltin().Start(proc.WithContext(runCtx, actual), resolved.Program, actual)
@@ -1205,7 +1274,10 @@ func clampNice(value int) int {
 	}
 }
 
-type procControl struct{ k *Kernel }
+type procControl struct {
+	k    *Kernel
+	self proc.PID
+}
 
 func (c procControl) Begin(parent proc.PID, name string, args []string, dir string, env map[string]string, streams fd.Streams) (proc.Proc, error) {
 	return c.k.Begin(parent, name, args, dir, env, streams)
@@ -1217,6 +1289,20 @@ func (c procControl) Finish(parent, id proc.PID, code uint8) error {
 
 func (c procControl) SetUmask(id proc.PID, mask stdfs.FileMode) error {
 	return c.k.SetUmask(id, mask)
+}
+
+func (c procControl) WaitChild(ctx context.Context, target proc.PID, nohang bool) (proc.ChildState, bool, error) {
+	if c.self == 0 {
+		return proc.ChildState{}, false, errno.NoProcess
+	}
+	return c.k.WaitChild(ctx, c.self, target, nohang)
+}
+
+func (c procControl) HasChildren() bool {
+	if c.self == 0 {
+		return false
+	}
+	return c.k.HasChildren(c.self)
 }
 
 func (c procControl) Usage(id proc.PID) (proc.Usage, error) {

@@ -177,6 +177,25 @@ type Syscalls struct {
 
 	// CPUs 是客体可见的 CPU 数;0 按单 CPU 报告。
 	CPUs uint64
+
+	Waiter Waiter
+}
+
+// ChildState 是 wait4/waitid 观察到的子进程终态。
+type ChildState struct {
+	PID        uint64
+	ExitCode   uint8
+	ExitSignal uint32
+}
+
+// Waiter 是子进程等待端口;parent 由实现从调用进程推断。
+type Waiter interface {
+	// WaitChild 等待调用进程的子进程:target=0 表示任意子进程;
+	// nohang 时不阻塞,found=false 表示尚无可回收子进程。
+	WaitChild(ctx context.Context, target uint64, nohang bool) (ChildState, bool, error)
+
+	// HasChildren 报告调用进程是否还有子进程(ECHILD 判定)。
+	HasChildren() bool
 }
 
 func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
@@ -282,6 +301,8 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 		return s.schedSetAffinity(ctx, call)
 	case SysGetCPU:
 		return s.getcpu(ctx, call)
+	case SysWaitid:
+		return s.waitid(ctx, call)
 	case SysFstatfs:
 		return s.fstatfs(ctx, call)
 	case SysFcntl:
@@ -2124,6 +2145,93 @@ func (s Syscalls) fsync(ctx context.Context, call Call, fdatasync bool) Reply {
 	}
 	if err := target.Sync(fdatasync); err != nil {
 		return Reply{Errno: errnoOf(err)}
+	}
+	return Reply{}
+}
+
+// asm-generic 的 waitid 参数与 siginfo 常量。
+const (
+	pAll = 0
+	pPID = 1
+
+	wExited    = 1
+	wStopped   = 2
+	wContinued = 4
+	wNoHang    = 8
+	wNoWait    = 16
+
+	cldExited = 1
+	cldKilled = 2
+
+	sigchldNumber = 17
+	siginfoSize   = 128
+	siginfoPID    = 16
+	siginfoUID    = 20
+	siginfoStatus = 24
+	siginfoUTime  = 32
+	siginfoSTime  = 40
+)
+
+// waitid(idtype, id, infop, options) 支持 P_PID/P_ALL 与 WEXITED/
+// WNOHANG;停止/继续与 WNOWAIT 未纳入兼容配置,明确 ENOTSUP。
+func (s Syscalls) waitid(ctx context.Context, call Call) Reply {
+	if s.Memory == nil || s.Waiter == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	switch call.Args[0] {
+	case pAll, pPID:
+	default:
+		return Reply{Errno: errno.NotSupported}
+	}
+	if call.Args[0] == pPID && call.Args[1] == 0 {
+		return Reply{Errno: errno.Invalid}
+	}
+	options := call.Args[3]
+	if options&wExited == 0 {
+		return Reply{Errno: errno.Invalid}
+	}
+	if options&(wStopped|wContinued) != 0 || options&wNoWait != 0 {
+		return Reply{Errno: errno.NotSupported}
+	}
+	if call.Args[2] == 0 {
+		return Reply{Errno: errno.Invalid}
+	}
+	state, found, err := s.Waiter.WaitChild(ctx, call.Args[1], options&wNoHang != 0)
+	if err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	if !found {
+		// WNOHANG 无就绪子进程:清零 siginfo 并成功返回。
+		var empty [siginfoSize]byte
+		if err := s.Memory.Write(ctx, call.Args[2], empty[:]); err != nil {
+			return Reply{Errno: errno.Fault}
+		}
+		return Reply{}
+	}
+	return s.writeSigchld(ctx, call.Args[2], state)
+}
+
+// writeSigchld 按 asm-generic siginfo_t(128 字节)编码 SIGCHLD 信息:
+// 正常退出 si_code=CLD_EXITED 且 si_status=退出码;
+// 被信号终止 si_code=CLD_KILLED 且 si_status=信号编号。
+// 资源使用字段随 T03 接线,当前为零。
+func (s Syscalls) writeSigchld(ctx context.Context, address uint64, state ChildState) Reply {
+	var encoded [siginfoSize]byte
+	putI32 := func(offset int, value int32) {
+		binary.LittleEndian.PutUint32(encoded[offset:], uint32(value))
+	}
+	putI32(0, sigchldNumber)
+	if state.ExitSignal != 0 {
+		putI32(8, cldKilled)
+		putI32(siginfoStatus, int32(state.ExitSignal))
+	} else {
+		putI32(8, cldExited)
+		putI32(siginfoStatus, int32(state.ExitCode))
+	}
+	putI32(siginfoPID, int32(state.PID))
+	putI32(siginfoUID, 0)
+	if err := s.Memory.Write(ctx, address, encoded[:]); err != nil {
+		return Reply{Errno: errno.Fault}
 	}
 	return Reply{}
 }

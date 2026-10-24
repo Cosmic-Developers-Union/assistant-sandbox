@@ -203,6 +203,7 @@ const (
 	SysSchedGetAffinity
 	SysSchedSetAffinity
 	SysGetCPU
+	SysWaitid
 )
 
 func (s Syscall) String() string {
@@ -459,6 +460,8 @@ func (s Syscall) String() string {
 		return "sched_setaffinity"
 	case SysGetCPU:
 		return "getcpu"
+	case SysWaitid:
+		return "waitid"
 	case SysReadlinkat:
 		return "readlinkat"
 	case SysUmask:

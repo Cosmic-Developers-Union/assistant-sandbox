@@ -55,7 +55,7 @@ func TestKernelFailClosedAfterSequencerOverflow(t *testing.T) {
 	if err := kernel.SetUmask(1, 0o022); !errors.Is(err, errno.Busy) {
 		t.Fatalf("fail-closed 后不得改掩码: %v", err)
 	}
-	control := procControl{kernel}
+	control := procControl{k: kernel, self: proc.PID(1)}
 	if err := control.SetNice(1, 0); !errors.Is(err, errno.Busy) {
 		t.Fatalf("fail-closed 后不得改优先级: %v", err)
 	}
@@ -305,7 +305,7 @@ func TestKernelPriorityControlEdges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	control := procControl{kernel}
+	control := procControl{k: kernel, self: proc.PID(1)}
 	if _, err := control.Nice(proc.PID(999)); !errors.Is(err, errno.NoProcess) {
 		t.Fatalf("未知进程的优先级读应报 ESRCH: %v", err)
 	}
@@ -348,7 +348,7 @@ func TestControlRunRejectsInvalidSignalDisposition(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	control := procControl{kernel}
+	control := procControl{k: kernel, self: proc.PID(1)}
 	terminal, err := control.Run(t.Context(), proc.RunSpec{
 		Name: "echo", Dir: "/", IgnoreSignals: []signal.Number{0},
 	})

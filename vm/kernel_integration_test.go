@@ -989,3 +989,86 @@ func TestKernelUsageAggregatesChildren(t *testing.T) {
 		t.Fatalf("关闭后的用量查询: %v", err)
 	}
 }
+
+func TestKernelWaitChildNoHangAndBlocking(t *testing.T) {
+	reg, _ := registryFor("long", "echo")
+	kernel, _ := New(Services{Set: capability.Set{FD: fd.New()}, Programs: reg}, 4)
+	child, err := kernel.Begin(0, "long", nil, "/", nil, fd.Streams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// WNOHANG:子进程运行中,无就绪结果。
+	if _, found, err := kernel.WaitChild(t.Context(), 0, child.ID, true); err != nil || found {
+		t.Fatalf("运行中 nohang: found=%v err=%v", found, err)
+	}
+	if _, found, _ := kernel.WaitChild(t.Context(), 0, 0, true); found {
+		t.Fatal("任意目标不应有就绪结果")
+	}
+	if !kernel.HasChildren(0) {
+		t.Fatal("应有子进程")
+	}
+
+	// 阻塞等待在子进程转僵尸后立刻返回:子进程经 RunRegistered
+	// 的退出路径(table.Exit)成为僵尸并唤醒等待者。
+	exited := make(chan struct{})
+	go func() {
+		defer close(exited)
+		_ = kernel.Signal(child.ID, signal.TERM)
+		_, _ = kernel.RunRegistered(t.Context(), child)
+	}()
+	state, found, err := kernel.WaitChild(t.Context(), 0, 0, false)
+	if err != nil || !found || state.PID != child.ID || state.ExitSignal != uint8(signal.TERM) {
+		t.Fatalf("阻塞等待: state=%+v found=%v err=%v", state, found, err)
+	}
+	<-exited
+
+	// 立即退出的子进程:阻塞等待取回退出码。
+	var out bytes.Buffer
+	echo, err := kernel.Begin(0, "echo", nil, "/", nil, fd.Streams{Output: &out})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status, err := kernel.RunRegistered(t.Context(), echo); err != nil || status.Code != 0 {
+		t.Fatalf("echo 运行: %+v err=%v", status, err)
+	}
+	state, found, err = kernel.WaitChild(t.Context(), 0, 0, false)
+	if err != nil || !found || state.PID != echo.ID || state.ExitCode != 0 {
+		t.Fatalf("echo 等待: state=%+v found=%v err=%v", state, found, err)
+	}
+
+	// 回收后再探测:任意目标报 ECHILD。
+	if _, _, err := kernel.WaitChild(t.Context(), 0, 0, true); !errors.Is(err, errno.NoChild) {
+		t.Fatalf("无子进程: err=%v want ECHILD", err)
+	}
+	if kernel.HasChildren(0) {
+		t.Fatal("回收后不应再有子进程")
+	}
+	if err := kernel.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestKernelWaitChildNoHangTargetsZombie(t *testing.T) {
+	reg, _ := registryFor("long")
+	kernel, _ := New(Services{Set: capability.Set{FD: fd.New()}, Programs: reg}, 4)
+	child, err := kernel.Begin(0, "long", nil, "/", nil, fd.Streams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = kernel.Signal(child.ID, signal.TERM)
+	if _, err := kernel.RunRegistered(t.Context(), child); err != nil {
+		t.Fatal(err)
+	}
+	state, found, err := kernel.WaitChild(t.Context(), 0, child.ID, true)
+	if err != nil || !found || state.ExitSignal != uint8(signal.TERM) {
+		t.Fatalf("僵尸 nohang: state=%+v found=%v err=%v", state, found, err)
+	}
+	// 已回收:目标不存在报 ECHILD。
+	if _, _, err := kernel.WaitChild(t.Context(), 0, child.ID, true); !errors.Is(err, errno.NoChild) {
+		t.Fatalf("已回收: err=%v want ECHILD", err)
+	}
+	if err := kernel.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}

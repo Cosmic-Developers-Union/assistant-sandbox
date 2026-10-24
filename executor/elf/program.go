@@ -185,6 +185,9 @@ func syscalls(ctx context.Context, process proc.Proc, space *memory.Table, plan 
 		handler.Mapper = m
 	}
 	handler.Limiter = &limiter{meters: metersOf(process), pid: uint64(process.ID)}
+	if waiter, ok := process.Control.(proc.WaitControl); ok {
+		handler.Waiter = processWaiter{control: waiter}
+	}
 	if source, err := process.Resources.Time(); err == nil {
 		handler.Clock = source
 		handler.Sleeper = source
@@ -361,3 +364,24 @@ func alignPage(address uint64) uint64 {
 }
 
 var _ common.Heap = (*heap)(nil)
+
+// processWaiter 把进程控制端口的子进程等待能力适配为 ABI 等待端口。
+type processWaiter struct {
+	control proc.WaitControl
+}
+
+func (w processWaiter) WaitChild(ctx context.Context, target uint64, nohang bool) (common.ChildState, bool, error) {
+	state, found, err := w.control.WaitChild(ctx, proc.PID(target), nohang)
+	if err != nil || !found {
+		return common.ChildState{}, found, err
+	}
+	return common.ChildState{
+		PID:        uint64(state.PID),
+		ExitCode:   state.ExitCode,
+		ExitSignal: uint32(state.ExitSignal),
+	}, true, nil
+}
+
+func (w processWaiter) HasChildren() bool {
+	return w.control.HasChildren()
+}

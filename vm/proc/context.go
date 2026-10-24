@@ -49,6 +49,24 @@ type Usage struct {
 	Children uint64
 }
 
+// ChildState 是 wait4/waitid 观察到的子进程终态。
+type ChildState struct {
+	PID        PID
+	ExitCode   uint8
+	ExitSignal uint8
+}
+
+// WaitControl 是 wait4/waitid 所需的子进程等待能力:
+// parent 由实现从调用进程推断。
+type WaitControl interface {
+	// WaitChild 等待调用进程的子进程:target=0 表示任意子进程;
+	// nohang 时不阻塞,found=false 表示尚无可回收子进程。
+	WaitChild(ctx context.Context, target PID, nohang bool) (ChildState, bool, error)
+
+	// HasChildren 报告调用进程是否还有子进程(ECHILD 判定)。
+	HasChildren() bool
+}
+
 type UsageControl interface {
 	Usage(PID) (Usage, error)
 }

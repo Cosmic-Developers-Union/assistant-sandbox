@@ -2509,3 +2509,119 @@ func TestAffinityAndTopologyReportConfiguredCPUs(t *testing.T) {
 		t.Fatalf("坏地址: %+v want EFAULT", reply)
 	}
 }
+
+type fakeWaiter struct {
+	state   ChildState
+	found   bool
+	err     error
+	targets []uint64
+	nohangs []bool
+	hasKids bool
+}
+
+func (w *fakeWaiter) WaitChild(_ context.Context, target uint64, nohang bool) (ChildState, bool, error) {
+	w.targets = append(w.targets, target)
+	w.nohangs = append(w.nohangs, nohang)
+	if w.err != nil {
+		return ChildState{}, false, w.err
+	}
+	return w.state, w.found, nil
+}
+
+func (w *fakeWaiter) HasChildren() bool { return w.hasKids }
+
+func TestWaitidEncodesSigchldAndHonoursNoHang(t *testing.T) {
+	ctx := context.Background()
+	space := newFakeMemory()
+	waiter := &fakeWaiter{found: true, state: ChildState{PID: 42, ExitCode: 7}}
+	syscalls := Syscalls{Memory: space, Waiter: waiter}
+
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysWaitid, Args: [6]uint64{pPID, 42, 0x3000, wExited}}); reply.Errno != "" {
+		t.Fatalf("waitid: %+v", reply)
+	}
+	if waiter.targets[0] != 42 || waiter.nohangs[0] {
+		t.Fatalf("参数=%v %v", waiter.targets, waiter.nohangs)
+	}
+	raw := make([]byte, siginfoSize)
+	if err := space.Read(ctx, 0x3000, raw); err != nil {
+		t.Fatal(err)
+	}
+	if signo := int32(binary.LittleEndian.Uint32(raw[0:])); signo != sigchldNumber {
+		t.Fatalf("si_signo=%d want %d", signo, sigchldNumber)
+	}
+	if code := int32(binary.LittleEndian.Uint32(raw[8:])); code != cldExited {
+		t.Fatalf("si_code=%d want CLD_EXITED", code)
+	}
+	if pid := int32(binary.LittleEndian.Uint32(raw[siginfoPID:])); pid != 42 {
+		t.Fatalf("si_pid=%d", pid)
+	}
+	if status := int32(binary.LittleEndian.Uint32(raw[siginfoStatus:])); status != 7 {
+		t.Fatalf("si_status=%d", status)
+	}
+
+	// 被信号终止:CLD_KILLED + 信号编号。
+	killed := &fakeWaiter{found: true, state: ChildState{PID: 9, ExitSignal: 15}}
+	killedCalls := Syscalls{Memory: space, Waiter: killed}
+	if reply := killedCalls.Handle(ctx, Call{Syscall: SysWaitid, Args: [6]uint64{pPID, 9, 0x3000, wExited}}); reply.Errno != "" {
+		t.Fatalf("killed: %+v", reply)
+	}
+	if err := space.Read(ctx, 0x3000, raw); err != nil {
+		t.Fatal(err)
+	}
+	if code := int32(binary.LittleEndian.Uint32(raw[8:])); code != cldKilled {
+		t.Fatalf("si_code=%d want CLD_KILLED", code)
+	}
+	if status := int32(binary.LittleEndian.Uint32(raw[siginfoStatus:])); status != 15 {
+		t.Fatalf("si_status=%d", status)
+	}
+
+	// WNOHANG 无就绪子进程:清零返回 0。
+	nohang := &fakeWaiter{found: false}
+	nohangCalls := Syscalls{Memory: space, Waiter: nohang}
+	space.data[0x3400] = 0xAB
+	if reply := nohangCalls.Handle(ctx, Call{Syscall: SysWaitid, Args: [6]uint64{pAll, 0, 0x3000, wExited | wNoHang}}); reply.Errno != "" {
+		t.Fatalf("WNOHANG: %+v", reply)
+	}
+	if err := space.Read(ctx, 0x3000, raw); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(raw, make([]byte, siginfoSize)) {
+		t.Fatal("WNOHANG 未就绪应清零 siginfo")
+	}
+}
+
+func TestWaitidValidatesOptionsAndTargets(t *testing.T) {
+	ctx := context.Background()
+	space := newFakeMemory()
+	waiter := &fakeWaiter{err: errno.NoChild}
+	syscalls := Syscalls{Memory: space, Waiter: waiter}
+
+	// 缺 WEXITED EINVAL;P_PID 且 id=0 EINVAL;infop 为 NULL EINVAL。
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysWaitid, Args: [6]uint64{pAll, 0, 0x3000, 0}}); reply.Errno != errno.Invalid {
+		t.Fatalf("缺 WEXITED: %+v want EINVAL", reply)
+	}
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysWaitid, Args: [6]uint64{pPID, 0, 0x3000, wExited}}); reply.Errno != errno.Invalid {
+		t.Fatalf("P_PID id=0: %+v want EINVAL", reply)
+	}
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysWaitid, Args: [6]uint64{pAll, 0, 0, wExited}}); reply.Errno != errno.Invalid {
+		t.Fatalf("infop NULL: %+v want EINVAL", reply)
+	}
+	// WSTOPPED/WCONTINUED/WNOWAIT 未纳入兼容配置,ENOTSUP。
+	for _, flag := range []uint64{wStopped, wContinued, wNoWait} {
+		if reply := syscalls.Handle(ctx, Call{Syscall: SysWaitid, Args: [6]uint64{pAll, 0, 0x3000, wExited | flag}}); reply.Errno != errno.NotSupported {
+			t.Fatalf("flag %#x: %+v want ENOTSUP", flag, reply)
+		}
+	}
+	// idtype 不识别 ENOTSUP。
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysWaitid, Args: [6]uint64{3, 0, 0x3000, wExited}}); reply.Errno != errno.NotSupported {
+		t.Fatalf("P_PIDFD: %+v want ENOTSUP", reply)
+	}
+	// 无子进程透传 ECHILD。
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysWaitid, Args: [6]uint64{pAll, 0, 0x3000, wExited}}); reply.Errno != errno.NoChild {
+		t.Fatalf("ECHILD: %+v want ECHILD", reply)
+	}
+	// 未装配端口 ENOSYS。
+	if reply := (Syscalls{}).Handle(ctx, Call{Syscall: SysWaitid}); reply.Errno != errno.NotImplemented {
+		t.Fatalf("未装配: %+v want ENOSYS", reply)
+	}
+}
