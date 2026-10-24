@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"testing"
+	"time"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/abi/linux/common"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/filesystem/memfs"
@@ -886,5 +887,64 @@ func TestMapperMadviseDropsContents(t *testing.T) {
 	}
 	if err := m.Madvise(ctx, 9*memory.PageSize, 10*memory.PageSize, common.MadvDontneed); !errors.Is(err, errno.Range) {
 		t.Fatalf("未映射范围应报 ENOMEM: %v", err)
+	}
+}
+
+// O09:恶意客体故障——系统调用风暴、坏指针与非法指令不使宿主崩溃,
+// 且取消与错误路径保持可用。
+func TestHostileGuestProgramsStayContained(t *testing.T) {
+	// 系统调用风暴:无限 getpid 循环,取消后立即退出且宿主可继续工作。
+	storm := buildImageWith(t, []uint32{
+		0x0AC00893, // li a7, 172 (getpid)
+		0x00000073, // ecall
+		0xFF9FF06F, // jal x0, -8
+	}, "")
+	harness := newHarness(t, storm, nil)
+	program, _, err := Factory{}.New("/program")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := program.Run(ctx, harness.process)
+		done <- err
+	}()
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("取消后应返回错误")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("系统调用风暴未在取消后停止")
+	}
+
+	// 坏指针:从未映射地址读取 → 客体故障而非宿主崩溃。
+	badPointer := buildImageWith(t, []uint32{
+		0x000302B7, // lui t0, 0x30 → 0x30000(未映射)
+		0x0002A503, // lw a0, 0(t0)
+		0x05D00893, // li a7, 93 (exit)
+		0x00000073, // ecall
+	}, "")
+	faulted := newHarness(t, badPointer, nil)
+	if _, err := faulted.run(t); err == nil {
+		t.Fatal("坏指针应返回故障")
+	}
+
+	// 非法指令 → 客体故障而非宿主崩溃。
+	illegal := buildImageWith(t, []uint32{
+		0xFFFFFFFF, // 非法编码
+	}, "")
+	illegalHarness := newHarness(t, illegal, nil)
+	if _, err := illegalHarness.run(t); err == nil {
+		t.Fatal("非法指令应返回故障")
+	}
+
+	// 同一宿主继续运行正常程序,关闭能力未受影响。
+	healthy := newHarness(t, buildImage(t), nil)
+	if status, err := healthy.run(t); err != nil || status != 7 {
+		t.Fatalf("宿主状态受损: status=%d err=%v", status, err)
 	}
 }

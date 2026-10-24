@@ -292,7 +292,7 @@ Python 和 Node.js 的验收必须执行客体运行时，不能通过调用宿�
 - [x] O06 实现输出与屏幕历史预算。验收：持续输出不会无限占用宿主内存，截断/背压策略与错误可观察。 证据:session.go outputBudget(16MB wire 预算)、userland/shell/loop.go OutputLimit 与流重置、executor/wasm/engine_host.go newOutputBudget、vm/jobs_fault_test.go TestJobOutputTruncationIsMarked。测试:`go test . ./vm/ ./userland/...`。CI:Test 工作流。
 - [ ] O07 审计全部宿主能力入口。验收：文件、网络、随机、时间、进程和扩展调用都经过明确授权，不能直接启动宿主程序。
 - [ ] O08 建立双 VM 隔离测试。验收：文件、内存、PID、设备、socket 和资源耗尽互不污染。
-- [ ] O09 建立恶意客体故障测试。验收：错误指令、坏指针、畸形 ELF 和系统调用风暴不会使宿主崩溃或失去关闭能力。
+- [x] O09 建立恶意客体故障测试。验收：错误指令、坏指针、畸形 ELF 和系统调用风暴不会使宿主崩溃或失去关闭能力。 证据:executor/elf/program_test.go TestHostileGuestProgramsStayContained(真实 RISC-V ELF:无限 getpid 系统调用风暴在 ctx 取消后 5 秒内停止、未映射地址 lw 返回客体故障、非法编码 0xFFFFFFFF 返回客体故障、随后正常程序仍可运行=宿主未受损)+ 既有 TestProgramImageErrors(畸形/截断 ELF → ENOEXEC,不崩溃)、TestKernelExecPanicIsFailClosed(内核 fail-closed)、TestKernelCloseWakesWaitersAndInterruptsRunners(关闭能力)、executor/cpu riscv64 的 TestTrapKindsAreDistinguished/TestMemoryFaultIsTrapped/TestIllegalEncodingsAreRejected(D12)。测试:`make docker-test TEST_ARGS=./executor/...`。CI:Test 工作流。
 - [ ] O10 定义扩展模块能力边界。验收：扩展无法取得未授权宿主引用，也不能绕过 VM 的文件和网络策略。
 
 ## P. Console、Terminal 与 Bash 接入
