@@ -3,12 +3,14 @@ package build
 import (
 	"bytes"
 	"compress/gzip"
+	"crypto/sha256"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"time"
 )
 
 func Generate(dir, outputDir string) (resultErr error) {
@@ -16,19 +18,27 @@ func Generate(dir, outputDir string) (resultErr error) {
 	if err != nil {
 		return err
 	}
-	temporary, err := os.MkdirTemp("", "assistant-wasm-build-*")
-	if err != nil {
-		return err
-	}
-	defer func() {
-		resultErr = errors.Join(resultErr, os.RemoveAll(temporary))
-	}()
 	module, err := os.ReadFile(filepath.Join(dir, "go.mod"))
 	if err != nil {
 		return err
 	}
 	sums, err := os.ReadFile(filepath.Join(dir, "go.sum"))
 	if err != nil {
+		return err
+	}
+	// 临时目录以输入内容命名:替换模块的本地路径会进入客体
+	// BuildInfo(=> path (devel)),随机目录名会破坏可重复构建;
+	// 相同输入使用相同目录,配合独占锁串行化并发构建。
+	key := sha256.Sum256(append(append([]byte{}, module...), sums...))
+	temporary := filepath.Join(os.TempDir(), fmt.Sprintf("assistant-sandbox-guest-%x", key[:6]))
+	release, err := acquireBuildLock(temporary)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		resultErr = errors.Join(resultErr, release(), os.RemoveAll(temporary))
+	}()
+	if err := os.MkdirAll(temporary, 0o700); err != nil {
 		return err
 	}
 	replacement := map[string]string{}
@@ -92,6 +102,31 @@ func Generate(dir, outputDir string) (resultErr error) {
 		}
 	}
 	return nil
+}
+
+// acquireBuildLock 以独占创建锁文件串行化相同输入的并发构建;
+// 超过 10 分钟未更新的锁视为陈旧并接管。
+func acquireBuildLock(temporary string) (func() error, error) {
+	lockPath := temporary + ".lock"
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		handle, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err == nil {
+			_ = handle.Close()
+			return func() error { return os.Remove(lockPath) }, nil
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return nil, err
+		}
+		if info, statErr := os.Stat(lockPath); statErr == nil && time.Since(info.ModTime()) > 10*time.Minute {
+			_ = os.Remove(lockPath)
+			continue
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("等待客体构建锁超时: %s", lockPath)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 func dependencySource(dir, name string) (string, error) {

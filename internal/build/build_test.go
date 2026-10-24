@@ -3,6 +3,8 @@ package build
 import (
 	"bytes"
 	"compress/gzip"
+	"crypto/sha256"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -113,4 +115,40 @@ func TestDependencySourceDownloadsBeforeLocating(t *testing.T) {
 	if err != nil || got != want {
 		t.Fatalf("定位依赖 = %q, %v", got, err)
 	}
+}
+
+// B06:相同源码与工具链的两次构建必须产出逐字节一致的客体;
+// 摘要不一致时报告两侧摘要与定位线索,而不是笼统失败。
+func TestGuestBuildIsReproducible(t *testing.T) {
+	if testing.Short() {
+		t.Skip("快速模式跳过两次完整客体构建")
+	}
+	first, err := digestGuestBuild(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := digestGuestBuild(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"assistant-bash.wasm", "assistant-bash.wasm.gz"} {
+		if first[name] != second[name] {
+			t.Fatalf("%s 摘要不一致: 第一次 %s 第二次 %s(相同源码+工具链应逐字节一致;请检查 -trimpath/-buildvcs/-ldflags 与 gzip 头是否引入时间或路径)", name, first[name], second[name])
+		}
+	}
+}
+
+func digestGuestBuild(output string) (map[string]string, error) {
+	if err := Generate("../..", output); err != nil {
+		return nil, err
+	}
+	digests := map[string]string{}
+	for _, name := range []string{"assistant-bash.wasm", "assistant-bash.wasm.gz"} {
+		data, err := os.ReadFile(filepath.Join(output, name))
+		if err != nil {
+			return nil, err
+		}
+		digests[name] = fmt.Sprintf("%x", sha256.Sum256(data))
+	}
+	return digests, nil
 }

@@ -62,7 +62,7 @@ Python 和 Node.js 的验收必须执行客体运行时，不能通过调用宿�
 - [x] B03 固定 Go 与客体工具链版本。验收：CI 从声明安装所需工具，开发者无需猜测版本。 证据:go.mod 的 go 1.27.0 指令为唯一版本事实来源,CI setup-go 以 go-version-file: go.mod 安装同一版本;golangci-lint 版本固定为 action 参数 v2.14.0 并提取为 Makefile GOLANGCI_LINT_VERSION 变量同步声明;docker-test 镜像由浮动的 golang:1.27 钉为 golang:1.27.0 与 go.mod 补丁版本一致;客体工具链 = 同一 Go 工具链(GOOS=wasip1 GOARCH=wasm, internal/build/build.go)+ gzip,无外部交叉编译器;新增 Makefile toolchain 目标校验本机 go version 与 go.mod 声明一致并打印全部工具版本(`make toolchain` 输出 Go 1.27.0)。测试:`make toolchain`。CI:Test 工作流 setup-go/go-version-file。
 - [x] B04 将源代码编译与客体镜像生成分开验证。验收：无客体产物时 SDK 可编译；运行缺失镜像时报明确错误。 证据:wasm.go 缺 Config.ShellArchive 时返回明确错误、internal/build/build_test.go TestGuestBuildFailureKeepsExistingArtifact。测试:`go test ./internal/build/ -run TestGuestBuildFailure`。CI:Test 工作流 Verify source boundary(go build 先于 make guest)。
 - [ ] B05 建立最小离线运行检查。验收：依赖和镜像预置后，关闭下载通道仍能启动 VM、执行程序并关闭。
-- [ ] B06 建立构建可重复性检查。验收：相同源码和工具链两次构建的客体内容摘要一致，差异能定位。
+- [x] B06 建立构建可重复性检查。验收：相同源码和工具链两次构建的客体内容摘要一致，差异能定位。 证据:internal/build/build_test.go TestGuestBuildIsReproducible(两次独立 Generate 对 assistant-bash.wasm 与 .gz 计算 sha256,不一致时报告两侧摘要并提示检查 -trimpath/-buildvcs/-ldflags/gzip 头);该测试首次运行即定位到真实缺陷——debug.BuildInfo 嵌入替换模块的本地路径(=> /tmp/assistant-wasm-build-<随机>/sh (devel)),修复:internal/build/build.go 临时目录改为按 go.mod+go.sum 内容 sha256 命名的固定目录(相同输入→相同路径→BuildInfo 一致),并发构建以独占锁文件串行化(陈旧锁 10 分钟接管),构建后清理;现有 -trimpath -buildvcs=false -ldflags=-s -w 与 gzip 零 MTIME 保持不变。测试:`go test ./internal/build/ -run TestGuestBuildIsReproducible`。CI:Test 工作流 go test ./...。
 - [ ] B07 整理继承的 lint 配置。验收：规则均对应本仓库代码，无失效路径和无效豁免，lint 通过。
 - [ ] B08 将轻量、集成、POSIX 和运行时测试拆为 CI 任务。验收：各任务有独立命令、超时、资源限额和结果。
 - [ ] B09 检查发布工作流与测试工作流关系。验收：未通过目标提交验收的版本不能发布为可用版本。
