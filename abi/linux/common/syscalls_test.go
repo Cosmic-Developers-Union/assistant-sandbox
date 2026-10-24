@@ -2457,3 +2457,55 @@ func TestLinuxNumbersRemainDistinctPerFamily(t *testing.T) {
 		seen[number] = code
 	}
 }
+
+func TestAffinityAndTopologyReportConfiguredCPUs(t *testing.T) {
+	ctx := context.Background()
+	space := newFakeMemory()
+
+	// 单 CPU(缺省):掩码 0x01,getcpu 报告 CPU 0 / 节点 0。
+	syscalls := Syscalls{Memory: space, Identity: &Identity{PID: 7}}
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysSchedGetAffinity, Args: [6]uint64{0, 8, 0x2000}}); reply.Errno != "" || reply.Value != 8 {
+		t.Fatalf("getaffinity: %+v", reply)
+	}
+	if mask := space.data[0x2000]; mask != 0x01 {
+		t.Fatalf("缺省掩码=%#x want 0x01", mask)
+	}
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysGetCPU, Args: [6]uint64{0x2000, 0x2004}}); reply.Errno != "" {
+		t.Fatalf("getcpu: %+v", reply)
+	}
+	if space.data[0x2000] != 0 || space.data[0x2004] != 0 {
+		t.Fatalf("getcpu 拓扑=%v %v", space.data[0x2000], space.data[0x2004])
+	}
+
+	// 多 CPU 配置:掩码按位数展开。
+	multi := Syscalls{Memory: space, CPUs: 4, Identity: &Identity{PID: 7}}
+	if reply := multi.Handle(ctx, Call{Syscall: SysSchedGetAffinity, Args: [6]uint64{7, 8, 0x2000}}); reply.Errno != "" || reply.Value != 8 {
+		t.Fatalf("多 CPU: %+v", reply)
+	}
+	if mask := space.data[0x2000]; mask != 0x0F {
+		t.Fatalf("4 CPU 掩码=%#x want 0x0F", mask)
+	}
+
+	// setaffinity:包含 CPU 0 成功,不含 EINVAL。
+	if reply := multi.Handle(ctx, Call{Syscall: SysSchedSetAffinity, Args: [6]uint64{0, 8, 0x2000}}); reply.Errno != "" {
+		t.Fatalf("setaffinity: %+v", reply)
+	}
+	space.data[0x2000] = 0x02 // 仅 CPU 1,客体不存在
+	if reply := multi.Handle(ctx, Call{Syscall: SysSchedSetAffinity, Args: [6]uint64{0, 8, 0x2000}}); reply.Errno != errno.Invalid {
+		t.Fatalf("空交集: %+v want EINVAL", reply)
+	}
+
+	// 跨进程查询 ESRCH;缓冲区过小 EINVAL;坏地址 EFAULT。
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysSchedGetAffinity, Args: [6]uint64{999, 8, 0x2000}}); reply.Errno != errno.NoProcess {
+		t.Fatalf("跨进程: %+v want ESRCH", reply)
+	}
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysSchedGetAffinity, Args: [6]uint64{0, 4, 0x2000}}); reply.Errno != errno.Invalid {
+		t.Fatalf("小缓冲: %+v want EINVAL", reply)
+	}
+	broken := newFakeMemory()
+	broken.readErr = errno.Range
+	faulted := Syscalls{Memory: broken, Identity: &Identity{PID: 7}}
+	if reply := faulted.Handle(ctx, Call{Syscall: SysSchedSetAffinity, Args: [6]uint64{0, 8, 0x2000}}); reply.Errno != errno.Fault {
+		t.Fatalf("坏地址: %+v want EFAULT", reply)
+	}
+}

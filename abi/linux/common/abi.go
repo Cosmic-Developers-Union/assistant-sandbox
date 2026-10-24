@@ -200,6 +200,9 @@ const (
 	SysUtimensat
 	SysStatfs
 	SysFstatfs
+	SysSchedGetAffinity
+	SysSchedSetAffinity
+	SysGetCPU
 )
 
 func (s Syscall) String() string {
@@ -450,6 +453,12 @@ func (s Syscall) String() string {
 		return "statfs"
 	case SysFstatfs:
 		return "fstatfs"
+	case SysSchedGetAffinity:
+		return "sched_getaffinity"
+	case SysSchedSetAffinity:
+		return "sched_setaffinity"
+	case SysGetCPU:
+		return "getcpu"
 	case SysReadlinkat:
 		return "readlinkat"
 	case SysUmask:

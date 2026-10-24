@@ -243,7 +243,7 @@ Python 和 Node.js 的验收必须执行客体运行时，不能通过调用宿�
 - [x] L09 实现 eventfd。验收：计数、非阻塞、信号量模式和 poll/epoll 通知正确。 证据:vm/eventfd/eventfd.go(计数/清零/信号量/非阻塞/计满阻塞/Close 唤醒/Ready+OnChange)、vm/fd/table.go EventFD、abi/linux/common kernel.go ProcessDescriptors.EventFD 与 syscalls.go eventfd2;eventfd_test.go 9 项、syscalls_test.go TestEventfd2ValidatesAndDelegates、fd/table_test.go TestEventFDDescriptorLifecycle。测试:`make docker-test TEST_ARGS=./vm/eventfd/`。CI:Test 工作流。备注:Ready/OnChange 已就绪,poll/epoll 系统调用层接入待 L07/L08。
 - [ ] L10 实现 timerfd。验收：一次与周期计时、过期计数和关闭可供事件循环使用。
 - [ ] L11 实现所选 signalfd 子集。验收：被屏蔽信号可由 fd 读取，与信号处理器及 epoll 的交互正确。
-- [ ] L12 补齐 CPU 数、亲和性与资源使用查询。验收：返回客体配置和实际可兑现限制，不暴露或伪造宿主能力。
+- [x] L12 补齐 CPU 数、亲和性与资源使用查询。验收：返回客体配置和实际可兑现限制，不暴露或伪造宿主能力。 证据:abi/linux/common/syscalls.go 新增 sched_getaffinity/sched_setaffinity/getcpu(掩码按 Syscalls.CPUs 配置生成,缺省单 CPU=解释器现实配置;getaffinity 跨进程 ESRCH、缓冲 <8 字节 EINVAL、坏地址 EFAULT;setaffinity 仅接受含 CPU 0 的掩码(空交集 EINVAL),单 CPU 客体空操作成功;getcpu 报告 CPU 0/节点 0);riscv64 登记号 122/123/168;syscalls_test.go TestAffinityAndTopologyReportConfiguredCPUs(单/多 CPU 掩码、空交集 EINVAL、ESRCH、EFAULT)。测试:`make docker-test TEST_ARGS=./abi/...`。CI:Test 工作流。备注:资源使用查询(times/getrusage/sysinfo)当前报告零值,随 T03 资源指标接线复核;CPU 数随 D10/D11 多核/时间片落地同步扩大。
 
 ## M. 网络与 socket
 

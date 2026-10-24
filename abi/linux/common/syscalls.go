@@ -174,6 +174,9 @@ type Syscalls struct {
 	Domainname string
 
 	Cwd string
+
+	// CPUs 是客体可见的 CPU 数;0 按单 CPU 报告。
+	CPUs uint64
 }
 
 func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
@@ -273,6 +276,12 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 		return s.utimensat(ctx, call)
 	case SysStatfs:
 		return s.statfs(ctx, call)
+	case SysSchedGetAffinity:
+		return s.schedGetAffinity(ctx, call)
+	case SysSchedSetAffinity:
+		return s.schedSetAffinity(ctx, call)
+	case SysGetCPU:
+		return s.getcpu(ctx, call)
 	case SysFstatfs:
 		return s.fstatfs(ctx, call)
 	case SysFcntl:
@@ -2115,6 +2124,85 @@ func (s Syscalls) fsync(ctx context.Context, call Call, fdatasync bool) Reply {
 	}
 	if err := target.Sync(fdatasync); err != nil {
 		return Reply{Errno: errnoOf(err)}
+	}
+	return Reply{}
+}
+
+// cpuCount 返回客体配置的 CPU 数;未配置按单 CPU。
+func (s Syscalls) cpuCount() uint64 {
+	if s.CPUs == 0 {
+		return 1
+	}
+	return s.CPUs
+}
+
+// affinityMask 按小端编码 CPU 掩码;至少 8 字节(单个 u64)。
+func (s Syscalls) affinityMask() []byte {
+	cpus := s.cpuCount()
+	mask := make([]byte, 8)
+	for index := uint64(0); index < cpus && index < 64; index++ {
+		mask[index/8] |= 1 << (index % 8)
+	}
+	return mask
+}
+
+// sched_getaffinity(pid, len, mask) 返回客体配置的亲和性掩码;
+// 跨进程查询明确 ESRCH,缓冲区不足 8 字节 EINVAL。
+func (s Syscalls) schedGetAffinity(ctx context.Context, call Call) Reply {
+	if s.Memory == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	if call.Args[0] != 0 && (s.Identity == nil || call.Args[0] != s.Identity.PID) {
+		return Reply{Errno: errno.NoProcess}
+	}
+	if call.Args[1] < 8 {
+		return Reply{Errno: errno.Invalid}
+	}
+	mask := s.affinityMask()
+	if err := s.Memory.Write(ctx, call.Args[2], mask); err != nil {
+		return Reply{Errno: errno.Fault}
+	}
+	return Reply{Value: uint64(len(mask))}
+}
+
+// sched_setaffinity 单 CPU 客体只接受包含 CPU 0 的掩码(空操作成功),
+// 其余掩码 EINVAL;调用受同样的进程边界约束。
+func (s Syscalls) schedSetAffinity(ctx context.Context, call Call) Reply {
+	if s.Memory == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	if call.Args[0] != 0 && (s.Identity == nil || call.Args[0] != s.Identity.PID) {
+		return Reply{Errno: errno.NoProcess}
+	}
+	if call.Args[1] < 8 {
+		return Reply{Errno: errno.Invalid}
+	}
+	var mask [8]byte
+	if err := s.Memory.Read(ctx, call.Args[2], mask[:]); err != nil {
+		return Reply{Errno: errno.Fault}
+	}
+	if mask[0]&1 == 0 {
+		return Reply{Errno: errno.Invalid}
+	}
+	return Reply{}
+}
+
+// getcpu(cpu, node, tcache) 报告客体拓扑:单 CPU 单节点。
+func (s Syscalls) getcpu(ctx context.Context, call Call) Reply {
+	if s.Memory == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	var encoded [4]byte
+	binary.LittleEndian.PutUint32(encoded[0:], 0)
+	if call.Args[0] != 0 {
+		if err := s.Memory.Write(ctx, call.Args[0], encoded[:4]); err != nil {
+			return Reply{Errno: errno.Fault}
+		}
+	}
+	if call.Args[1] != 0 {
+		if err := s.Memory.Write(ctx, call.Args[1], encoded[:4]); err != nil {
+			return Reply{Errno: errno.Fault}
+		}
 	}
 	return Reply{}
 }
