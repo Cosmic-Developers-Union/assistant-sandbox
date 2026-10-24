@@ -711,3 +711,67 @@ func TestNonExecutableStackIsAccepted(t *testing.T) {
 		t.Fatalf("段数=%d", len(plan.Segments))
 	}
 }
+
+func TestSamePageLoadSegmentsShareOneCluster(t *testing.T) {
+	// F02:代码段与同页尾部的只读段共享一次映射;
+	// 文件内容按虚拟地址拼装,保护位取并集(R|X)。
+	const pageSize = 0x1000
+	raw := make([]byte, pageSize*2)
+	copy(raw[0:4], "\x7fELF")
+	raw[offIdentClass] = classELF64
+	raw[offIdentData] = dataLittleEndian
+	raw[offIdentVersion] = versionCurrent
+	binary.LittleEndian.PutUint16(raw[offType:], typeExecutable)
+	binary.LittleEndian.PutUint16(raw[offMachine:], machineRISCV)
+	binary.LittleEndian.PutUint32(raw[offVersion:], versionCurrent)
+	binary.LittleEndian.PutUint64(raw[offEntry:], imageCodeBase+0x10)
+	binary.LittleEndian.PutUint64(raw[offProgramOffset:], imagePhdrOffset)
+	binary.LittleEndian.PutUint32(raw[offFlags:], riscvFloatABISoft)
+	binary.LittleEndian.PutUint16(raw[offHeaderSize:], headerSize)
+	binary.LittleEndian.PutUint16(raw[offProgramEntry:], programHeaderSize)
+	binary.LittleEndian.PutUint16(raw[offProgramCount:], 2)
+	const codeSize = 0x800
+	const roOffset = 0x900 // 同页尾部
+	putProgramHeader(raw[imagePhdrOffset:], programHeader{
+		typeID: programLoad, flags: flagRead | flagExec,
+		offset: 0, vaddr: imageCodeBase, filesz: codeSize, memsz: codeSize, align: PageSize,
+	})
+	putProgramHeader(raw[imagePhdrOffset+programHeaderSize:], programHeader{
+		typeID: programLoad, flags: flagRead,
+		offset: roOffset, vaddr: imageCodeBase + roOffset, filesz: 0x40, memsz: 0x40, align: PageSize,
+	})
+	// 代码内容避开文件头与程序头区(0xC0 起)。
+	for index := 0xC0; index < codeSize; index++ {
+		raw[index] = byte(0x40 + index%64)
+	}
+	for index := 0; index < 0x40; index++ {
+		raw[roOffset+index] = byte(0x90 + index)
+	}
+
+	plan, err := Load(raw, Options{})
+	if err != nil {
+		t.Fatalf("同页双段应装载成功: %v", err)
+	}
+	if len(plan.Segments) != 1 {
+		t.Fatalf("同页双段应合并为一个页簇: %d", len(plan.Segments))
+	}
+	cluster := plan.Segments[0]
+	if cluster.Region.Start != imageCodeBase || cluster.Region.End != imageCodeBase+pageSize {
+		t.Fatalf("页簇范围不符: %+v", cluster.Region)
+	}
+	if cluster.Region.Prot != memory.ProtRead|memory.ProtExec {
+		t.Fatalf("页簇保护位应为 R|X: %v", cluster.Region.Prot)
+	}
+	if len(cluster.Data) != pageSize {
+		t.Fatalf("页簇镜像应覆盖整页: %d", len(cluster.Data))
+	}
+	if cluster.Data[0xC0] != byte(0x40+0xC0%64) || cluster.Data[codeSize-1] != byte(0x40+(codeSize-1)%64) {
+		t.Fatalf("代码段内容应就位: % x", cluster.Data[0xC0:0xC4])
+	}
+	if cluster.Data[roOffset] != 0x90 || cluster.Data[roOffset+0x3F] != 0x90+0x3F {
+		t.Fatalf("同页只读段内容应按虚拟地址拼装: % x", cluster.Data[roOffset:roOffset+4])
+	}
+	if cluster.Data[codeSize:roOffset][0] != 0 {
+		t.Fatalf("段间空隙应保持零填充")
+	}
+}

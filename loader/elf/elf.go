@@ -188,14 +188,18 @@ func loadImage(raw []byte, options Options) (*loadedImage, error) {
 	if !ok {
 		return nil, overflow("入口地址溢出")
 	}
-	segments, err := collectSegments(r, head, bias, options.MaxImageBytes)
+	raws, err := collectSegments(r, head, bias)
 	if err != nil {
 		return nil, err
 	}
-	if err := checkEntry(entry, segments); err != nil {
+	if err := checkEntry(entry, raws); err != nil {
 		return nil, err
 	}
-	programAddress, err := locateProgramHeaders(head, segments)
+	programAddress, err := locateProgramHeaders(head, raws)
+	if err != nil {
+		return nil, err
+	}
+	segments, err := clusterSegments(raws, options.MaxImageBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -208,7 +212,7 @@ func loadImage(raw []byte, options Options) (*loadedImage, error) {
 	}, nil
 }
 
-func collectSegments(r reader, head header, bias, budget uint64) ([]Segment, error) {
+func collectSegments(r reader, head header, bias uint64) ([]Segment, error) {
 	if uint64(head.count) > maxSegments {
 		return nil, limit(fmt.Sprintf("程序头 %d 个超过上限 %d", head.count, maxSegments))
 	}
@@ -217,7 +221,6 @@ func collectSegments(r reader, head header, bias, budget uint64) ([]Segment, err
 		return nil, err
 	}
 	segments := make([]Segment, 0, head.count)
-	var mapped uint64
 	for index := uint64(0); index < uint64(head.count); index++ {
 		program := r.programHeaderAt(head.programAt, uint64(head.entrySize), index)
 		switch program.typeID {
@@ -245,19 +248,6 @@ func collectSegments(r reader, head header, bias, budget uint64) ([]Segment, err
 		if err != nil {
 			return nil, err
 		}
-		for _, existing := range segments {
-			if existing.Region.Overlaps(segment.Region) {
-				return nil, invalid(fmt.Sprintf(
-					"段 %#x 与段 %#x 在页边界上重叠：同一页被两个段复用需要页复用语义，本装载器不支持",
-					segment.Region.Start, existing.Region.Start))
-			}
-		}
-
-		size := segment.Region.Size()
-		if size > budget-mapped {
-			return nil, limit(fmt.Sprintf("可装载 %d 字节超过上限 %d", mapped+size, budget))
-		}
-		mapped += size
 		segments = append(segments, segment)
 	}
 	if len(segments) == 0 {
@@ -265,6 +255,101 @@ func collectSegments(r reader, head header, bias, budget uint64) ([]Segment, err
 	}
 	sort.Slice(segments, func(i, j int) bool { return segments[i].Region.Start < segments[j].Region.Start })
 	return segments, nil
+}
+
+// clusterPiece 是页簇内一个段的文件内容片段(按虚拟地址定位)。
+type clusterPiece struct {
+	start uint64
+	data  []byte
+}
+
+type pageCluster struct {
+	region   memory.Region
+	pieces   []clusterPiece
+	original Segment
+}
+
+// clusterSegments 把原始段合并为页簇:同一页被多个段复用时共享一次映射,
+// 文件内容按各自虚拟地址拼装进整页镜像,保护位取并集(违例 W^X 拒绝)。
+// 预算按簇的联合尺寸计。
+func clusterSegments(raws []Segment, budget uint64) ([]Segment, error) {
+	var clusters []pageCluster
+	for _, seg := range raws {
+		merged := false
+		for i := range clusters {
+			if !clusters[i].region.Overlaps(seg.Region) {
+				continue
+			}
+			for _, existing := range clusters[i].pieces {
+				if seg.Address < existing.start+uint64(len(existing.data)) &&
+					existing.start < seg.Address+uint64(len(seg.Data)) {
+					return nil, invalid(fmt.Sprintf(
+						"段 %#x 与段 %#x 的文件内容在页簇内重叠",
+						seg.Address, existing.start))
+				}
+			}
+			union := memory.Region{
+				Start: min(clusters[i].region.Start, seg.Region.Start),
+				End:   max(clusters[i].region.End, seg.Region.End),
+				Prot:  clusters[i].region.Prot | seg.Region.Prot,
+				Name:  "image",
+			}
+			if union.Prot.WritableAndExecutable() {
+				return nil, invalid(fmt.Sprintf(
+					"段 %#x 与段 %#x 共享的页簇同时可写可执行（W^X）",
+					seg.Region.Start, clusters[i].region.Start))
+			}
+			clusters[i].region = union
+			clusters[i].pieces = append(clusters[i].pieces, clusterPiece{start: seg.Address, data: seg.Data})
+			merged = true
+			break
+		}
+		if !merged {
+			clusters = append(clusters, pageCluster{
+				region:   seg.Region,
+				pieces:   []clusterPiece{{start: seg.Address, data: seg.Data}},
+				original: seg,
+			})
+		}
+	}
+
+	out := make([]Segment, 0, len(clusters))
+	var mapped uint64
+	for _, cluster := range clusters {
+		data := make([]byte, cluster.region.Size())
+		placed := make([]clusterPiece, 0, len(cluster.pieces))
+		for _, piece := range cluster.pieces {
+			if piece.start < cluster.region.Start || piece.start+uint64(len(piece.data)) > cluster.region.End {
+				return nil, invalid(fmt.Sprintf("段内容 %#x 超出页簇 %#x-%#x",
+					piece.start, cluster.region.Start, cluster.region.End))
+			}
+			for _, existing := range placed {
+				if piece.start < existing.start+uint64(len(existing.data)) &&
+					existing.start < piece.start+uint64(len(piece.data)) {
+					return nil, invalid(fmt.Sprintf(
+						"段 %#x 与段 %#x 的文件内容在页簇内重叠",
+						piece.start, existing.start))
+				}
+			}
+			copy(data[piece.start-cluster.region.Start:], piece.data)
+			placed = append(placed, piece)
+		}
+		size := cluster.region.Size()
+		if size > budget-mapped {
+			return nil, limit(fmt.Sprintf("可装载 %d 字节超过上限 %d", mapped+size, budget))
+		}
+		mapped += size
+		out = append(out, Segment{
+			Region:     cluster.region,
+			Data:       data,
+			Address:    cluster.region.Start,
+			FileOffset: cluster.original.FileOffset,
+			Filesz:     cluster.original.Filesz,
+			Memsz:      cluster.original.Memsz,
+			Align:      cluster.original.Align,
+		})
+	}
+	return out, nil
 }
 
 func buildSegment(r reader, program programHeader, bias uint64) (Segment, error) {
