@@ -1418,3 +1418,65 @@ func TestKernelSIGCHLDNotifiesParentOnChildState(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestKernelWaitInterruptedByDeliverableSignal 验证 J09:阻塞等待
+// 被登记了处理器的信号打断并返回 EINTR(wait* 无论 SA_RESTART 永不
+// 重启);信号在等待唤醒后保持挂起,由指令边界投递。
+func TestKernelWaitInterruptedByDeliverableSignal(t *testing.T) {
+	reg, _ := registryFor("long")
+	kernel, _ := New(Services{Set: capability.Set{FD: fd.New()}, Programs: reg}, 4)
+	parent, err := kernel.Begin(0, "long", nil, "/", nil, fd.Streams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := kernel.Begin(parent.ID, "long", nil, "/", nil, fd.Streams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := kernel.signals.SetAction(uint64(parent.ID), signal.USR1,
+		signal.ActionConfig{Handler: 0x4040}); err != nil {
+		t.Fatal(err)
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, _, err := kernel.WaitChild(t.Context(), parent.ID, child.ID, false)
+		errCh <- err
+	}()
+	time.Sleep(20 * time.Millisecond)
+	if err := kernel.Signal(parent.ID, signal.USR1); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, errno.Interrupted) {
+			t.Fatalf("等待应被信号打断: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("等待未被信号打断")
+	}
+	// 信号保持挂起待边界投递,不因打断而丢失。
+	if pending, _ := kernel.signals.Pending(uint64(parent.ID)); len(pending) != 1 || pending[0] != signal.USR1 {
+		t.Fatalf("挂起=%v want [SIGUSR1]", pending)
+	}
+	// 模拟边界投递完成:处理器消费挂起位。
+	kernel.signals.Consume(uint64(parent.ID), signal.USR1)
+	// 未登记处理器的信号不打断等待。
+	other := make(chan error, 1)
+	go func() {
+		_, _, err := kernel.WaitChild(t.Context(), parent.ID, child.ID, false)
+		other <- err
+	}()
+	time.Sleep(20 * time.Millisecond)
+	if err := kernel.Signal(parent.ID, signal.TERM); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-other:
+		t.Fatalf("默认处置的信号不应打断等待: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if err := kernel.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}

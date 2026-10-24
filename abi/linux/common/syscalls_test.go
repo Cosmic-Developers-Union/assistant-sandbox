@@ -2939,3 +2939,106 @@ func TestKillAndTgkillValidateAndDelegate(t *testing.T) {
 		t.Fatalf("未装配: %+v want ENOSYS", reply)
 	}
 }
+
+// fakeInterruptor 从第 after 次查询起报告待投递信号(含登记处置)。
+type fakeInterruptor struct {
+	polls  int
+	after  int
+	action SignalAction
+}
+
+func (f *fakeInterruptor) DeliverableSignal() (uint64, SignalAction, bool) {
+	f.polls++
+	if f.polls < f.after {
+		return 0, SignalAction{}, false
+	}
+	return 15, f.action, true
+}
+
+// TestClockNanosleepSignalInterruptReturnsEINTR 验证相对睡眠被登记
+// 处理器的信号打断:按切片睡眠,片间发现待投递信号即折算剩余并
+// 返回 EINTR(无 SA_RESTART)。
+func TestClockNanosleepSignalInterruptReturnsEINTR(t *testing.T) {
+	ctx := context.Background()
+	clock := &fakeClock{monotonic: 10 * nanosPerSecond}
+	sleeper := &fakeSleeper{onSleep: func(ns uint64) { clock.monotonic += ns }}
+	interruptor := &fakeInterruptor{after: 2} // 第二次片间查询报告 USR1
+	handler := Syscalls{Memory: newFakeMemory(), Clock: clock, Sleeper: sleeper, Interrupts: interruptor}
+
+	request := make([]byte, 16)
+	binary.LittleEndian.PutUint64(request[0:], 0)
+	binary.LittleEndian.PutUint64(request[8:], 3_000_000) // 3ms
+	if err := handler.Memory.Write(ctx, 0x2000, request); err != nil {
+		t.Fatal(err)
+	}
+	if err := handler.Memory.Write(ctx, 0x3000, make([]byte, 16)); err != nil {
+		t.Fatal(err)
+	}
+	reply := handler.Handle(ctx, Call{Syscall: SysClockNanosleep, Args: [6]uint64{clockMonotonic, 0, 0x2000, 0x3000}})
+	if reply.Errno != errno.Interrupted {
+		t.Fatalf("信号打断应返回 EINTR: %v", reply.Errno)
+	}
+	// 两片 1ms 睡完后被打断,剩余 1ms。
+	if len(sleeper.durations) != 2 || sleeper.durations[0] != 1_000_000 {
+		t.Fatalf("切片睡眠: %+v", sleeper.durations)
+	}
+	remain := make([]byte, 16)
+	if err := handler.Memory.Read(ctx, 0x3000, remain); err != nil {
+		t.Fatal(err)
+	}
+	if seconds := binary.LittleEndian.Uint64(remain[0:]); seconds != 0 {
+		t.Fatalf("剩余秒=%d want 0", seconds)
+	}
+	if nanos := binary.LittleEndian.Uint64(remain[8:]); nanos != 1_000_000 {
+		t.Fatalf("剩余纳秒=%d want 1000000", nanos)
+	}
+}
+
+// TestClockNanosleepSignalRestartsWithSARestart 验证 SA_RESTART:
+// 打断后按剩余时长透明重启,调用成功返回,客体重未见 EINTR。
+func TestClockNanosleepSignalRestartsWithSARestart(t *testing.T) {
+	ctx := context.Background()
+	clock := &fakeClock{monotonic: 10 * nanosPerSecond}
+	sleeper := &fakeSleeper{onSleep: func(ns uint64) { clock.monotonic += ns }}
+	interruptor := &fakeInterruptor{after: 2, action: SignalAction{Flags: SigactionRestart}}
+	handler := Syscalls{Memory: newFakeMemory(), Clock: clock, Sleeper: sleeper, Interrupts: interruptor}
+
+	request := make([]byte, 16)
+	binary.LittleEndian.PutUint64(request[0:], 0)
+	binary.LittleEndian.PutUint64(request[8:], 3_000_000)
+	if err := handler.Memory.Write(ctx, 0x2000, request); err != nil {
+		t.Fatal(err)
+	}
+	reply := handler.Handle(ctx, Call{Syscall: SysClockNanosleep, Args: [6]uint64{clockMonotonic, 0, 0x2000}})
+	if reply.Errno != "" {
+		t.Fatalf("SA_RESTART 应重启至完成: %v", reply.Errno)
+	}
+	// 打断时已睡 2ms,重启剩余 1ms:共三片。
+	if len(sleeper.durations) != 3 || sleeper.durations[2] != 1_000_000 {
+		t.Fatalf("重启切片: %+v", sleeper.durations)
+	}
+}
+
+// TestClockNanosleepAbsoluteNotInterruptedBySignal 验证绝对期限不被
+// 信号打断(POSIX):重算剩余继续等待直至完成。
+func TestClockNanosleepAbsoluteNotInterruptedBySignal(t *testing.T) {
+	ctx := context.Background()
+	clock := &fakeClock{monotonic: 1 * nanosPerSecond}
+	sleeper := &fakeSleeper{onSleep: func(ns uint64) { clock.monotonic += ns }}
+	interruptor := &fakeInterruptor{after: 2} // 无 SA_RESTART 也不打断绝对期限
+	handler := Syscalls{Memory: newFakeMemory(), Clock: clock, Sleeper: sleeper, Interrupts: interruptor}
+
+	request := make([]byte, 16)
+	binary.LittleEndian.PutUint64(request[0:], 1) // 期限 = 当前 1s + 3ms
+	binary.LittleEndian.PutUint64(request[8:], 3_000_000)
+	if err := handler.Memory.Write(ctx, 0x2000, request); err != nil {
+		t.Fatal(err)
+	}
+	reply := handler.Handle(ctx, Call{Syscall: SysClockNanosleep, Args: [6]uint64{clockMonotonic, timerAbstime, 0x2000}})
+	if reply.Errno != "" {
+		t.Fatalf("绝对期限应完成: %v", reply.Errno)
+	}
+	if len(sleeper.durations) < 3 {
+		t.Fatalf("应继续等待至期限: %+v", sleeper.durations)
+	}
+}

@@ -66,6 +66,12 @@ type Sleeper interface {
 	Sleep(ctx context.Context, nanoseconds uint64) error
 }
 
+// Interruptor 报告登记了客户态处理器的待投递信号,供阻塞系统调用
+// 按 EINTR/SA_RESTART 契约响应信号投递(J09)。
+type Interruptor interface {
+	DeliverableSignal() (signal uint64, action SignalAction, deliverable bool)
+}
+
 // Limiter 暴露客体进程的真实资源限额,供 getrlimit/prlimit64 查询;
 // 上限只允许下调,尝试超过真实预算的设置返回 EPERM。
 type Limiter interface {
@@ -160,6 +166,10 @@ type Syscalls struct {
 	Mapper Mappable
 
 	Sleeper Sleeper
+
+	// Interrupts 报告登记了处理器的待投递信号(J09);未装配时
+	// 阻塞调用不被信号打断,等待自然到期或上下文取消。
+	Interrupts Interruptor
 
 	Limiter Limiter
 
@@ -706,15 +716,61 @@ func addNoOverflow(left, right int64) (int64, error) {
 	return sum, nil
 }
 
+// sleepSlice 是接入信号轮询后的睡眠切片时长(1ms):切片之间检查
+// 待投递信号,信号投递延迟以切片为上界。
+const sleepSlice uint64 = 1_000_000
+
+// sleepOnce 睡指定时长;接入 Interrupts 时按切片睡眠并在片间检查
+// 待投递信号,发现即返回 errno.Interrupted。未接入时保持单次睡眠。
+func (s Syscalls) sleepOnce(ctx context.Context, nanoseconds uint64) error {
+	if s.Interrupts == nil {
+		return s.Sleeper.Sleep(ctx, nanoseconds)
+	}
+	for remaining := nanoseconds; remaining > 0; {
+		step := remaining
+		if step > sleepSlice {
+			step = sleepSlice
+		}
+		if err := s.Sleeper.Sleep(ctx, step); err != nil {
+			return err
+		}
+		remaining -= step
+		if _, _, ok := s.Interrupts.DeliverableSignal(); ok {
+			return errno.Interrupted
+		}
+	}
+	return nil
+}
+
 func (s Syscalls) sleepRelative(ctx context.Context, call Call, clockID uint64, duration int64) Reply {
-	started, err := s.clockNow(ctx, clockID)
-	if err != nil {
-		return Reply{Errno: errnoOf(err)}
+	remaining := duration
+	for {
+		started, err := s.clockNow(ctx, clockID)
+		if err != nil {
+			return Reply{Errno: errnoOf(err)}
+		}
+		err = s.sleepOnce(ctx, uint64(remaining))
+		if err == nil {
+			return Reply{}
+		}
+		if !errors.Is(err, errno.Interrupted) || s.Interrupts == nil {
+			// 上下文取消或时钟故障:按已过时间回填剩余后报 EINTR。
+			return s.interrupted(call, clockID, duration, started)
+		}
+		// 信号唤醒:折算剩余;SA_RESTART 重启剩余时长,否则报
+		// EINTR 并回填剩余(处理器在返回后的指令边界投递)。
+		if now, e := s.clockNow(ctx, clockID); e == nil {
+			if elapsed := now - started; elapsed < remaining {
+				remaining -= elapsed
+			} else {
+				return Reply{}
+			}
+		}
+		if _, action, ok := s.Interrupts.DeliverableSignal(); ok && action.Flags&SigactionRestart != 0 {
+			continue
+		}
+		return s.writeRemaining(call, remaining)
 	}
-	if err := s.Sleeper.Sleep(ctx, uint64(duration)); err != nil {
-		return s.interrupted(call, clockID, duration, started)
-	}
-	return Reply{}
 }
 
 func (s Syscalls) sleepUntil(ctx context.Context, call Call, clockID uint64, seconds, nanoseconds int64) Reply {
@@ -730,10 +786,16 @@ func (s Syscalls) sleepUntil(ctx context.Context, call Call, clockID uint64, sec
 		if now >= target {
 			return Reply{}
 		}
-		if err := s.Sleeper.Sleep(ctx, uint64(target-now)); err != nil {
-			// 绝对期限被中断时不更新剩余时间指针。
-			return Reply{Errno: errno.Interrupted}
+		err = s.sleepOnce(ctx, uint64(target-now))
+		if err == nil {
+			return Reply{}
 		}
+		if errors.Is(err, errno.Interrupted) && s.Interrupts != nil {
+			// 绝对期限不被信号打断(POSIX):重算剩余继续等待。
+			continue
+		}
+		// 上下文取消等:报 EINTR,不更新剩余时间指针。
+		return Reply{Errno: errno.Interrupted}
 	}
 }
 
@@ -750,15 +812,23 @@ func (s Syscalls) clockNow(ctx context.Context, clockID uint64) (int64, error) {
 
 // interrupted 把等待失败统一呈现为 EINTR,并尽力回填剩余时间。
 func (s Syscalls) interrupted(call Call, clockID uint64, duration, started int64) Reply {
-	if call.Args[3] != 0 {
-		remaining := duration
-		if now, err := s.clockNow(context.Background(), clockID); err == nil && now > started {
-			if elapsed := now - started; elapsed < remaining {
-				remaining -= elapsed
-			} else {
-				remaining = 0
-			}
+	remaining := duration
+	if now, err := s.clockNow(context.Background(), clockID); err == nil && now > started {
+		if elapsed := now - started; elapsed < remaining {
+			remaining -= elapsed
+		} else {
+			remaining = 0
 		}
+	}
+	if remaining < 0 {
+		remaining = 0
+	}
+	return s.writeRemaining(call, remaining)
+}
+
+// writeRemaining 把剩余时间写入调用方的 rem 指针并返回 EINTR。
+func (s Syscalls) writeRemaining(call Call, remaining int64) Reply {
+	if call.Args[3] != 0 {
 		if remaining < 0 {
 			remaining = 0
 		}

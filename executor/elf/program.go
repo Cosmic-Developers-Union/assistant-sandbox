@@ -210,6 +210,10 @@ func syscalls(ctx context.Context, process proc.Proc, space *memory.Table, plan 
 	if dispositions, ok := process.Control.(proc.SignalDispositionControl); ok {
 		handler.Signals = processSignals{control: dispositions}
 	}
+	if delivery, ok := process.Control.(proc.SignalDeliveryControl); ok {
+		// 阻塞系统调用经此感知待投递信号(EINTR/SA_RESTART,J09)。
+		handler.Interrupts = processInterruptor{control: delivery}
+	}
 	if killer, ok := process.Control.(proc.SignalKillControl); ok {
 		handler.Kills = processKiller{control: killer}
 	}
@@ -415,6 +419,22 @@ func (w processWaiter) WaitChild(ctx context.Context, target uint64, nohang bool
 
 func (w processWaiter) HasChildren() bool {
 	return w.control.HasChildren()
+}
+
+// processInterruptor 把进程控制端口的待投递查询适配为阻塞系统
+// 调用的信号打断端口(EINTR/SA_RESTART,J09)。
+type processInterruptor struct {
+	control proc.SignalDeliveryControl
+}
+
+func (p processInterruptor) DeliverableSignal() (uint64, common.SignalAction, bool) {
+	number, action, ok := p.control.PendingDeliverable()
+	if !ok {
+		return 0, common.SignalAction{}, false
+	}
+	return uint64(number), common.SignalAction{
+		Handler: action.Handler, Flags: action.Flags, Restorer: action.Restorer, Mask: action.Mask,
+	}, true
 }
 
 // processSignals 把进程控制端口的信号处置能力适配为 ABI 登记端口。

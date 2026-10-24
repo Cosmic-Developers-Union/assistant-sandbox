@@ -566,12 +566,22 @@ func (k *Kernel) Wait(ctx context.Context, parent, target proc.PID) (proc.Proc, 
 				return proc.Proc{}, errno.NoChild
 			}
 		}
+		// 阻塞前同样检查待投递信号(唤醒路径见条件闭包)。
+		if _, _, ok := k.signals.DeliverableHandler(uint64(parent)); ok {
+			k.mu.Unlock()
+			return proc.Proc{}, errno.Interrupted
+		}
 		k.mu.Unlock()
 		reason, err := k.children.Wait(ctx, func() (bool, wait.Reason, error) {
 			k.mu.Lock()
 			defer k.mu.Unlock()
 			if k.closed {
 				return true, wait.Shutdown, nil
+			}
+			// J09:登记了处理器的待投递信号打断等待(wait* 无论
+			// SA_RESTART 一律 EINTR);处理器在返回后的指令边界投递。
+			if _, _, ok := k.signals.DeliverableHandler(uint64(parent)); ok {
+				return false, wait.Signal, errno.Interrupted
 			}
 			if target != 0 {
 				p, err := k.table.Get(target)
@@ -723,7 +733,10 @@ func (k *Kernel) Signal(target proc.PID, n signal.Number) error {
 	}
 	// 登记了客户态处理器的信号保持挂起,由执行器在指令边界
 	// 经信号帧投递(J03/J04);默认处置仍走终止/忽略路径。
+	// 唤醒阻塞等待(wait* 等)重新检查条件与信号(J09);此处
+	// 已不持有 k.mu,WakeAll 可直接调用。
 	if config, err := k.signals.Action(uint64(target), n); err == nil && config.Handler > signal.SigIgnore && !signal.Unmaskable(n) {
+		k.children.WakeAll(wait.Data)
 		return nil
 	}
 	switch {

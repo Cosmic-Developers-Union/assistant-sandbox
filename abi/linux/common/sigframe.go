@@ -44,6 +44,7 @@ const (
 	SigactionOnStack   = saOnStack
 	SigactionNoDefer   = saNodefer
 	SigactionRestorer  = saRestorer
+	SigactionRestart   = saRestart
 	SignalStackDisable = ssDisable
 )
 
