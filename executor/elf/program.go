@@ -104,9 +104,9 @@ func (p *program) Run(ctx context.Context, process proc.Proc) (uint8, error) {
 	if err != nil {
 		return 0, err
 	}
-	if status > 255 {
-		return 0, errno.Overflow
-	}
+	// exit(2) 的状态按 Linux 截断为低 8 位(WEXITSTATUS);负数 errno
+	// 形态(如 openat 失败后的 -2)与参考 Linux 一致地成为 254,
+	// 而不是宿主侧错误(A09 差分发现)。
 	return uint8(status), nil
 }
 
