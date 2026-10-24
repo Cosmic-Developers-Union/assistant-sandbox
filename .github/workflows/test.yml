@@ -37,6 +37,9 @@ jobs:
         run: |
           ulimit -d 1048576
           go test ./...
+      - name: ISA regression gate (D13)
+        shell: bash
+        run: go test ./executor/cpu/... -count=1 -v 2>&1 | grep -E '^(=== RUN|--- FAIL|FAIL|ok)' | tail -120
       - name: POSIX development checks
         run: make -C test/posix gate
       - name: Build CLI
