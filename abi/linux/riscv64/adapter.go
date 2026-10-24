@@ -92,6 +92,8 @@ const (
 	numberDup              = 23
 	numberRtSigaction      = 134
 	numberRtSigprocmask    = 135
+	numberRtSigreturn      = 139
+	numberSigaltstack      = 132
 	numberSocket           = 198
 	numberBind             = 200
 	numberListen           = 201
@@ -173,6 +175,23 @@ func (a *Adapter) Dispatch(ctx context.Context, trap cpu.Trap) (common.Exit, err
 	call, err := a.call(ctx)
 	if err != nil {
 		return common.Exit{}, err
+	}
+	if call.Syscall == common.SysRtSigreturn {
+		// rt_sigreturn 无参数:把帧基址(sp)注入第一个参数槽,
+		// 恢复后的寄存器状态不再被返回值覆写。
+		sp, err := a.Registers.ReadRegister(2)
+		if err != nil {
+			return common.Exit{}, err
+		}
+		call.Args[0] = sp
+		reply := a.Handler.Handle(ctx, call)
+		if reply.Errno != "" {
+			number, _ := errno.Linux(reply.Errno)
+			if err := a.Registers.WriteRegister(regReturn, uint64(-int64(number))); err != nil {
+				return common.Exit{}, err
+			}
+		}
+		return common.Exit{}, nil
 	}
 	reply := a.Handler.Handle(ctx, call)
 	if reply.Exit {
@@ -386,6 +405,10 @@ func syscallOf(number uint64) common.Syscall {
 		return common.SysRtSigaction
 	case numberRtSigprocmask:
 		return common.SysRtSigprocmask
+	case numberRtSigreturn:
+		return common.SysRtSigreturn
+	case numberSigaltstack:
+		return common.SysSigaltstack
 	case numberSocket:
 		return common.SysSocket
 	case numberBind:

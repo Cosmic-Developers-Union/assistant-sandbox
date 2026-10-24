@@ -67,6 +67,28 @@ type WaitControl interface {
 	HasChildren() bool
 }
 
+// SignalDeliveryControl 是客户态信号投递端口:执行器在指令边界
+// 轮询待投递信号,写信号帧并重定向执行流。
+type SignalDeliveryControl interface {
+	// PendingDeliverable 返回待投递信号及其登记处置;无则 found=false。
+	PendingDeliverable() (signal.Number, signal.ActionConfig, bool)
+
+	// ConsumeSignal 在帧写入后清除挂起位。
+	ConsumeSignal(signal.Number)
+
+	// BlockForHandler 并入处置掩码并返回投递前的屏蔽集。
+	BlockForHandler(signal.Number, uint64, bool) (uint64, error)
+
+	// RestoreHandlerMask 在 rt_sigreturn 时恢复帧内屏蔽集。
+	RestoreHandlerMask(uint64) error
+
+	// AlternateStack 返回登记的备用信号栈;present=false 未登记。
+	AlternateStack() (signal.AltStack, bool)
+
+	// SetAlternateStack 登记/清除备用信号栈。
+	SetAlternateStack(signal.AltStack) error
+}
+
 // SignalDispositionControl 是 rt_sigaction/rt_sigprocmask 的登记端口。
 type SignalDispositionControl interface {
 	SetSignalAction(signal.Number, signal.ActionConfig) error

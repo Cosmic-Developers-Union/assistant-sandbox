@@ -9,6 +9,7 @@ import (
 	"math"
 	"strings"
 
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/executor/cpu"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 	vmfs "github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fs"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/memory"
@@ -184,6 +185,9 @@ type Syscalls struct {
 	Waiter Waiter
 
 	Signals SignalDispositions
+
+	// Core 供 rt_sigreturn 恢复完整机器状态;未装配时 rt_sigreturn 报 ENOSYS。
+	Core cpu.Port
 }
 
 // SignalAction 是 rt_sigaction 的登记项(asm-generic struct sigaction):
@@ -196,6 +200,7 @@ type SignalAction struct {
 }
 
 // SignalDispositions 是 rt_sigaction/rt_sigprocmask 的登记端口。
+// AltStack/SetAltStack 为可选能力,缺失时 sigaltstack 报 ENOTSUP。
 type SignalDispositions interface {
 	SetAction(sig uint64, action SignalAction) error
 
@@ -205,6 +210,12 @@ type SignalDispositions interface {
 	ApplyMask(how, set uint64) (uint64, error)
 
 	Mask() (uint64, error)
+
+	// AltStack 返回当前备用信号栈(sigaltstack 查询)。
+	AltStack(ctx context.Context) (SignalAltStack, error)
+
+	// SetAltStack 登记/清除备用信号栈。
+	SetAltStack(ctx context.Context, stack SignalAltStack) error
 }
 
 // ChildState 是 wait4/waitid 观察到的子进程终态。
@@ -333,6 +344,10 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 		return s.rtSigaction(ctx, call)
 	case SysRtSigprocmask:
 		return s.rtSigprocmask(ctx, call)
+	case SysRtSigreturn:
+		return s.rtSigreturn(ctx, call)
+	case SysSigaltstack:
+		return s.sigaltstack(ctx, call)
 	case SysFstatfs:
 		return s.fstatfs(ctx, call)
 	case SysFcntl:
@@ -2370,6 +2385,89 @@ func (s Syscalls) rtSigprocmask(ctx context.Context, call Call) Reply {
 		var encoded [8]byte
 		binary.LittleEndian.PutUint64(encoded[0:], old)
 		if err := s.Memory.Write(ctx, call.Args[2], encoded[:]); err != nil {
+			return Reply{Errno: errno.Fault}
+		}
+	}
+	return Reply{}
+}
+
+// sigreturn 的帧基址经 Args[0] 注入(适配器从 sp 寄存器读取);
+// 恢复后 Runner 从帧内 PC 继续,a0 的返回值由适配器跳过不写。
+func (s Syscalls) rtSigreturn(ctx context.Context, call Call) Reply {
+	if s.Core == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	state, err := DecodeSignalFrame(ctx, s.Memory, call.Args[0])
+	if err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	if s.Signals != nil {
+		if err := s.restoreMaskViaPort(ctx, state.Mask); err != "" {
+			return Reply{Errno: err}
+		}
+	}
+	if err := s.Core.Reset(ctx, state.Machine); err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	return Reply{}
+}
+
+// restoreMaskViaPort 经可选的屏蔽恢复端口恢复帧内屏蔽集;
+// 端口未实现屏蔽恢复时静默跳过(帧恢复仍完整)。
+func (s Syscalls) restoreMaskViaPort(ctx context.Context, mask uint64) errno.Code {
+	if restorer, ok := s.Signals.(interface {
+		RestoreMask(context.Context, uint64) error
+	}); ok {
+		if err := restorer.RestoreMask(ctx, mask); err != nil {
+			return errnoOf(err)
+		}
+	}
+	return ""
+}
+
+// sigaltstack(ss) 登记或查询备用信号栈(stack_t 24 字节)。
+func (s Syscalls) sigaltstack(ctx context.Context, call Call) Reply {
+	if s.Memory == nil || s.Signals == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	if call.Args[0] != 0 {
+		var raw [24]byte
+		if err := s.Memory.Read(ctx, call.Args[0], raw[:]); err != nil {
+			return Reply{Errno: errno.Fault}
+		}
+		sp := binary.LittleEndian.Uint64(raw[0:])
+		flags := binary.LittleEndian.Uint32(raw[8:])
+		size := binary.LittleEndian.Uint64(raw[16:])
+		stack := SignalAltStack{Sp: sp, Size: size}
+		switch flags {
+		case 0:
+			stack.Present = true
+		case ssDisable:
+			stack.Present = false
+		default:
+			return Reply{Errno: errno.Invalid}
+		}
+		if stack.Present && size < rtSigframeSize {
+			return Reply{Errno: errno.NoMemory}
+		}
+		if err := s.Signals.SetAltStack(ctx, stack); err != nil {
+			return Reply{Errno: errnoOf(err)}
+		}
+	}
+	if call.Args[1] != 0 {
+		current, err := s.Signals.AltStack(ctx)
+		if err != nil {
+			return Reply{Errno: errnoOf(err)}
+		}
+		var encoded [24]byte
+		binary.LittleEndian.PutUint64(encoded[0:], current.Sp)
+		flags := uint32(0)
+		if !current.Present {
+			flags = ssDisable
+		}
+		binary.LittleEndian.PutUint32(encoded[8:], flags)
+		binary.LittleEndian.PutUint64(encoded[16:], current.Size)
+		if err := s.Memory.Write(ctx, call.Args[1], encoded[:]); err != nil {
 			return Reply{Errno: errno.Fault}
 		}
 	}

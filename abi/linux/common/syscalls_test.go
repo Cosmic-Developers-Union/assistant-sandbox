@@ -2686,6 +2686,15 @@ func (f *fakeSignals) ApplyMask(how, set uint64) (uint64, error) {
 
 func (f *fakeSignals) Mask() (uint64, error) { return f.mask, nil }
 
+func (f *fakeSignals) AltStack(context.Context) (SignalAltStack, error) {
+	// 替身不持久化登记;登记状态由 vm/signal 层测试覆盖。
+	return SignalAltStack{}, nil
+}
+
+func (f *fakeSignals) SetAltStack(context.Context, SignalAltStack) error {
+	return nil
+}
+
 func TestRtSigactionRegistersAndWritesBackOld(t *testing.T) {
 	ctx := context.Background()
 	space := newFakeMemory()
@@ -2814,6 +2823,60 @@ func TestRtSigprocmaskBlockUnblockAndSetmask(t *testing.T) {
 	}
 	// 未装配端口 ENOSYS。
 	if reply := (Syscalls{}).Handle(ctx, Call{Syscall: SysRtSigprocmask}); reply.Errno != errno.NotImplemented {
+		t.Fatalf("未装配: %+v want ENOSYS", reply)
+	}
+}
+
+func TestSigaltstackRegistersAndQueries(t *testing.T) {
+	ctx := context.Background()
+	space := newFakeMemory()
+	signals := &fakeSignals{actions: map[uint64]SignalAction{}}
+	syscalls := Syscalls{Memory: space, Signals: signals}
+
+	// 登记:stack_t 24 字节 {sp, flags=0, size};不足一帧报 ENOMEM。
+	var stack [24]byte
+	binary.LittleEndian.PutUint64(stack[0:], 0x60000)
+	binary.LittleEndian.PutUint64(stack[16:], 0x8000)
+	if err := space.Write(ctx, 0x1000, stack[:]); err != nil {
+		t.Fatal(err)
+	}
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysSigaltstack, Args: [6]uint64{0x1000, 0x2000}}); reply.Errno != "" {
+		t.Fatalf("登记: %+v", reply)
+	}
+	// 查询回写:替身不持久化,应报告 SS_DISABLE 空栈。
+	var current [24]byte
+	if err := space.Read(ctx, 0x2000, current[:]); err != nil {
+		t.Fatal(err)
+	}
+	if flags := binary.LittleEndian.Uint32(current[8:]); flags != ssDisable {
+		t.Fatalf("查询 flags=%d want SS_DISABLE", flags)
+	}
+	// 小于信号帧的栈 ENOMEM。
+	binary.LittleEndian.PutUint64(stack[16:], 64)
+	if err := space.Write(ctx, 0x1000, stack[:]); err != nil {
+		t.Fatal(err)
+	}
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysSigaltstack, Args: [6]uint64{0x1000, 0}}); reply.Errno != errno.NoMemory {
+		t.Fatalf("小栈: %+v want ENOMEM", reply)
+	}
+	// SS_DISABLE 清除登记。
+	binary.LittleEndian.PutUint32(stack[8:], 2)
+	binary.LittleEndian.PutUint64(stack[16:], 0x8000)
+	if err := space.Write(ctx, 0x1000, stack[:]); err != nil {
+		t.Fatal(err)
+	}
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysSigaltstack, Args: [6]uint64{0x1000, 0}}); reply.Errno != "" {
+		t.Fatalf("禁用: %+v", reply)
+	}
+	// 未知 flags EINVAL;未装配端口 ENOSYS。
+	binary.LittleEndian.PutUint32(stack[8:], 7)
+	if err := space.Write(ctx, 0x1000, stack[:]); err != nil {
+		t.Fatal(err)
+	}
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysSigaltstack, Args: [6]uint64{0x1000, 0}}); reply.Errno != errno.Invalid {
+		t.Fatalf("未知 flags: %+v want EINVAL", reply)
+	}
+	if reply := (Syscalls{}).Handle(ctx, Call{Syscall: SysSigaltstack}); reply.Errno != errno.NotImplemented {
 		t.Fatalf("未装配: %+v want ENOSYS", reply)
 	}
 }

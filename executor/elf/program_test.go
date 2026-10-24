@@ -953,8 +953,13 @@ func TestHostileGuestProgramsStayContained(t *testing.T) {
 // sigControlStub 是登记 rt_sigaction/rt_sigprocmask 的进程控制替身,
 // 同时满足 proc.Control 与 proc.SignalDispositionControl。
 type sigControlStub struct {
-	actions map[signal.Number]signal.ActionConfig
-	mask    uint64
+	actions      map[signal.Number]signal.ActionConfig
+	mask         uint64
+	signal       signal.Number
+	deliverAfter int
+	polls        int
+	delivered    bool
+	alt          signal.AltStack
 }
 
 func (s *sigControlStub) Begin(proc.PID, string, []string, string, map[string]string, fd.Streams) (proc.Proc, error) {
@@ -990,6 +995,46 @@ func (s *sigControlStub) SetSignalMask(how signal.MaskHow, set uint64) (uint64, 
 	return old, nil
 }
 func (s *sigControlStub) SignalMask() (uint64, error) { return s.mask, nil }
+
+// SignalDeliveryControl:边界投递轮询;deliverAfter 次轮询后可投递。
+func (s *sigControlStub) PendingDeliverable() (signal.Number, signal.ActionConfig, bool) {
+	s.polls++
+	if s.delivered || s.polls < s.deliverAfter {
+		return 0, signal.ActionConfig{}, false
+	}
+	config, ok := s.actions[s.signal]
+	if !ok || config.Handler <= signal.SigIgnore {
+		return 0, signal.ActionConfig{}, false
+	}
+	return s.signal, config, true
+}
+
+func (s *sigControlStub) ConsumeSignal(n signal.Number) {
+	s.delivered = true
+}
+
+func (s *sigControlStub) BlockForHandler(n signal.Number, handlerMask uint64, nodefer bool) (uint64, error) {
+	old := s.mask
+	s.mask |= handlerMask
+	if !nodefer {
+		s.mask |= uint64(1) << (n - 1)
+	}
+	return old, nil
+}
+
+func (s *sigControlStub) RestoreHandlerMask(mask uint64) error {
+	s.mask = mask
+	return nil
+}
+
+func (s *sigControlStub) AlternateStack() (signal.AltStack, bool) {
+	return s.alt, s.alt.Present
+}
+
+func (s *sigControlStub) SetAlternateStack(stack signal.AltStack) error {
+	s.alt = stack
+	return nil
+}
 
 // buildSigactionImage 构造带 64 字节数据段的 ELF:数据区前 8 字节是
 // sigset,偏移 0x10 起是 struct sigaction。
@@ -1070,5 +1115,86 @@ func TestRealELFRegistersSignalDisposition(t *testing.T) {
 	}
 	if stub.mask != 1<<(12-1) {
 		t.Fatalf("ELF 登记的屏蔽=%x", stub.mask)
+	}
+}
+
+// TestRealELFDeliversSignalHandlerAndReturns 用真实 RISC-V ELF 验证
+// 信号帧投递全链路:登记处理器 → 边界投递(帧保存整数/浮点/屏蔽集)
+// → 处理器写内存(0x12030) → rt_sigreturn 恢复原指令流 → 主程序读到计数格
+// 并以之作为退出码(0x42)。
+func TestRealELFDeliversSignalHandlerAndReturns(t *testing.T) {
+	var set [8]byte
+	binary.LittleEndian.PutUint64(set[0:], 0)
+	main := []uint32{
+		0x00A00513, // li a0, 10 (SIGUSR1)
+		0x000125B7, // lui a1, 0x12
+		0x01058593, // addi a1, a1, 16 → act
+		0x00000613, // li a2, 0
+		0x00800693, // li a3, 8
+		0x08600893, // li a7, 134 (rt_sigaction)
+		0x00000073, // ecall
+		0x0AC00893, // li a7, 172 (getpid)
+		0x00000073, // ecall ×12:边界轮询期间处理器被投递
+		0x0AC00893,
+		0x00000073,
+		0x0AC00893,
+		0x00000073,
+		0x0AC00893,
+		0x00000073,
+		0x0AC00893,
+		0x00000073,
+		0x0AC00893,
+		0x00000073,
+		0x0AC00893,
+		0x00000073,
+		0x000123B7, // poll: lui t2, 0x12
+		0x03038393, // addi t2, t2, 48 → 0x12030
+		0x0003A283, // lw t0, 0(t2)
+		0xFE028AE3, // beq t0, x0, poll(-12)
+		0x00028513, // mv a0, t0
+		0x05D00893, // li a7, 93 (exit)
+		0x00000073, // ecall
+	}
+	handler := []uint32{
+		0x000123B7, // lui t2, 0x12 → 0x12000
+		0x03038393, // addi t2, t2, 48 → 0x12030(计数格,数据段内)
+		0x04200313, // li t1, 0x42
+		0x0063A023, // sw t1, 0(t2)
+		0x08B00893, // li a7, 139 (rt_sigreturn)
+		0x00000073, // ecall
+	}
+	// 处理器地址 = 入口 + 主程序指令数 × 4。
+	var action [32]byte
+	binary.LittleEndian.PutUint64(action[0:], imageEntry+uint64(len(main))*4)
+	binary.LittleEndian.PutUint32(action[16:], 0x04000004) // SA_RESTORER|SA_SIGINFO
+	binary.LittleEndian.PutUint64(action[24:], 0x9000)
+	image := buildSigactionImage(t, append(append([]uint32{}, main...), handler...), set, action)
+	harness := newHarness(t, image, nil)
+	stub := &sigControlStub{
+		actions:      map[signal.Number]signal.ActionConfig{},
+		signal:       signal.USR1,
+		deliverAfter: 5,
+	}
+	harness.process.Control = stub
+
+	guest, _, err := Factory{}.New("/program")
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, runErr := guest.Run(context.Background(), harness.process)
+	if runErr != nil {
+		t.Fatal(runErr)
+	}
+	if !stub.delivered {
+		t.Fatal("处理器未投递")
+	}
+	// 退出码 = 处理器写入的计数格:证明投递、帧内执行与
+	// rt_sigreturn 恢复全部发生。
+	if code != 0x42 {
+		t.Fatalf("退出码=%#x want 0x42(处理器写入经恢复后由主程序读出)", code)
+	}
+	// 屏蔽集在 rt_sigreturn 后恢复为帧内保存的投递前值。
+	if stub.mask != 0 {
+		t.Fatalf("恢复后屏蔽集=%x want 0", stub.mask)
 	}
 }

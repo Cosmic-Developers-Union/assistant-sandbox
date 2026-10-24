@@ -207,6 +207,8 @@ const (
 	SysDup
 	SysRtSigaction
 	SysRtSigprocmask
+	SysRtSigreturn
+	SysSigaltstack
 )
 
 func (s Syscall) String() string {
@@ -471,6 +473,10 @@ func (s Syscall) String() string {
 		return "rt_sigaction"
 	case SysRtSigprocmask:
 		return "rt_sigprocmask"
+	case SysRtSigreturn:
+		return "rt_sigreturn"
+	case SysSigaltstack:
+		return "sigaltstack"
 	case SysReadlinkat:
 		return "readlinkat"
 	case SysUmask:
@@ -544,24 +550,33 @@ type Config struct {
 	Core cpu.Port
 
 	Dispatcher Dispatcher
+
+	// Boundary 在每条指令边界被调用(信号投递点);返回错误中止执行。
+	Boundary func(context.Context) error
 }
 
 type Runner struct {
 	core       cpu.Port
 	dispatcher Dispatcher
+	boundary   func(context.Context) error
 }
 
 func NewRunner(config Config) (*Runner, error) {
 	if config.Core == nil || config.Dispatcher == nil {
 		return nil, errno.Wrap(errno.Invalid, "Runner 需要执行端口与 trap 分发器")
 	}
-	return &Runner{core: config.Core, dispatcher: config.Dispatcher}, nil
+	return &Runner{core: config.Core, dispatcher: config.Dispatcher, boundary: config.Boundary}, nil
 }
 
 func (r *Runner) Run(ctx context.Context) (uint64, error) {
 	for {
 		if err := ctx.Err(); err != nil {
 			return 0, err
+		}
+		if r.boundary != nil {
+			if err := r.boundary(ctx); err != nil {
+				return 0, err
+			}
 		}
 		outcome, stepErr := r.core.Step(ctx)
 		if stepErr != nil {

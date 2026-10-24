@@ -69,10 +69,22 @@ func (p *program) Run(ctx context.Context, process proc.Proc) (uint8, error) {
 	if err != nil {
 		return 0, err
 	}
+	// 初始机器状态:入口 + 装载器布置的栈指针(argv/envp/auxv 顶)。
+	initial := cpu.Machine{PC: plan.Entry, Registers: make([]uint64, 32), Floats: make([]uint64, 32)}
+	initial.Registers[regSp] = plan.Stack.SP
+	if err := core.Reset(ctx, initial); err != nil {
+		return 0, err
+	}
 	handler := syscalls(ctx, process, space, plan)
+	handler.Core = core
+	deliverer := &signalDeliverer{space: space, core: core}
+	if delivery, ok := process.Control.(proc.SignalDeliveryControl); ok {
+		deliverer.control = delivery
+	}
 	runner, err := common.NewRunner(common.Config{
 		Core:       core,
 		Dispatcher: &linuxriscv64.Adapter{Handler: handler, Registers: core},
+		Boundary:   deliverer.boundary,
 	})
 	if err != nil {
 		return 0, err
@@ -430,3 +442,89 @@ func (p processSignals) ApplyMask(how, set uint64) (uint64, error) {
 func (p processSignals) Mask() (uint64, error) {
 	return p.control.SignalMask()
 }
+
+// RestoreMask 在 rt_sigreturn 时恢复帧内保存的屏蔽集。
+func (p processSignals) RestoreMask(ctx context.Context, mask uint64) error {
+	if delivery, ok := p.control.(proc.SignalDeliveryControl); ok {
+		return delivery.RestoreHandlerMask(mask)
+	}
+	return errno.NotSupported
+}
+
+func (p processSignals) AltStack(ctx context.Context) (common.SignalAltStack, error) {
+	if delivery, ok := p.control.(proc.SignalDeliveryControl); ok {
+		stack, present := delivery.AlternateStack()
+		return common.SignalAltStack{Sp: stack.Sp, Size: stack.Size, Present: present}, nil
+	}
+	return common.SignalAltStack{}, errno.NotSupported
+}
+
+func (p processSignals) SetAltStack(ctx context.Context, stack common.SignalAltStack) error {
+	if delivery, ok := p.control.(proc.SignalDeliveryControl); ok {
+		return delivery.SetAlternateStack(signal.AltStack{Sp: stack.Sp, Size: stack.Size, Present: stack.Present})
+	}
+	return errno.NotSupported
+}
+
+// signalDeliverer 在指令边界投递登记了客户态处理器的信号:
+// 保存完整机器状态进 rt_sigframe,重定向 PC 到处理器,
+// rt_sigreturn 经同一帧恢复(J03/J04)。
+type signalDeliverer struct {
+	space   *memory.Table
+	core    cpu.Port
+	control proc.SignalDeliveryControl
+}
+
+func (d *signalDeliverer) boundary(ctx context.Context) error {
+	if d.control == nil {
+		return nil
+	}
+	number, action, ok := d.control.PendingDeliverable()
+	if !ok || action.Handler <= signal.SigIgnore {
+		return nil
+	}
+	machine, err := d.core.State(ctx)
+	if err != nil {
+		return err
+	}
+	// SA_ONSTACK 且登记了备用栈时在备用栈上开帧。
+	sp := machine.Registers[regSp]
+	base := common.AlignFrameBase(sp)
+	altStack, present := d.control.AlternateStack()
+	if action.Flags&uint32(common.SigactionOnStack) != 0 && present {
+		base = common.AlignFrameBase(altStack.Sp + altStack.Size)
+	}
+	oldMask, err := d.control.BlockForHandler(number, action.Mask, action.Flags&uint32(common.SigactionNoDefer) != 0)
+	if err != nil {
+		return err
+	}
+	infoAddress, ucontextAddress, err := common.WriteSignalFrame(ctx, d.space, common.SignalFrameInput{
+		Signal:    uint64(number),
+		Action:    common.SignalAction{Handler: action.Handler, Flags: action.Flags, Restorer: action.Restorer, Mask: action.Mask},
+		FrameBase: base,
+		Machine:   machine,
+		OldMask:   oldMask,
+		AltStack:  common.SignalAltStack{Sp: altStack.Sp, Size: altStack.Size, Present: present},
+	})
+	if err != nil {
+		return err
+	}
+	next := machine
+	next.PC = action.Handler
+	next.Registers[regSp] = base
+	next.Registers[regArgument0] = uint64(number)
+	if action.Flags&uint32(common.SigactionSigInfo) != 0 {
+		next.Registers[regArgument0+1] = infoAddress
+		next.Registers[regArgument0+2] = ucontextAddress
+	}
+	if err := d.core.Reset(ctx, next); err != nil {
+		return err
+	}
+	d.control.ConsumeSignal(number)
+	return nil
+}
+
+const (
+	regSp        = 2
+	regArgument0 = 10
+)

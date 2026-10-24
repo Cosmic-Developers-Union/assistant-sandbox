@@ -390,3 +390,25 @@ func TestApplyMaskBulkSemantics(t *testing.T) {
 		t.Fatal("被屏蔽信号不应可投递")
 	}
 }
+
+func TestAltStackLifecycle(t *testing.T) {
+	table := New()
+	table.Spawn(5)
+
+	if stack := table.AltStack(5); stack.Present {
+		t.Fatalf("缺省备用栈=%+v", stack)
+	}
+	table.SetAltStack(5, AltStack{Sp: 0x60000, Size: 0x8000, Present: true})
+	if stack := table.AltStack(5); stack.Sp != 0x60000 || stack.Size != 0x8000 || !stack.Present {
+		t.Fatalf("登记=%+v", stack)
+	}
+	// SS_DISABLE:清除登记。
+	table.SetAltStack(5, AltStack{})
+	if stack := table.AltStack(5); stack.Present {
+		t.Fatalf("禁用后=%+v", stack)
+	}
+	// 未知进程查询返回空栈,不 panic。
+	if stack := table.AltStack(99); stack.Present {
+		t.Fatal("未知进程不应有备用栈")
+	}
+}

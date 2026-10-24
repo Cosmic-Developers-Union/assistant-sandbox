@@ -630,6 +630,11 @@ func (k *Kernel) Signal(target proc.PID, n signal.Number) error {
 
 		return nil
 	}
+	// 登记了客户态处理器的信号保持挂起,由执行器在指令边界
+	// 经信号帧投递(J03/J04);默认处置仍走终止/忽略路径。
+	if config, err := k.signals.Action(uint64(target), n); err == nil && config.Handler > signal.SigIgnore {
+		return nil
+	}
 	switch action {
 	case signal.Terminate, signal.Core:
 		k.signals.Interrupt(uint64(target), n)
@@ -1322,6 +1327,50 @@ func (c procControl) SignalMask() (uint64, error) {
 		return 0, errno.NoProcess
 	}
 	return c.k.signals.Mask(uint64(c.self))
+}
+
+func (c procControl) PendingDeliverable() (signal.Number, signal.ActionConfig, bool) {
+	if c.self == 0 {
+		return 0, signal.ActionConfig{}, false
+	}
+	return c.k.signals.DeliverableHandler(uint64(c.self))
+}
+
+func (c procControl) ConsumeSignal(n signal.Number) {
+	if c.self == 0 {
+		return
+	}
+	c.k.signals.Consume(uint64(c.self), n)
+}
+
+func (c procControl) BlockForHandler(n signal.Number, handlerMask uint64, nodefer bool) (uint64, error) {
+	if c.self == 0 {
+		return 0, errno.NoProcess
+	}
+	return c.k.signals.BlockForHandler(uint64(c.self), n, handlerMask, nodefer)
+}
+
+func (c procControl) RestoreHandlerMask(mask uint64) error {
+	if c.self == 0 {
+		return errno.NoProcess
+	}
+	return c.k.signals.RestoreHandlerMask(uint64(c.self), mask)
+}
+
+func (c procControl) AlternateStack() (signal.AltStack, bool) {
+	if c.self == 0 {
+		return signal.AltStack{}, false
+	}
+	stack := c.k.signals.AltStack(uint64(c.self))
+	return stack, stack.Present
+}
+
+func (c procControl) SetAlternateStack(stack signal.AltStack) error {
+	if c.self == 0 {
+		return errno.NoProcess
+	}
+	c.k.signals.SetAltStack(uint64(c.self), stack)
+	return nil
 }
 
 func (c procControl) WaitChild(ctx context.Context, target proc.PID, nohang bool) (proc.ChildState, bool, error) {

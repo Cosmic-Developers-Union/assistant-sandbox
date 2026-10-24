@@ -176,12 +176,77 @@ func (s *State) Mask() uint64 {
 	return uint64(s.blocked)
 }
 
+// DeliverableHandler 返回待投递且登记了客户态处理器的信号;
+// 返回 false 表示当前没有需要经信号帧投递的信号。
+func (s *State) DeliverableHandler() (Number, ActionConfig, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	number, ok := s.deliverable()
+	if !ok {
+		return 0, ActionConfig{}, false
+	}
+	config := s.actions[number]
+	if config.Handler <= SigIgnore {
+		return 0, ActionConfig{}, false
+	}
+	return number, config, true
+}
+
+// BlockForHandler 在投递时并入处置掩码;nodefer 为 false 时同时
+// 屏蔽本信号(SA_NODEFER 语义),返回投递前的屏蔽位图。
+func (s *State) BlockForHandler(n Number, handlerMask uint64, nodefer bool) (uint64, error) {
+	if !n.Valid() {
+		return 0, errno.Invalid
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	old := uint64(s.blocked)
+	s.blocked |= uint32(handlerMask & maskRangeBits())
+	if !nodefer {
+		s.blocked |= mask(n)
+	}
+	return old, nil
+}
+
+// RestoreHandlerMask 在 rt_sigreturn 时整体恢复屏蔽集。
+func (s *State) RestoreHandlerMask(mask uint64) error {
+	if mask&^maskRangeBits() != 0 {
+		return errno.Invalid
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.blocked = uint32(mask)
+	return nil
+}
+
+// SetAltStack 登记/清除备用信号栈。
+func (s *State) SetAltStack(stack AltStack) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.altStack = stack
+}
+
+// AltStack 返回登记的备用信号栈。
+func (s *State) AltStack() AltStack {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.altStack
+}
+
+// AltStack 是 sigaltstack 登记的备用信号栈。
+type AltStack struct {
+	Sp      uint64
+	Size    uint64
+	Present bool
+}
+
 type State struct {
-	mu      sync.Mutex
-	pending uint32
-	blocked uint32
-	ignored uint32
-	actions [Max + 1]ActionConfig
+	mu       sync.Mutex
+	pending  uint32
+	blocked  uint32
+	ignored  uint32
+	actions  [Max + 1]ActionConfig
+	altStack AltStack
 }
 
 // SetAction 登记 rt_sigaction 处置;KILL/STOP 不可改,EINVAL。
@@ -369,6 +434,61 @@ func (t *Table) ApplyMask(pid uint64, how MaskHow, set uint64) (uint64, error) {
 		return 0, errno.NoProcess
 	}
 	return state.ApplyMask(how, set)
+}
+
+// DeliverableHandler 返回 pid 待投递且登记了客户态处理器的信号。
+func (t *Table) DeliverableHandler(pid uint64) (Number, ActionConfig, bool) {
+	t.mu.Lock()
+	state := t.states[pid]
+	t.mu.Unlock()
+	if state == nil {
+		return 0, ActionConfig{}, false
+	}
+	return state.DeliverableHandler()
+}
+
+// BlockForHandler 在 pid 投递信号时并入处置掩码并返回旧屏蔽集。
+func (t *Table) BlockForHandler(pid uint64, n Number, handlerMask uint64, nodefer bool) (uint64, error) {
+	t.mu.Lock()
+	state := t.states[pid]
+	t.mu.Unlock()
+	if state == nil {
+		return 0, errno.NoProcess
+	}
+	return state.BlockForHandler(n, handlerMask, nodefer)
+}
+
+// RestoreHandlerMask 在 pid 的 rt_sigreturn 时恢复屏蔽集。
+func (t *Table) RestoreHandlerMask(pid uint64, mask uint64) error {
+	t.mu.Lock()
+	state := t.states[pid]
+	t.mu.Unlock()
+	if state == nil {
+		return errno.NoProcess
+	}
+	return state.RestoreHandlerMask(mask)
+}
+
+// SetAltStack 登记 pid 的备用信号栈。
+func (t *Table) SetAltStack(pid uint64, stack AltStack) {
+	t.mu.Lock()
+	state := t.states[pid]
+	t.mu.Unlock()
+	if state == nil {
+		return
+	}
+	state.SetAltStack(stack)
+}
+
+// AltStack 返回 pid 登记的备用信号栈。
+func (t *Table) AltStack(pid uint64) AltStack {
+	t.mu.Lock()
+	state := t.states[pid]
+	t.mu.Unlock()
+	if state == nil {
+		return AltStack{}
+	}
+	return state.AltStack()
 }
 
 // Mask 返回 pid 当前屏蔽位图。
