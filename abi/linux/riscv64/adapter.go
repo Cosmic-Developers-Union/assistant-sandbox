@@ -94,6 +94,7 @@ const (
 	numberRtSigprocmask    = 135
 	numberRtSigreturn      = 139
 	numberSigaltstack      = 132
+	numberClone            = 220
 	numberSocket           = 198
 	numberBind             = 200
 	numberListen           = 201
@@ -409,6 +410,8 @@ func syscallOf(number uint64) common.Syscall {
 		return common.SysRtSigreturn
 	case numberSigaltstack:
 		return common.SysSigaltstack
+	case numberClone:
+		return common.SysClone
 	case numberSocket:
 		return common.SysSocket
 	case numberBind:

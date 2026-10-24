@@ -403,6 +403,25 @@ func (t *Table) ResetForExec(pid uint64) error {
 	return nil
 }
 
+// Fork 把 parent 的信号处置、屏蔽集与忽略位复制给 child;
+// 挂起集与备用栈不继承(与 Linux fork 一致),登记的中断钩子不复制。
+func (t *Table) Fork(parent, child uint64) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	source := t.states[parent]
+	if source == nil {
+		return errno.NoProcess
+	}
+	source.mu.Lock()
+	actions := source.actions
+	blocked := source.blocked
+	ignored := source.ignored
+	source.mu.Unlock()
+
+	t.states[child] = &State{actions: actions, blocked: blocked, ignored: ignored}
+	return nil
+}
+
 // SetAction 登记 pid 的 rt_sigaction 处置。
 func (t *Table) SetAction(pid uint64, n Number, config ActionConfig) error {
 	t.mu.Lock()

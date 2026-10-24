@@ -37,6 +37,19 @@ func (g *Guard) report(ctx context.Context, violation Violation) {
 	g.reporter(ctx, violation)
 }
 
+// Inner 暴露守卫包装的底层地址空间表(内核 fork 续接执行所需)。
+func (g *Guard) Inner() *Table { return g.inner }
+
+// Clone 复制守卫下的地址空间(fork 语义),返回覆盖克隆的新守卫;
+// 违例上报器按调用方重新装配。
+func (g *Guard) Clone(reporter Reporter) (*Guard, error) {
+	cloned, err := g.inner.Clone()
+	if err != nil {
+		return nil, err
+	}
+	return &Guard{inner: cloned, reporter: reporter}, nil
+}
+
 func (g *Guard) Map(ctx context.Context, region Region) error {
 	err := g.inner.Map(ctx, region)
 	if err == nil {

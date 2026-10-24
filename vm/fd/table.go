@@ -172,6 +172,28 @@ func (t *Table) Dup(ctx context.Context, pid uint64, from, to uint32) error {
 	return nil
 }
 
+// Fork 把 parent 的全部描述符复制给 child:条目与 CLOEXEC 标志逐一
+// 复制并共享底层句柄(与 fork 语义一致,打开文件描述共享偏移);
+// 返回复制的描述符个数。
+func (t *Table) Fork(parent, child uint64) (int, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	source := t.entries[parent]
+	if source == nil {
+		return 0, errno.NoProcess
+	}
+	if t.entries[child] == nil {
+		t.entries[child] = map[uint32]*entry{}
+	}
+	count := 0
+	for id, sourceEntry := range source {
+		sourceEntry.ref.refs++
+		t.entries[child][id] = &entry{ref: sourceEntry.ref, cloexec: sourceEntry.cloexec}
+		count++
+	}
+	return count, nil
+}
+
 // DupAt 把 from 复制到 ≥ min 的最低空闲编号并返回该编号;
 // 复制共享同一底层句柄(偏移与状态共享),与 dup/fcntl F_DUPFD 一致。
 func (t *Table) DupAt(ctx context.Context, pid, from, min uint64) (uint32, error) {

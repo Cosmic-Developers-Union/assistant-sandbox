@@ -162,7 +162,7 @@ Python 和 Node.js 的验收必须执行客体运行时，不能通过调用宿�
 - [ ] H01 分离进程与线程标识及状态。验收：PID、TID、父子关系、运行/等待/停止/僵尸状态转换一致。
 - [ ] H02 建立可运行队列和时间片切换。验收：两个 CPU 密集程序都前进，阻塞任务不占用执行时间片。
 - [ ] H03 将阻塞系统调用接入等待队列。验收：睡眠和管道等待不会阻塞整个 VM，唤醒无丢失。
-- [ ] H04 实现 fork 的进程复制语义。验收：父子返回值、内存、目录、信号和文件描述符继承与 Linux 一致。（依赖 E10）
+- [x] H04 实现 fork 的进程复制语义。验收：父子返回值、内存、目录、信号和文件描述符继承与 Linux 一致。（依赖 E10） 证据:vm/memory/guard.go Guard.Clone/Inner(fork 时以子进程违例上报器重建守卫)、vm/fd/table.go Fork(条目与 CLOEXEC 逐一复制并 refs++ 共享底层句柄=共享打开文件描述)、vm/signal/signal.go Fork(处置/屏蔽/忽略位复制;挂起集与备用栈不继承,与 Linux 一致)、vm/kernel.go Fork(子进程父=调用进程、镜像/参数/目录/环境/umask 继承、meters Spawn/Work/Descriptors 计费、E10 地址空间克隆、失败回滚 Exit+Reap)、proc/context.go ForkControl 端口 + procControl.Fork;abi/linux/common/syscalls.go cloneProcess(clone flags==SIGCHLD 且 sp=0 即 fork,其余组合 ENOTSUP 待 H05)、Spawner 端口;executor/elf/program.go processForker(读取父核心边界快照→子核心 a0=0 从 ecall 后续接、子进程退出经 Control.Finish 转僵尸唤醒父等待、子生命周期用 context.WithoutCancel 独立于调用方;控制端口未托管地址空间时以 E10 原语兜底克隆);riscv64 登记号 220;kernel_integration_test.go TestKernelForkCopiesProcessState(父子关系/镜像/处置/屏蔽/挂起不继承/标准流复制);program_test.go TestRealELFForkParentChildReturnValues(真实 ELF:clone 后父拿子 PID、子拿 0,子以 33 退出,父 waitid 读回 si_status 并以 33 退出)。测试:`make docker-test TEST_ARGS="./vm/... ./abi/... ./executor/..."`。CI:Test 工作流。备注:fork 是 asm-generic 无独立系统调用,glibc/musl 经 clone(SIGCHLD) 实现;子进程故障 fail-closed 以 125 退出;子进程随内核关闭的传播与 CLOEXEC 执行期行为随 C06/C12 与 H07 复核;LR 保留随子克隆清空(Reset 语义,呼应 D06 备注)。
 - [ ] H05 实现进程形式的 clone 子集。验收：逐个声明支持的标志有测试，未知或非法组合拒绝。
 - [ ] H06 实现 execve 的参数与路径解析。验收：客体 ELF 和 shebang 均从客体文件系统加载，参数顺序正确。
 - [ ] H07 实现 execve 的原子映像替换。验收：成功保持 PID 并重置信号等状态；装载失败仍可继续旧程序。

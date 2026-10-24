@@ -262,7 +262,7 @@ func TestArgvAndEnvironment(t *testing.T) {
 
 func TestCapabilitiesDegradeToNotImplemented(t *testing.T) {
 	space := memory.New(0)
-	handler := syscalls(context.Background(), proc.Proc{}, space, heapPlan(t))
+	handler := syscalls(context.Background(), proc.Proc{}, space, heapPlan(t), nil)
 	if handler.Descriptors != nil {
 		t.Fatal("没有描述符能力时不应装配描述符端口")
 	}
@@ -447,20 +447,20 @@ func TestFileSyscallsNeedInstallCapability(t *testing.T) {
 
 	readOnly := proc.Proc{ID: 1, Resources: capability.Set{FS: system, FD: &readOnlyDescriptors{}}}
 	plan := heapPlan(t)
-	if handler := syscalls(ctx, readOnly, space, plan); handler.Files != nil {
+	if handler := syscalls(ctx, readOnly, space, plan, nil); handler.Files != nil {
 		t.Fatal("只读描述符视图下不应装配文件打开端口")
 	}
 
 	table := fd.New()
 	table.Attach(1, fd.Streams{})
 	process := proc.Proc{ID: 1, Dir: "/", Resources: capability.Set{FS: system, FD: table}}
-	handler := syscalls(ctx, process, space, plan)
+	handler := syscalls(ctx, process, space, plan, nil)
 	if handler.Files == nil {
 		t.Fatal("完整描述符表下应装配文件打开端口")
 	}
 
 	bare := proc.Proc{ID: 1, Resources: capability.Set{FD: table}}
-	if handler := syscalls(ctx, bare, space, plan); handler.Files != nil {
+	if handler := syscalls(ctx, bare, space, plan, nil); handler.Files != nil {
 		t.Fatal("没有文件系统时不应装配文件打开端口")
 	}
 }
@@ -960,12 +960,50 @@ type sigControlStub struct {
 	polls        int
 	delivered    bool
 	alt          signal.AltStack
+	childExited  chan proc.ChildState
+	childID      proc.PID
+	parentID     proc.PID
+	parent       proc.Proc
 }
 
 func (s *sigControlStub) Begin(proc.PID, string, []string, string, map[string]string, fd.Streams) (proc.Proc, error) {
 	return proc.Proc{}, errno.Invalid
 }
-func (s *sigControlStub) Finish(proc.PID, proc.PID, uint8) error { return errno.Invalid }
+
+// Finish 记录子进程退出码并唤醒阻塞的 WaitChild。
+func (s *sigControlStub) Finish(parent, id proc.PID, code uint8) error {
+	s.childExited <- proc.ChildState{PID: id, ExitCode: code}
+	return nil
+}
+
+// ForkControl:返回登记的子进程替身;地址空间由执行器兜底克隆。
+func (s *sigControlStub) Fork() (proc.Proc, *memory.Table, error) {
+	child := proc.Proc{
+		ID: s.childID, Parent: s.parentID, Program: s.parent.Program,
+		Resources: s.parent.Resources, Control: s,
+	}
+	return child, nil, nil
+}
+
+// WaitControl:阻塞等待子进程 Finish。
+func (s *sigControlStub) WaitChild(ctx context.Context, target proc.PID, nohang bool) (proc.ChildState, bool, error) {
+	if nohang {
+		select {
+		case state := <-s.childExited:
+			return state, true, nil
+		default:
+			return proc.ChildState{}, false, nil
+		}
+	}
+	select {
+	case state := <-s.childExited:
+		return state, true, nil
+	case <-ctx.Done():
+		return proc.ChildState{}, false, ctx.Err()
+	}
+}
+
+func (s *sigControlStub) HasChildren() bool { return true }
 func (s *sigControlStub) Run(context.Context, proc.RunSpec) (proc.Proc, error) {
 	return proc.Proc{}, errno.Invalid
 }
@@ -1040,7 +1078,8 @@ func (s *sigControlStub) SetAlternateStack(stack signal.AltStack) error {
 // sigset,偏移 0x10 起是 struct sigaction。
 func buildSigactionImage(t *testing.T, program []uint32, set [8]byte, action [32]byte) []byte {
 	t.Helper()
-	raw := make([]byte, imageDataOffset+0x40)
+	// 数据段 0x100 字节:容纳 sigset、sigaction 与 waitid 的 siginfo。
+	raw := make([]byte, imageDataOffset+0x100)
 	copy(raw[0:4], "\x7fELF")
 	raw[4] = 2
 	raw[5] = 1
@@ -1054,7 +1093,7 @@ func buildSigactionImage(t *testing.T, program []uint32, set [8]byte, action [32
 	binary.LittleEndian.PutUint16(raw[54:], imagePhdrSize)
 	binary.LittleEndian.PutUint16(raw[56:], 2)
 	putProgramHeader(raw[imagePhdrOffset:], 1, 5, 0, imageCodeBase, imageCodeSize, imageCodeSize, 0x1000)
-	putProgramHeader(raw[imagePhdrOffset+imagePhdrSize:], 1, 6, imageDataOffset, imageDataBase, 0x40, 0x40, 0x1000)
+	putProgramHeader(raw[imagePhdrOffset+imagePhdrSize:], 1, 6, imageDataOffset, imageDataBase, 0x100, 0x100, 0x1000)
 	copy(raw[imageDataOffset:], set[:])
 	copy(raw[imageDataOffset+0x10:], action[:])
 	for index, instruction := range program {
@@ -1196,5 +1235,59 @@ func TestRealELFDeliversSignalHandlerAndReturns(t *testing.T) {
 	// 屏蔽集在 rt_sigreturn 后恢复为帧内保存的投递前值。
 	if stub.mask != 0 {
 		t.Fatalf("恢复后屏蔽集=%x want 0", stub.mask)
+	}
+}
+
+// TestRealELFForkParentChildReturnValues 用真实 RISC-V ELF 验证 fork
+// 复制语义:clone(SIGCHLD) 后父进程拿到子 PID、子进程拿到 0;
+// 子进程以 33 退出,父进程 waitid 读回 si_status 并以之退出。
+func TestRealELFForkParentChildReturnValues(t *testing.T) {
+	image := buildSigactionImage(t, []uint32{
+		0x01100513, // li a0, 17 (SIGCHLD)
+		0x00000593, // li a1, 0
+		0x00000613, // li a2, 0
+		0x00000693, // li a3, 0
+		0x00000713, // li a4, 0
+		0x0DC00893, // li a7, 220 (clone)
+		0x00000073, // ecall
+		0x02050663, // beq a0, x0, +44 → 子进程路径
+		// 父进程:waitid(P_ALL, 0, infop, WEXITED)
+		0x00000513, // li a0, 0
+		0x00000513, // li a1, 0
+		0x00012637, // lui a2, 0x12
+		0x02060613, // addi a2, a2, 32 → infop 0x12020
+		0x00100693, // li a3, 1 (WEXITED)
+		0x05F00893, // li a7, 95 (waitid)
+		0x00000073, // ecall
+		0x01862283, // lw t0, 24(a2) → si_status
+		0x00028513, // mv a0, t0
+		0x05D00893, // li a7, 93 (exit)
+		0x00000073, // ecall
+		// 子进程:以 33 退出
+		0x02100513, // li a0, 33
+		0x05D00893, // li a7, 93 (exit)
+		0x00000073, // ecall
+	}, [8]byte{}, [32]byte{})
+	harness := newHarness(t, image, nil)
+	stub := &sigControlStub{
+		actions:     map[signal.Number]signal.ActionConfig{},
+		childExited: make(chan proc.ChildState, 2),
+		childID:     77,
+		parentID:    9,
+		parent:      harness.process,
+	}
+	harness.process.Control = stub
+
+	guest, _, err := Factory{}.New("/program")
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, runErr := guest.Run(context.Background(), harness.process)
+	if runErr != nil {
+		t.Fatal(runErr)
+	}
+	// 父进程从 waitid 的 siginfo 读到子进程退出码并作为自身退出码。
+	if code != 33 {
+		t.Fatalf("父进程退出码=%d want 33(经 waitid siginfo 传递)", code)
 	}
 }

@@ -370,6 +370,88 @@ func (k *Kernel) Begin(parent proc.PID, name string, args []string, dir string, 
 	return p, nil
 }
 
+// Fork 以 Linux fork/clone(SIGCHLD) 语义复制调用进程:进程表条目
+// (含程序、参数、目录、环境、umask)、描述符表(共享底层句柄)、
+// 信号处置与屏蔽(挂起集除外)与地址空间(E10 克隆,违例上报按子进程
+// 重新装配)。返回子进程与子地址空间;执行续接由调用方完成。
+func (k *Kernel) Fork(parent proc.PID) (proc.Proc, *memory.Table, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.failed {
+		return proc.Proc{}, nil, errno.Busy
+	}
+	if k.closed {
+		return proc.Proc{}, nil, errno.Cancelled
+	}
+	source, err := k.table.Get(parent)
+	if err != nil {
+		return proc.Proc{}, nil, err
+	}
+	requested := k.budget(proc.Proc{Parent: source.Parent, Program: source.Program})
+	// fork 的子进程父是调用进程本身(Linux 语义)。
+	child, err := k.table.Create(parent, source.Program, source.Args, source.Dir, source.Env)
+	if err != nil {
+		return proc.Proc{}, nil, err
+	}
+	if err := k.table.Start(child.ID); err != nil {
+		return proc.Proc{}, nil, err
+	}
+	_ = k.table.SetUmask(child.ID, source.Umask)
+	if k.meters != nil {
+		if err := k.meters.Spawn(uint64(child.ID), requested); err != nil {
+			_ = k.table.Exit(child.ID, 125, 0)
+			_, _ = k.table.Reap(source.Parent, child.ID)
+			return proc.Proc{}, nil, err
+		}
+		if err := k.meters.Charge(context.Background(), uint64(child.ID), spawnWorkUnits); err != nil {
+			_ = k.table.Exit(child.ID, 125, 0)
+			_, _ = k.table.Reap(source.Parent, child.ID)
+			return proc.Proc{}, nil, err
+		}
+	}
+	if err := k.signals.Fork(uint64(parent), uint64(child.ID)); err != nil {
+		return proc.Proc{}, nil, err
+	}
+	// 描述符:fork 不重挂标准流,直接共享复制父进程全部条目。
+	if k.fds != nil {
+		count, err := k.fds.Fork(uint64(parent), uint64(child.ID))
+		if err != nil {
+			return proc.Proc{}, nil, err
+		}
+		if k.meters != nil && count > 0 {
+			if err := k.meters.ChargeKind(context.Background(), uint64(child.ID), resources.KindDescriptors, uint64(count)); err != nil {
+				_ = k.table.Exit(child.ID, 125, 0)
+				_, _ = k.table.Reap(source.Parent, child.ID)
+				return proc.Proc{}, nil, err
+			}
+		}
+	}
+	// 地址空间:E10 克隆;无绑定地址空间时明确失败。
+	bound, ok := k.spaces[parent]
+	if !ok {
+		return proc.Proc{}, nil, errno.Wrap(errno.Invalid, "进程未绑定地址空间,不能 fork")
+	}
+	guard, ok := bound.(*memory.Guard)
+	if !ok {
+		return proc.Proc{}, nil, errno.Wrap(errno.Invalid, "进程地址空间不支持 fork 克隆")
+	}
+	pid := child.ID
+	cloned, err := guard.Clone(func(ctx context.Context, violation memory.Violation) {
+		k.mu.Lock()
+		defer k.mu.Unlock()
+		k.emitAddressViolationLocked(pid, violation)
+	})
+	if err != nil {
+		return proc.Proc{}, nil, err
+	}
+	k.spaces[child.ID] = cloned
+	child.State = proc.Running
+	child.Resources = capability.Scope(uint64(child.ID), k.services.Set, k.meters)
+	child.Control = procControl{k: k, self: child.ID}
+	k.emitLocked(scheduler.KindSpawn, child.ID, scheduler.SpawnDetail(source.Program))
+	return child, cloned.Inner(), nil
+}
+
 func (k *Kernel) resolve(name string) (executable.Resolved, error) {
 	if program, err := k.services.Programs.Lookup(name); err == nil {
 
@@ -1327,6 +1409,13 @@ func (c procControl) SignalMask() (uint64, error) {
 		return 0, errno.NoProcess
 	}
 	return c.k.signals.Mask(uint64(c.self))
+}
+
+func (c procControl) Fork() (proc.Proc, *memory.Table, error) {
+	if c.self == 0 {
+		return proc.Proc{}, nil, errno.NoProcess
+	}
+	return c.k.Fork(c.self)
 }
 
 func (c procControl) PendingDeliverable() (signal.Number, signal.ActionConfig, bool) {

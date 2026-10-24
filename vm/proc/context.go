@@ -6,6 +6,7 @@ import (
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fd"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/memory"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/signal"
 )
 
@@ -65,6 +66,12 @@ type WaitControl interface {
 
 	// HasChildren 报告调用进程是否还有子进程(ECHILD 判定)。
 	HasChildren() bool
+}
+
+// ForkControl 是 fork/clone(SIGCHLD) 的进程复制端口:实现复制
+// 进程表条目、描述符、信号处置与地址空间,执行续接由调用方完成。
+type ForkControl interface {
+	Fork() (Proc, *memory.Table, error)
 }
 
 // SignalDeliveryControl 是客户态信号投递端口:执行器在指令边界

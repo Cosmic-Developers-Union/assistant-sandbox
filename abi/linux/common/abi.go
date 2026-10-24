@@ -209,6 +209,7 @@ const (
 	SysRtSigprocmask
 	SysRtSigreturn
 	SysSigaltstack
+	SysClone
 )
 
 func (s Syscall) String() string {
@@ -477,6 +478,8 @@ func (s Syscall) String() string {
 		return "rt_sigreturn"
 	case SysSigaltstack:
 		return "sigaltstack"
+	case SysClone:
+		return "clone"
 	case SysReadlinkat:
 		return "readlinkat"
 	case SysUmask:

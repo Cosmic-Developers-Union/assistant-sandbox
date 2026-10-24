@@ -75,7 +75,7 @@ func (p *program) Run(ctx context.Context, process proc.Proc) (uint8, error) {
 	if err := core.Reset(ctx, initial); err != nil {
 		return 0, err
 	}
-	handler := syscalls(ctx, process, space, plan)
+	handler := syscalls(ctx, process, space, plan, core)
 	handler.Core = core
 	deliverer := &signalDeliverer{space: space, core: core}
 	if delivery, ok := process.Control.(proc.SignalDeliveryControl); ok {
@@ -168,7 +168,7 @@ func addressSpace(ctx context.Context, plan *loaderelf.Plan) (*memory.Table, err
 	return space, nil
 }
 
-func syscalls(ctx context.Context, process proc.Proc, space *memory.Table, plan *loaderelf.Plan) common.Syscalls {
+func syscalls(ctx context.Context, process proc.Proc, space *memory.Table, plan *loaderelf.Plan, core cpu.Port) common.Syscalls {
 	handler := common.Syscalls{Memory: space, Sysname: "Linux", Nodename: "assistant-sandbox", Release: "6.8.0", Version: "#1", Machine: "riscv64", Domainname: "(none)", Cwd: process.Dir}
 	identity := &common.Identity{PID: uint64(process.ID), PPID: uint64(process.Parent)}
 	handler.Identity = identity
@@ -203,6 +203,12 @@ func syscalls(ctx context.Context, process proc.Proc, space *memory.Table, plan 
 	}
 	if dispositions, ok := process.Control.(proc.SignalDispositionControl); ok {
 		handler.Signals = processSignals{control: dispositions}
+	}
+	if forker, ok := process.Control.(proc.ForkControl); ok {
+		handler.Spawner = processForker{
+			parent: process, space: space, plan: plan, core: core,
+			control: forker,
+		}
 	}
 	if source, err := process.Resources.Time(); err == nil {
 		handler.Clock = source
@@ -528,3 +534,75 @@ const (
 	regSp        = 2
 	regArgument0 = 10
 )
+
+// processForker 把进程控制端口的 fork 能力适配为 clone 系统调用:
+// 复制地址空间(E10)后,子进程在自己的核心上从调用边界续接执行,
+// 退出时按 Linux 语义转僵尸并唤醒父进程等待。
+type processForker struct {
+	parent  proc.Proc
+	space   *memory.Table
+	plan    *loaderelf.Plan
+	core    cpu.Port
+	control proc.ForkControl
+}
+
+func (f processForker) Fork(ctx context.Context) (uint64, error) {
+	child, childSpace, err := f.control.Fork()
+	if err != nil {
+		return 0, err
+	}
+	if childSpace == nil {
+		// 控制端口未托管地址空间时(纯执行器场景),由执行器以
+		// E10 原语克隆;内核托管路径返回克隆后的子空间。
+		childSpace, err = f.space.Clone()
+		if err != nil {
+			return 0, err
+		}
+	}
+	// 续接边界:调用时刻的完整寄存器与 ecall 之后的 PC;
+	// 子进程 fork 返回值为 0(Linux 语义)。
+	state, err := f.core.State(ctx)
+	if err != nil {
+		return 0, err
+	}
+	go func() {
+		// 子进程生命周期独立于 fork 调用方上下文:调用返回后子进程
+		// 继续执行直到自身退出;随内核关闭的传播由 C06/C12 复核。
+		runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+		defer cancel()
+		childCore, err := riscv64.New(cpu.Config{
+			Memory: childSpace,
+			Entry:  state.PC,
+			Meter:  meter{ctx: runCtx, meters: metersOf(child), pid: uint64(child.ID)},
+		})
+		if err != nil {
+			return
+		}
+		next := state
+		next.Registers[regArgument0] = 0
+		if err := childCore.Reset(runCtx, next); err != nil {
+			return
+		}
+		childHandler := syscalls(runCtx, child, childSpace, f.plan, childCore)
+		childHandler.Core = childCore
+		deliverer := &signalDeliverer{space: childSpace, core: childCore}
+		if delivery, ok := child.Control.(proc.SignalDeliveryControl); ok {
+			deliverer.control = delivery
+		}
+		runner, err := common.NewRunner(common.Config{
+			Core:       childCore,
+			Dispatcher: &linuxriscv64.Adapter{Handler: childHandler, Registers: childCore},
+			Boundary:   deliverer.boundary,
+		})
+		if err != nil {
+			return
+		}
+		code, runErr := runner.Run(runCtx)
+		if runErr != nil {
+			// 子进程执行故障:按 fail-closed 以 125 退出并转僵尸。
+			code = 125
+		}
+		_ = child.Control.Finish(f.parent.ID, child.ID, uint8(code))
+	}()
+	return uint64(child.ID), nil
+}

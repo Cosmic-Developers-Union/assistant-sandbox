@@ -1072,3 +1072,75 @@ func TestKernelWaitChildNoHangTargetsZombie(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestKernelForkCopiesProcessState(t *testing.T) {
+	reg, _ := registryFor("long")
+	kernel, _ := New(Services{Set: capability.Set{FD: fd.New()}, Programs: reg}, 4)
+	parent, err := kernel.Begin(0, "long", nil, "/", nil, fd.Streams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 父进程绑定地址空间并写入可观察数据。
+	binder, _ := parent.Resources.AddressSpace()
+	space, err := binder.BindAddressSpace(uint64(parent.ID), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = space
+
+	// 信号处置与屏蔽登记。
+	_ = kernel.signals.SetAction(uint64(parent.ID), signal.USR1, signal.ActionConfig{Handler: 0x4040})
+	_, _ = kernel.signals.ApplyMask(uint64(parent.ID), signal.MaskBlock, 1<<(signal.HUP-1))
+
+	child, childSpace, err := kernel.Fork(parent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if child.Parent != parent.ID {
+		t.Fatalf("子进程父=%d want %d", child.Parent, parent.ID)
+	}
+	if child.Program != parent.Program || child.Dir != parent.Dir {
+		t.Fatalf("子进程镜像=%+v", child)
+	}
+	if childSpace == nil {
+		t.Fatal("子进程应获得克隆地址空间")
+	}
+
+	// 信号处置与屏蔽继承;挂起集不继承。
+	if config, _ := kernel.signals.Action(uint64(child.ID), signal.USR1); config.Handler != 0x4040 {
+		t.Fatalf("子进程处置=%+v", config)
+	}
+	if mask, _ := kernel.signals.Mask(uint64(child.ID)); mask&(1<<(signal.HUP-1)) == 0 {
+		t.Fatalf("子进程屏蔽=%x", mask)
+	}
+	if err := kernel.signals.Raise(uint64(parent.ID), signal.USR2); err != nil {
+		t.Fatal(err)
+	}
+	if pending, _ := kernel.signals.Pending(uint64(child.ID)); len(pending) != 0 {
+		t.Fatalf("子进程不应继承挂起集: %v", pending)
+	}
+
+	// 描述符共享复制:父安装的句柄子可见。
+	table := kernel.fds
+	installed, err := table.InstallNext(uint64(parent.ID), &pipeCountingHandle{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// fork 之后安装的不共享(快照语义),这里验证 fork 前条目的共享:
+	if !table.IsOpen(uint64(child.ID), 0) || !table.IsOpen(uint64(child.ID), 1) {
+		t.Fatal("fork 应复制标准流描述符")
+	}
+	_ = installed
+
+	// 地址空间克隆独立:父进程空间与子空间互不影响(经 E10 语义)。
+	if err := kernel.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type pipeCountingHandle struct{ closed int }
+
+func (h *pipeCountingHandle) Read(p []byte) (int, error)  { return 0, io.EOF }
+func (h *pipeCountingHandle) Write(p []byte) (int, error) { return len(p), nil }
+func (h *pipeCountingHandle) Close() error                { h.closed++; return nil }

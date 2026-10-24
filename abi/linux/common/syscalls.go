@@ -188,6 +188,14 @@ type Syscalls struct {
 
 	// Core 供 rt_sigreturn 恢复完整机器状态;未装配时 rt_sigreturn 报 ENOSYS。
 	Core cpu.Port
+
+	Spawner Spawner
+}
+
+// Spawner 是 clone(SIGCHLD) 的进程复制端口;实现复制地址空间、
+// 描述符与信号处置,并从调用方的执行核心读取续接边界(PC 与寄存器)。
+type Spawner interface {
+	Fork(ctx context.Context) (uint64, error)
 }
 
 // SignalAction 是 rt_sigaction 的登记项(asm-generic struct sigaction):
@@ -348,6 +356,8 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 		return s.rtSigreturn(ctx, call)
 	case SysSigaltstack:
 		return s.sigaltstack(ctx, call)
+	case SysClone:
+		return s.cloneProcess(ctx, call)
 	case SysFstatfs:
 		return s.fstatfs(ctx, call)
 	case SysFcntl:
@@ -2389,6 +2399,25 @@ func (s Syscalls) rtSigprocmask(ctx context.Context, call Call) Reply {
 		}
 	}
 	return Reply{}
+}
+
+// asm-generic clone 的 SIGCHLD 位:flags==SIGCHLD 即 fork。
+const cloneSigchld = 17
+
+// clone(flags, ...) 仅支持 fork 形态(flags==SIGCHLD 且 sp=0);
+// 线程/共享地址空间标志随 H05/K 组落地,当前明确 ENOTSUP。
+func (s Syscalls) cloneProcess(ctx context.Context, call Call) Reply {
+	if s.Spawner == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	if call.Args[0] != cloneSigchld || call.Args[1] != 0 {
+		return Reply{Errno: errno.NotSupported}
+	}
+	pid, err := s.Spawner.Fork(ctx)
+	if err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	return Reply{Value: pid}
 }
 
 // sigreturn 的帧基址经 Args[0] 注入(适配器从 sp 寄存器读取);
