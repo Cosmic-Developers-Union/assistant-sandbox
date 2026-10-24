@@ -24,11 +24,18 @@ func TestWASIMappingIsStable(t *testing.T) {
 		Invalid: 28, NoProcess: 71, NoChild: 12, Busy: 10, Limit: 6, NotFound: 44,
 		NotImplemented: 52, NotSupported: 58, NetworkUnreachable: 40, Permission: 2,
 		Exist: 20, NotDirectory: 54, IsDirectory: 31, NotEmpty: 55, BadHandle: 8,
-		NameTooLong: 37, ReadOnlyFS: 69, LinkLoop: 32, NoSpace: 51, Cancelled: 11,
-		Interrupted: 27, WouldBlock: 6, Range: 68, Overflow: 61, BrokenPipe: 64, NoExec: 45, TooBig: 57,
-		Fault: 21, IO: 29,
+		NameTooLong: 37, ReadOnlyFS: 69, LinkLoop: 32, NoSpace: 51, NoMemory: 48,
+		Cancelled: 11, Interrupted: 27, WouldBlock: 6, Range: 68, Overflow: 61,
+		BrokenPipe: 64, NoExec: 45, TooBig: 57, Seek: 70, TimedOut: 73, Version: 75,
+		Fault: 21, IO: 29, CrossDevice: 18, NoDevice: 60,
 	}
 
+	// 每个声明码都有独立于回退值的映射,不得伪装成 ENOSYS。
+	for _, code := range Codes() {
+		if got, _ := WASI(code); got == 52 && code != NotImplemented {
+			t.Fatalf("%s 缺少 WASI 数值映射(回退到 ENOSYS)", code)
+		}
+	}
 	for code, want := range cases {
 		if got, _ := WASI(code); got != want {
 			t.Fatalf("%s: got %d want %d", code, got, want)

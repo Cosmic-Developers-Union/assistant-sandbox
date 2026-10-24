@@ -90,6 +90,8 @@ var wasiNumbers = map[Code]uint16{
 	LinkLoop:    32,
 	NoDevice:    60,
 	NoSpace:     51,
+	NoMemory:    48,
+	Seek:        70,
 	Cancelled:   11,
 	Interrupted: 27,
 	WouldBlock:  6,
@@ -98,7 +100,7 @@ var wasiNumbers = map[Code]uint16{
 	TimedOut:    73,
 	NoExec:      45,
 	TooBig:      57,
-	Version:     71,
+	Version:     75,
 }
 
 func WASI(code Code) (uint16, string) {

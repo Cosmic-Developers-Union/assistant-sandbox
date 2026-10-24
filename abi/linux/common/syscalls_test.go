@@ -2404,3 +2404,56 @@ func TestGetrandomValidatesFlags(t *testing.T) {
 		t.Fatalf("已知标志: %+v want ENOSYS(未装配熵源)", reply)
 	}
 }
+
+func TestErrnoOfDistinguishesCommonErrorFamilies(t *testing.T) {
+	cases := map[string]error{
+		"文件缺失":      errno.NotFound,
+		"权限不足":      errno.Permission,
+		"已存在":       errno.Exist,
+		"描述符无效":     errno.BadHandle,
+		"预算耗尽":      errno.NoSpace,
+		"内存耗尽":      errno.NoMemory,
+		"网络不可达":     errno.NetworkUnreachable,
+		"进程不存在":     errno.NoProcess,
+		"跨挂载":       errno.CrossDevice,
+		"非阻塞不可用":    errno.WouldBlock,
+		"包装后的描述符无效": errno.Wrap(errno.BadHandle, "读取失败"),
+		"嵌套包装的权限不足": errno.Wrap(errno.IO, errno.Wrap(errno.Permission, "链路").Error()),
+	}
+	for label, err := range cases {
+		if got := errnoOf(err); !errors.Is(err, got) {
+			t.Fatalf("%s: %v 映射为 %v", label, err, got)
+		}
+	}
+	// 未知宿主错误不伪装成功,统一 EIO。
+	if got := errnoOf(errors.New("宿主磁盘冒烟")); got != errno.IO {
+		t.Fatalf("未知错误=%v want EIO", got)
+	}
+	// 每个声明码都能被 errnoOf 识别(身份保持)。
+	for _, code := range errno.Codes() {
+		if got := errnoOf(code); got != code {
+			t.Fatalf("%s 识别为 %v", code, got)
+		}
+	}
+}
+
+func TestLinuxNumbersRemainDistinctPerFamily(t *testing.T) {
+	// 关键错误族在 asm-generic 中数值不同,客体能区分;
+	// Limit 与 WouldBlock 共享 EAGAIN 是 Linux 的既定事实。
+	notImplemented, _ := errno.Linux(errno.NotImplemented)
+	seen := map[int32]errno.Code{}
+	for _, code := range errno.Codes() {
+		number, _ := errno.Linux(code)
+		if code != errno.NotImplemented && number == notImplemented {
+			t.Fatalf("%s 缺少 Linux 数值", code)
+		}
+		if previous, ok := seen[number]; ok && previous != code {
+			allowed := (previous == errno.Limit && code == errno.WouldBlock) ||
+				(previous == errno.WouldBlock && code == errno.Limit)
+			if !allowed {
+				t.Fatalf("%s 与 %s 共享 Linux 数值 %d", previous, code, number)
+			}
+		}
+		seen[number] = code
+	}
+}
