@@ -59,26 +59,6 @@ func (p ProcessDescriptors) Seek(ctx context.Context, descriptor uint64, offset 
 	return seeker.Seek(offset, int(whence))
 }
 
-func (p ProcessDescriptors) Truncate(ctx context.Context, descriptor uint64, size int64) error {
-	if p.Table == nil {
-		return errno.Wrap(errno.NotImplemented, "描述符端口未装配")
-	}
-	if descriptor > math.MaxUint32 {
-		return errno.Wrap(errno.BadHandle, "描述符编号超出表示范围")
-	}
-	stream, err := p.Table.Get(ctx, p.PID, uint32(descriptor))
-	if err != nil {
-		return err
-	}
-	type truncater interface {
-		Truncate(int64) error
-	}
-	if t, ok := stream.(truncater); ok {
-		return t.Truncate(size)
-	}
-	return errno.Wrap(errno.NotSupported, "描述符不支持截断")
-}
-
 func (p ProcessDescriptors) Get(ctx context.Context, descriptor uint64) (any, error) {
 	if p.Table == nil {
 		return nil, errno.Wrap(errno.NotImplemented, "描述符端口未装配")
@@ -273,6 +253,25 @@ func (p ProcessFiles) Rename(ctx context.Context, oldpath, newpath string) error
 		newpath = pathpkg.Join(p.Dir, newpath)
 	}
 	return p.System.Rename(ctx, oldpath, newpath)
+}
+
+func (p ProcessFiles) SetTimes(ctx context.Context, path string, atime, mtime int64, follow bool) error {
+	if p.System == nil {
+		return errno.Wrap(errno.NotImplemented, "文件端口未装配")
+	}
+	target := path
+	if !strings.HasPrefix(target, "/") {
+		target = pathpkg.Join(p.Dir, target)
+	}
+	if setter, ok := p.System.(fs.LinkTimestamps); ok {
+		return setter.SetTimesFollow(ctx, target, atime, mtime, follow)
+	}
+	if follow {
+		if setter, ok := p.System.(fs.Timestamps); ok {
+			return setter.SetTimes(ctx, target, atime, mtime)
+		}
+	}
+	return errno.Wrap(errno.NotSupported, "文件系统不支持时间更新")
 }
 
 func (p ProcessFiles) Readlink(ctx context.Context, path string) (string, error) {

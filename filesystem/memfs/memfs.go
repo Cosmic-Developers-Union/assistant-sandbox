@@ -360,7 +360,7 @@ func (f *FS) Open(ctx context.Context, p string, flags uint32, mode stdfs.FileMo
 		node.mtime = f.now()
 	}
 	node.opened++
-	return &handle{fs: f, node: node, appendMode: append}, nil
+	return &handle{fs: f, node: node, appendMode: append, writable: access != 0}, nil
 }
 
 func (f *FS) Stat(ctx context.Context, p string) (stdfs.FileInfo, error) {
@@ -620,12 +620,16 @@ func (f *FS) Readlink(ctx context.Context, p string) (string, error) {
 }
 
 func (f *FS) SetTimes(ctx context.Context, p string, atime, mtime int64) error {
+	return f.SetTimesFollow(ctx, p, atime, mtime, true)
+}
+
+func (f *FS) SetTimesFollow(ctx context.Context, p string, atime, mtime int64, follow bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	node, _, _, err := f.lookup(p, true)
+	node, _, _, err := f.lookup(p, follow)
 	if err != nil {
 		return err
 	}

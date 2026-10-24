@@ -19,6 +19,7 @@ type handle struct {
 	off        int64
 	dirPos     uint64
 	appendMode bool
+	writable   bool
 	closed     bool
 }
 
@@ -178,6 +179,73 @@ func (h *handle) Readdir(limit int) ([]stdfs.DirEntry, error) {
 		out = append(out, dirEntry{info: fileInfo{node: item.node}})
 	}
 	return out, nil
+}
+
+// Truncate 以字节长度截断文件:收缩丢弃尾部,扩张补零(空洞)。
+// 需要句柄以可写方式打开;目录报 EISDIR;扩张受单文件与总量预算约束。
+func (h *handle) Truncate(size int64) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.closed {
+		return errno.BadHandle
+	}
+	h.fs.mu.Lock()
+	defer h.fs.mu.Unlock()
+	if h.node.kind == kindDir {
+		return errno.IsDirectory
+	}
+	if !h.writable || size < 0 {
+		return errno.Invalid
+	}
+	if size > int64(len(h.node.data)) {
+		if size > int64(h.fs.maxBytes) {
+			return errno.NoSpace
+		}
+		if h.fs.maxTotalBytes > 0 {
+			used := h.fs.usedBytes() - int64(len(h.node.data))
+			if used+size > h.fs.maxTotalBytes {
+				return errno.NoSpace
+			}
+		}
+		grown := make([]byte, size)
+		copy(grown, h.node.data)
+		h.node.data = grown
+	} else {
+		h.node.data = h.node.data[:size]
+	}
+	now := h.fs.now()
+	h.node.mtime = now
+	h.node.atime = now
+	return nil
+}
+
+// Sync 把句柄数据冲入稳定存储。memfs 以宿主内存为存储介质,
+// VM 存活期内数据不会丢失,同步是真实的空操作;
+// fdatasync 与 fsync 在此语义下没有可观察差异。
+func (h *handle) Sync(bool) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.closed {
+		return errno.BadHandle
+	}
+	return nil
+}
+
+// SetTimes 以纳秒更新句柄文件的访问与修改时间(utimensat 的 fd 路径)。
+func (h *handle) SetTimes(atime, mtime int64) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.closed {
+		return errno.BadHandle
+	}
+	h.fs.mu.Lock()
+	defer h.fs.mu.Unlock()
+	if h.node.kind == kindSymlink {
+		return errno.Invalid
+	}
+	h.node.atime = atime
+	h.node.mtime = mtime
+	return nil
 }
 
 func (h *handle) Close() error {

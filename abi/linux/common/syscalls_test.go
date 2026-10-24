@@ -95,10 +95,6 @@ func (d *fakeDescriptors) Get(_ context.Context, descriptor uint64) (any, error)
 	return d.get, nil
 }
 
-func (d *fakeDescriptors) Truncate(_ context.Context, _ uint64, size int64) error {
-	return d.seekErr
-}
-
 func (d *fakeDescriptors) Seek(_ context.Context, _ uint64, offset int64, whence SeekWhence) (int64, error) {
 	if d.seekErr != nil {
 		return 0, d.seekErr
@@ -370,15 +366,23 @@ func TestSyscallsOverProcessDescriptors(t *testing.T) {
 }
 
 type fakeFiles struct {
-	requests    []OpenRequest
-	next        uint64
-	err         error
-	entries     []stdfs.DirEntry
-	removeCalls []string
-	statInfo    stdfs.FileInfo
-	statPaths   []string
-	lstatInfo   stdfs.FileInfo
-	lstatErr    error
+	requests     []OpenRequest
+	next         uint64
+	err          error
+	entries      []stdfs.DirEntry
+	removeCalls  []string
+	statInfo     stdfs.FileInfo
+	statPaths    []string
+	lstatInfo    stdfs.FileInfo
+	lstatErr     error
+	setTimeErr   error
+	setTimeCalls []setTimeCall
+}
+
+type setTimeCall struct {
+	path         string
+	atime, mtime int64
+	follow       bool
 }
 
 type fakeFileInfo struct{ dir bool }
@@ -423,6 +427,14 @@ func (f *fakeFiles) Stat(_ context.Context, path string) (stdfs.FileInfo, error)
 	}
 	f.statPaths = append(f.statPaths, path)
 	return f.statInfo, nil
+}
+
+func (f *fakeFiles) SetTimes(_ context.Context, path string, atime, mtime int64, follow bool) error {
+	if f.setTimeErr != nil {
+		return f.setTimeErr
+	}
+	f.setTimeCalls = append(f.setTimeCalls, setTimeCall{path: path, atime: atime, mtime: mtime, follow: follow})
+	return nil
 }
 
 func (f *fakeFiles) Lstat(_ context.Context, path string) (stdfs.FileInfo, error) {
@@ -1764,11 +1776,46 @@ func TestReadvWritevScatterGather(t *testing.T) {
 
 // statHandle 是暴露 Stat 的描述符句柄替身,模拟文件/目录句柄。
 type statHandle struct {
-	info    stdfs.FileInfo
-	statErr error
+	info      stdfs.FileInfo
+	statErr   error
+	truncate  []int64
+	truncErr  error
+	syncCalls []bool
+	syncErr   error
+	times     []setTimeCall
+	timesErr  error
 }
 
 func (h *statHandle) Stat() (stdfs.FileInfo, error) { return h.info, h.statErr }
+
+func (h *statHandle) Truncate(size int64) error {
+	if h.truncErr != nil {
+		return h.truncErr
+	}
+	h.truncate = append(h.truncate, size)
+	return nil
+}
+
+func (h *statHandle) Sync(fdatasync bool) error {
+	if h.syncErr != nil {
+		return h.syncErr
+	}
+	h.syncCalls = append(h.syncCalls, fdatasync)
+	return nil
+}
+
+func (h *statHandle) SetTimes(atime, mtime int64) error {
+	if h.timesErr != nil {
+		return h.timesErr
+	}
+	h.times = append(h.times, setTimeCall{atime: atime, mtime: mtime})
+	return nil
+}
+
+// bareHandle 无任何可选能力,模拟管道/eventfd 等描述符。
+type bareHandle struct{}
+
+func (bareHandle) Stat() (stdfs.FileInfo, error) { return nil, errno.NotSupported }
 
 // statFileInfo 是携带扩展元数据的 FileInfo 替身。
 type statFileInfo struct {
@@ -2079,5 +2126,155 @@ func TestStatxEncodesBasicStatsWithMask(t *testing.T) {
 	faulted := Syscalls{Memory: broken, Descriptors: &fakeDescriptors{}, Files: files}
 	if reply := faulted.Handle(ctx, Call{Syscall: SysStatx, Args: [6]uint64{atCurrentWorkingDirectory, 0x1000, 0, basicStats, 0x3000}}); reply.Errno != errno.Fault {
 		t.Fatalf("缓冲区非法: reply=%+v want EFAULT", reply)
+	}
+}
+
+func TestFtruncateUsesHandleCapability(t *testing.T) {
+	ctx := context.Background()
+	space := newFakeMemory()
+	handle := &statHandle{}
+	syscalls := Syscalls{Memory: space, Descriptors: &fakeDescriptors{get: handle}}
+
+	ftruncate := func(size uint64) Call {
+		return Call{Syscall: SysFtruncate, Args: [6]uint64{3, size}}
+	}
+	if reply := syscalls.Handle(ctx, ftruncate(128)); reply.Errno != "" {
+		t.Fatalf("reply=%+v", reply)
+	}
+	if len(handle.truncate) != 1 || handle.truncate[0] != 128 {
+		t.Fatalf("截断调用=%v", handle.truncate)
+	}
+	// 负长度 EINVAL。
+	if reply := syscalls.Handle(ctx, ftruncate(uint64(1)<<63)); reply.Errno != errno.Invalid {
+		t.Fatalf("负长度: %+v want EINVAL", reply)
+	}
+	// 无截断能力的句柄明确 ENOTSUP。
+	bare := Syscalls{Memory: space, Descriptors: &fakeDescriptors{get: bareHandle{}}}
+	if reply := bare.Handle(ctx, ftruncate(8)); reply.Errno != errno.NotSupported {
+		t.Fatalf("无能力: %+v want ENOTSUP", reply)
+	}
+	// 坏描述符透传 EBADF。
+	badFD := Syscalls{Memory: space, Descriptors: &fakeDescriptors{seekErr: errno.BadHandle}}
+	if reply := badFD.Handle(ctx, ftruncate(8)); reply.Errno != errno.BadHandle {
+		t.Fatalf("坏描述符: %+v want EBADF", reply)
+	}
+}
+
+func TestFsyncRequiresSyncableHandle(t *testing.T) {
+	ctx := context.Background()
+	space := newFakeMemory()
+	handle := &statHandle{}
+	syscalls := Syscalls{Memory: space, Descriptors: &fakeDescriptors{get: handle}}
+
+	if reply := syscalls.Handle(ctx, call(SysFsync, 3, 0, 0)); reply.Errno != "" {
+		t.Fatalf("fsync: %+v", reply)
+	}
+	if reply := syscalls.Handle(ctx, call(SysFdatasync, 3, 0, 0)); reply.Errno != "" {
+		t.Fatalf("fdatasync: %+v", reply)
+	}
+	if len(handle.syncCalls) != 2 || handle.syncCalls[0] || handle.syncCalls[1] != true {
+		t.Fatalf("同步调用=%v", handle.syncCalls)
+	}
+	// 管道/eventfd 等不支持同步:EINVAL。
+	bare := Syscalls{Memory: space, Descriptors: &fakeDescriptors{get: bareHandle{}}}
+	if reply := bare.Handle(ctx, call(SysFsync, 3, 0, 0)); reply.Errno != errno.Invalid {
+		t.Fatalf("不可同步: %+v want EINVAL", reply)
+	}
+	// 已关闭句柄 EBADF。
+	closed := &statHandle{syncErr: errno.BadHandle}
+	if reply := (Syscalls{Memory: space, Descriptors: &fakeDescriptors{get: closed}}).Handle(ctx, call(SysFsync, 3, 0, 0)); reply.Errno != errno.BadHandle {
+		t.Fatalf("已关闭: %+v want EBADF", reply)
+	}
+}
+
+func TestUtimensatResolvesNowOmitAndValidates(t *testing.T) {
+	ctx := context.Background()
+	space := newFakeMemory()
+	files := &fakeFiles{
+		statInfo: statFileInfo{name: "f", sys: &vmfs.Metadata{
+			AtimeNanos: 1000, MtimeNanos: 2000,
+		}},
+	}
+	clock := &fakeClock{wall: 9000}
+	descriptors := &fakeDescriptors{get: &statHandle{}}
+	syscalls := Syscalls{Memory: space, Descriptors: descriptors, Files: files, Clock: clock}
+	atFDCWD := atCurrentWorkingDirectory
+	writeString(space, 0x1000, "f")
+
+	// 显式时间:两个 timespec 按纳秒写入路径目标。
+	var spec [32]byte
+	binary.LittleEndian.PutUint64(spec[0:], 11)
+	binary.LittleEndian.PutUint64(spec[8:], 22)
+	binary.LittleEndian.PutUint64(spec[16:], 33)
+	binary.LittleEndian.PutUint64(spec[24:], 44)
+	_ = space.Write(ctx, 0x2000, spec[:])
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysUtimensat, Args: [6]uint64{atFDCWD, 0x1000, 0x2000}}); reply.Errno != "" {
+		t.Fatalf("显式时间: %+v", reply)
+	}
+	if len(files.setTimeCalls) != 1 {
+		t.Fatalf("调用=%v", files.setTimeCalls)
+	}
+	got := files.setTimeCalls[0]
+	if got.path != "f" || got.atime != 11*nanosPerSecond+22 || got.mtime != 33*nanosPerSecond+44 || !got.follow {
+		t.Fatalf("时间参数=%+v", got)
+	}
+
+	// UTIME_NOW 取客体时钟,UTIME_OMIT 保留当前值。
+	var nowSpec [32]byte
+	binary.LittleEndian.PutUint64(nowSpec[8:], utimeNow)
+	binary.LittleEndian.PutUint64(nowSpec[24:], utimeOmit)
+	_ = space.Write(ctx, 0x2000, nowSpec[:])
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysUtimensat, Args: [6]uint64{atFDCWD, 0x1000, 0x2000}}); reply.Errno != "" {
+		t.Fatalf("NOW/OMIT: %+v", reply)
+	}
+	got = files.setTimeCalls[1]
+	if got.atime != 9000 || got.mtime != 2000 {
+		t.Fatalf("NOW/OMIT 解析=%+v", got)
+	}
+
+	// 指针为 NULL:双 NOW。
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysUtimensat, Args: [6]uint64{atFDCWD, 0x1000, 0}}); reply.Errno != "" {
+		t.Fatalf("NULL 时间: %+v", reply)
+	}
+	got = files.setTimeCalls[2]
+	if got.atime != 9000 || got.mtime != 9000 {
+		t.Fatalf("双 NOW=%+v", got)
+	}
+
+	// AT_SYMLINK_NOFOLLOW 透传 follow=false。
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysUtimensat, Args: [6]uint64{atFDCWD, 0x1000, 0, atSymlinkNoFollow}}); reply.Errno != "" {
+		t.Fatalf("NOFOLLOW: %+v", reply)
+	}
+	if files.setTimeCalls[3].follow {
+		t.Fatal("NOFOLLOW 未生效")
+	}
+
+	// 纳秒越界 EINVAL。
+	var badSpec [32]byte
+	binary.LittleEndian.PutUint64(badSpec[8:], nanosPerSecond)
+	_ = space.Write(ctx, 0x2000, badSpec[:])
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysUtimensat, Args: [6]uint64{atFDCWD, 0x1000, 0x2000}}); reply.Errno != errno.Invalid {
+		t.Fatalf("纳秒越界: %+v want EINVAL", reply)
+	}
+	// 未知标志 EINVAL。
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysUtimensat, Args: [6]uint64{atFDCWD, 0x1000, 0, 0x2000}}); reply.Errno != errno.Invalid {
+		t.Fatalf("未知标志: %+v want EINVAL", reply)
+	}
+	// futimens 形态:路径 NULL,作用于描述符句柄。
+	descriptors.get.(*statHandle).times = nil
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysUtimensat, Args: [6]uint64{4, 0, 0}}); reply.Errno != "" {
+		t.Fatalf("futimens: %+v", reply)
+	}
+	if len(descriptors.get.(*statHandle).times) != 1 || descriptors.get.(*statHandle).times[0].atime != 9000 {
+		t.Fatalf("futimens 参数=%v", descriptors.get.(*statHandle).times)
+	}
+	// AT_FDCWD + NULL 路径 ENOENT。
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysUtimensat, Args: [6]uint64{atFDCWD, 0, 0}}); reply.Errno != errno.NotFound {
+		t.Fatalf("AT_FDCWD+NULL: %+v want ENOENT", reply)
+	}
+	// 无时钟时 NOW/OMIT 明确 ENOSYS。
+	noClock := Syscalls{Memory: space, Descriptors: descriptors, Files: files}
+	if reply := noClock.Handle(ctx, Call{Syscall: SysUtimensat, Args: [6]uint64{atFDCWD, 0x1000, 0}}); reply.Errno != errno.NotImplemented {
+		t.Fatalf("无时钟: %+v want ENOSYS", reply)
 	}
 }

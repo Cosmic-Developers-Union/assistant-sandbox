@@ -1220,3 +1220,99 @@ func names(entries []fs.DirEntry) []string {
 	}
 	return out
 }
+
+func TestHandleTruncateSyncAndSetTimes(t *testing.T) {
+	f, clk := newFS(t)
+	ctx := context.Background()
+
+	file, err := f.Open(ctx, "/data", vmfs.Create|vmfs.ReadWrite, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write([]byte("0123456789")); err != nil {
+		t.Fatal(err)
+	}
+
+	// 扩张补零(空洞)。
+	if err := file.(interface{ Truncate(int64) error }).Truncate(16); err != nil {
+		t.Fatal(err)
+	}
+	buffer := make([]byte, 16)
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadFull(file, buffer); err != nil {
+		t.Fatal(err)
+	}
+	if string(buffer[:10]) != "0123456789" || string(buffer[10:]) != "\x00\x00\x00\x00\x00\x00" {
+		t.Fatalf("扩张后内容=%q", buffer)
+	}
+
+	// 收缩丢尾。
+	if err := file.(interface{ Truncate(int64) error }).Truncate(4); err != nil {
+		t.Fatal(err)
+	}
+	info, err := file.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() != 4 {
+		t.Fatalf("收缩后尺寸=%d", info.Size())
+	}
+
+	// 只读句柄与负长度 EINVAL;目录 EISDIR。
+	readOnly, err := f.Open(ctx, "/data", vmfs.ReadOnly, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := readOnly.(interface{ Truncate(int64) error }).Truncate(2); !errors.Is(err, errno.Invalid) {
+		t.Fatalf("只读句柄=%v want EINVAL", err)
+	}
+	if err := file.(interface{ Truncate(int64) error }).Truncate(-1); !errors.Is(err, errno.Invalid) {
+		t.Fatalf("负长度=%v want EINVAL", err)
+	}
+	if err := f.Mkdir(ctx, "/d", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := f.Open(ctx, "/d", vmfs.ReadOnly, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := dir.(interface{ Truncate(int64) error }).Truncate(2); !errors.Is(err, errno.IsDirectory) {
+		t.Fatalf("目录=%v want EISDIR", err)
+	}
+
+	// memfs 同步是真实空操作(内存介质),数据可继续读取。
+	if err := file.(interface{ Sync(bool) error }).Sync(true); err != nil {
+		t.Fatal(err)
+	}
+
+	// SetTimes 更新纳秒时间并反映到文件状态。
+	_ = clk.Advance(5_000_000_000)
+	if err := file.(interface{ SetTimes(int64, int64) error }).SetTimes(111, 222); err != nil {
+		t.Fatal(err)
+	}
+	info, err = file.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.ModTime().UnixNano() != 222 {
+		t.Fatalf("mtime=%d want 222", info.ModTime().UnixNano())
+	}
+	if atime, err := f.AccessTime(ctx, "/data"); err != nil || atime != 111 {
+		t.Fatalf("atime=%d err=%v", atime, err)
+	}
+
+	// 预算:扩张超过单文件上限报 ENOSPC。
+	capped, err := New(clk, Options{MaxFileBytes: 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	small, err := capped.Open(ctx, "/cap", vmfs.Create|vmfs.ReadWrite, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := small.(interface{ Truncate(int64) error }).Truncate(9); !errors.Is(err, errno.NoSpace) {
+		t.Fatalf("单文件预算=%v want ENOSPC", err)
+	}
+}

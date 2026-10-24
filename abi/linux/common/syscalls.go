@@ -29,8 +29,6 @@ type Descriptors interface {
 
 	Seek(ctx context.Context, descriptor uint64, offset int64, whence SeekWhence) (int64, error)
 
-	Truncate(ctx context.Context, descriptor uint64, size int64) error
-
 	Get(ctx context.Context, descriptor uint64) (any, error)
 
 	Fcntl(ctx context.Context, descriptor uint64, cmd uint64, arg uint64) (uint64, error)
@@ -106,6 +104,10 @@ type Files interface {
 	Rename(ctx context.Context, oldpath, newpath string) error
 
 	ReadDir(ctx context.Context, path string) ([]stdfs.DirEntry, error)
+
+	// SetTimes 以纳秒更新访问/修改时间;follow 决定是否解析路径
+	// 末端的符号链接(utimensat AT_SYMLINK_NOFOLLOW)。
+	SetTimes(ctx context.Context, path string, atime, mtime int64, follow bool) error
 }
 
 const PathLimit = 4096
@@ -257,6 +259,8 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 		return s.renameat(ctx, call)
 	case SysFtruncate:
 		return s.ftruncate(ctx, call)
+	case SysUtimensat:
+		return s.utimensat(ctx, call)
 	case SysFcntl:
 		return s.fcntl(ctx, call)
 	case SysPipe:
@@ -281,8 +285,10 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 		return s.readlinkat(ctx, call)
 	case SysUmask:
 		return Reply{Value: 0}
-	case SysSync, SysFsync, SysFdatasync:
-		return Reply{Value: 0}
+	case SysFsync:
+		return s.fsync(ctx, call, false)
+	case SysFdatasync:
+		return s.fsync(ctx, call, true)
 	case SysSetuid, SysSetgid, SysSetreuid, SysSetregid, SysSetresuid, SysSetresgid, SysSetfsuid, SysSetfsgid:
 		return Reply{Value: 0}
 	default:
@@ -1466,7 +1472,19 @@ func (s Syscalls) ftruncate(ctx context.Context, call Call) Reply {
 	if s.Descriptors == nil {
 		return Reply{Errno: errno.NotImplemented}
 	}
-	if err := s.Descriptors.Truncate(ctx, call.Args[0], int64(call.Args[1])); err != nil {
+	size := int64(call.Args[1])
+	if size < 0 {
+		return Reply{Errno: errno.Invalid}
+	}
+	handle, err := s.Descriptors.Get(ctx, call.Args[0])
+	if err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	target, ok := handle.(truncater)
+	if !ok {
+		return Reply{Errno: errno.NotSupported}
+	}
+	if err := target.Truncate(size); err != nil {
 		return Reply{Errno: errnoOf(err)}
 	}
 	return Reply{}
@@ -1869,6 +1887,208 @@ func (s Syscalls) statx(ctx context.Context, call Call) Reply {
 	encoded := encodeStatx(statInput(target), uint32(call.Args[3]))
 	if err := s.Memory.Write(ctx, call.Args[4], encoded[:]); err != nil {
 		return Reply{Errno: errno.Fault}
+	}
+	return Reply{}
+}
+
+// asm-generic 的 utimensat 纳秒特殊值。
+const (
+	utimeNow  = 0x3fffffff
+	utimeOmit = 0x3ffffffe
+)
+
+// timeSetter 是文件句柄的可选能力:以纳秒更新访问/修改时间。
+type timeSetter interface {
+	SetTimes(atime, mtime int64) error
+}
+
+// truncater 是文件句柄的可选能力:按字节长度截断。
+type truncater interface {
+	Truncate(size int64) error
+}
+
+// syncer 是文件句柄的可选能力:数据冲入稳定存储。
+type syncer interface {
+	Sync(fdatasync bool) error
+}
+
+// utimensat(dfd, pathname, times[2], flags) 支持 UTIME_NOW/UTIME_OMIT、
+// AT_SYMLINK_NOFOLLOW 与 pathname 为 NULL 的 futimens 形态(对 dfd 生效)。
+func (s Syscalls) utimensat(ctx context.Context, call Call) Reply {
+	if s.Memory == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	flags := call.Args[3]
+	if flags&^uint64(atSymlinkNoFollow) != 0 {
+		return Reply{Errno: errno.Invalid}
+	}
+	atime, mtime, code := s.readTimespecPair(ctx, call.Args[2])
+	if code != "" {
+		return Reply{Errno: code}
+	}
+	atime, mtime, code = s.resolveTimestamps(ctx, call, atime, mtime)
+	if code != "" {
+		return Reply{Errno: code}
+	}
+	if call.Args[1] == 0 {
+		// futimens 形态:路径为 NULL,直接作用于 dirfd 指向的文件。
+		if call.Args[0] == atCurrentWorkingDirectory {
+			return Reply{Errno: errno.NotFound}
+		}
+		if s.Descriptors == nil {
+			return Reply{Errno: errno.NotImplemented}
+		}
+		handle, err := s.Descriptors.Get(ctx, call.Args[0])
+		if err != nil {
+			return Reply{Errno: errnoOf(err)}
+		}
+		setter, ok := handle.(timeSetter)
+		if !ok {
+			return Reply{Errno: errno.NotSupported}
+		}
+		if err := setter.SetTimes(atime, mtime); err != nil {
+			return Reply{Errno: errnoOf(err)}
+		}
+		return Reply{}
+	}
+	if s.Files == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	if call.Args[0] != atCurrentWorkingDirectory {
+		// 目录句柄相对解析由 I02 交付,当前明确 ENOTSUP。
+		return Reply{Errno: errno.NotSupported}
+	}
+	pathname, code := s.readPath(ctx, call.Args[1])
+	if code != "" {
+		return Reply{Errno: code}
+	}
+	if err := s.Files.SetTimes(ctx, pathname, atime, mtime, flags&atSymlinkNoFollow == 0); err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	return Reply{}
+}
+
+// readTimespecPair 读取 utimensat 的 [atime, mtime] 时钟对:
+// 指针为 NULL 表示双 NOW;每项纳秒只接受合法值与 NOW/OMIT 特殊值。
+func (s Syscalls) readTimespecPair(ctx context.Context, address uint64) (atime, mtime int64, code errno.Code) {
+	if address == 0 {
+		return utimeNow, utimeNow, ""
+	}
+	for _, offset := range []uint64{0, timespecSize} {
+		var raw [timespecSize]byte
+		if err := s.Memory.Read(ctx, address+offset, raw[:]); err != nil {
+			return 0, 0, errno.Fault
+		}
+		nanoseconds := binary.LittleEndian.Uint64(raw[8:])
+		switch nanoseconds {
+		case utimeNow:
+			if offset == 0 {
+				atime = utimeNow
+			} else {
+				mtime = utimeNow
+			}
+		case utimeOmit:
+			if offset == 0 {
+				atime = utimeOmit
+			} else {
+				mtime = utimeOmit
+			}
+		default:
+			if nanoseconds >= nanosPerSecond {
+				return 0, 0, errno.Invalid
+			}
+			seconds := int64(binary.LittleEndian.Uint64(raw[0:]))
+			if offset == 0 {
+				atime = seconds*nanosPerSecond + int64(nanoseconds)
+			} else {
+				mtime = seconds*nanosPerSecond + int64(nanoseconds)
+			}
+		}
+	}
+	return atime, mtime, ""
+}
+
+// resolveTimestamps 把 NOW/OMIT 标记解析为具体纳秒值:
+// NOW 取客体时钟,OMIT 取目标的当前时间。
+func (s Syscalls) resolveTimestamps(ctx context.Context, call Call, atime, mtime int64) (int64, int64, errno.Code) {
+	needCurrent := atime == utimeOmit || mtime == utimeOmit
+	if atime == utimeNow || mtime == utimeNow || needCurrent {
+		if s.Clock == nil {
+			return 0, 0, errno.NotImplemented
+		}
+	}
+	if atime == utimeNow || mtime == utimeNow {
+		wall, err := s.Clock.Wall(ctx)
+		if err != nil {
+			return 0, 0, errnoOf(err)
+		}
+		if atime == utimeNow {
+			atime = wall
+		}
+		if mtime == utimeNow {
+			mtime = wall
+		}
+	}
+	if needCurrent {
+		var info stdfs.FileInfo
+		var err error
+		switch {
+		case call.Args[1] == 0:
+			if s.Descriptors == nil {
+				return 0, 0, errno.NotImplemented
+			}
+			var handle any
+			handle, err = s.Descriptors.Get(ctx, call.Args[0])
+			if err == nil {
+				stater, ok := handle.(statter)
+				if !ok {
+					return 0, 0, errno.NotSupported
+				}
+				info, err = stater.Stat()
+			}
+		case call.Args[1] != 0 && call.Args[3]&atSymlinkNoFollow != 0:
+			pathname, code := s.readPath(ctx, call.Args[1])
+			if code != "" {
+				return 0, 0, code
+			}
+			info, err = s.Files.Lstat(ctx, pathname)
+		default:
+			pathname, code := s.readPath(ctx, call.Args[1])
+			if code != "" {
+				return 0, 0, code
+			}
+			info, err = s.Files.Stat(ctx, pathname)
+		}
+		if err != nil {
+			return 0, 0, errnoOf(err)
+		}
+		decoded := statInput(info)
+		if atime == utimeOmit {
+			atime = decoded.AtimeSec*nanosPerSecond + decoded.AtimeNsec
+		}
+		if mtime == utimeOmit {
+			mtime = decoded.MtimeSec*nanosPerSecond + decoded.MtimeNsec
+		}
+	}
+	return atime, mtime, ""
+}
+
+// fsync/fdatasync 经句柄的 Sync 能力冲数据;不支持同步的描述符
+// (管道、eventfd 等)报 EINVAL,与 Linux 一致。
+func (s Syscalls) fsync(ctx context.Context, call Call, fdatasync bool) Reply {
+	if s.Descriptors == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	handle, err := s.Descriptors.Get(ctx, call.Args[0])
+	if err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	target, ok := handle.(syncer)
+	if !ok {
+		return Reply{Errno: errno.Invalid}
+	}
+	if err := target.Sync(fdatasync); err != nil {
+		return Reply{Errno: errnoOf(err)}
 	}
 	return Reply{}
 }

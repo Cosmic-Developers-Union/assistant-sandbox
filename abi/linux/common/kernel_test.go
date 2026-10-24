@@ -8,6 +8,7 @@ import (
 	stdfs "io/fs"
 	"math"
 	"testing"
+	"time"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/filesystem/memfs"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/clock"
@@ -401,5 +402,94 @@ func TestGetdents64WalksDirectoryHandleWithCursor(t *testing.T) {
 	}
 	if reply := syscalls.Handle(ctx, Call{Syscall: SysGetdents64, Args: [6]uint64{filefd, 0x2000, 256}}); reply.Errno != errno.NotDirectory {
 		t.Fatalf("非目录句柄: %+v want ENOTDIR", reply)
+	}
+}
+
+func TestUtimensatAndFtruncateAgainstRealFileSystem(t *testing.T) {
+	ctx := context.Background()
+	system, err := memfs.New(&clock.Virtual{}, memfs.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const pid = 31
+	table := fd.New()
+	table.Attach(pid, fd.Streams{})
+	files := ProcessFiles{System: system, Store: table, PID: pid, Dir: "/"}
+	descriptors := ProcessDescriptors{Table: table, PID: pid}
+	clock := &fakeClock{wall: 7_500_000_000}
+	syscalls := Syscalls{Memory: newFakeMemory(), Descriptors: descriptors, Files: files, Clock: clock}
+
+	filefd, err := files.Open(ctx, OpenRequest{Path: "/note", Flags: OpenFlags{Mode: OpenReadWrite, Create: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := descriptors.Write(ctx, filefd, []byte("hello world")); err != nil {
+		t.Fatal(err)
+	}
+
+	// ftruncate 扩张与收缩。
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysFtruncate, Args: [6]uint64{filefd, 20}}); reply.Errno != "" {
+		t.Fatalf("扩张: %+v", reply)
+	}
+	info, err := descriptors.Get(ctx, filefd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stat, err := info.(interface {
+		Stat() (stdfs.FileInfo, error)
+	}).Stat(); err != nil || stat.Size() != 20 {
+		t.Fatalf("扩张后尺寸=%d err=%v", stat.Size(), err)
+	}
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysFtruncate, Args: [6]uint64{filefd, 5}}); reply.Errno != "" {
+		t.Fatalf("收缩: %+v", reply)
+	}
+	if _, err := descriptors.Seek(ctx, filefd, 0, SeekSet); err != nil {
+		t.Fatal(err)
+	}
+	buffer := make([]byte, 8)
+	loaded, err := descriptors.Read(ctx, filefd, buffer)
+	if err != nil || loaded != 5 || string(buffer[:5]) != "hello" {
+		t.Fatalf("读=%d err=%v", loaded, err)
+	}
+
+	// fsync/fdatasync 经句柄能力成功。
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysFsync, Args: [6]uint64{filefd}}); reply.Errno != "" {
+		t.Fatalf("fsync: %+v", reply)
+	}
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysFdatasync, Args: [6]uint64{filefd}}); reply.Errno != "" {
+		t.Fatalf("fdatasync: %+v", reply)
+	}
+
+	// utimensat 路径形态:UTIME_NOW + UTIME_OMIT。
+	var spec [32]byte
+	binary.LittleEndian.PutUint64(spec[8:], utimeNow)
+	binary.LittleEndian.PutUint64(spec[16:], 0)  // mtime 秒
+	binary.LittleEndian.PutUint64(spec[24:], 88) // mtime 纳秒
+	if err := syscalls.Memory.Write(ctx, 0x2000, spec[:]); err != nil {
+		t.Fatal(err)
+	}
+	writeString(syscalls.Memory.(*fakeMemory), 0x1000, "/note")
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysUtimensat, Args: [6]uint64{atCurrentWorkingDirectory, 0x1000, 0x2000}}); reply.Errno != "" {
+		t.Fatalf("utimensat: %+v", reply)
+	}
+	if atime, err := system.AccessTime(ctx, "/note"); err != nil || atime != 7_500_000_000 {
+		t.Fatalf("atime=%d err=%v", atime, err)
+	}
+	if stat, err := system.Stat(ctx, "/note"); err != nil || stat.ModTime().UnixNano() != 88 {
+		t.Fatalf("mtime=%v err=%v", stat.ModTime().UnixNano(), err)
+	}
+
+	// futimens 形态:NULL 路径作用于描述符。
+	var fdSpec [32]byte
+	binary.LittleEndian.PutUint64(fdSpec[0:], 5)  // atime 秒
+	binary.LittleEndian.PutUint64(fdSpec[24:], 7) // mtime 纳秒
+	if err := syscalls.Memory.Write(ctx, 0x2100, fdSpec[:]); err != nil {
+		t.Fatal(err)
+	}
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysUtimensat, Args: [6]uint64{filefd, 0, 0x2100}}); reply.Errno != "" {
+		t.Fatalf("futimens: %+v", reply)
+	}
+	if atime, err := system.AccessTime(ctx, "/note"); err != nil || atime != 5*int64(time.Second) {
+		t.Fatalf("fd atime=%d err=%v", atime, err)
 	}
 }

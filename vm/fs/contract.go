@@ -54,6 +54,12 @@ type Timestamps interface {
 	SetTimes(context.Context, string, int64, int64) error
 }
 
+// LinkTimestamps 是 utimensat 所需的时间更新能力:
+// follow=false 时不解析路径末端的符号链接(AT_SYMLINK_NOFOLLOW)。
+type LinkTimestamps interface {
+	SetTimesFollow(context.Context, string, int64, int64, bool) error
+}
+
 type AccessTimes interface {
 	AccessTime(context.Context, string) (int64, error)
 }
