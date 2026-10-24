@@ -6,7 +6,21 @@ PREFIX ?= $(HOME)/.local
 # 客体工具链 = 同一 Go 工具链(GOOS=wasip1 GOARCH=wasm)+ gzip,无外部交叉编译器。
 GOLANGCI_LINT_VERSION := v2.14.0
 
-.PHONY: guest build install clean lint test docker-test toolchain
+.PHONY: guest build install clean lint test docker-test toolchain isolated-check offline-check
+
+# B01:全新克隆仅依赖模块缓存即可构建(无 replace/无宿主绝对路径,
+# 由 internal/metadata TestModuleResolvesWithoutLocalReplacements 锁定)。
+isolated-check:
+	@tmp=$$(mktemp -d); git clone -q "$$PWD" "$$tmp/iso"; \
+	( cd "$$tmp/iso" && go build ./... && GOPROXY=off go build ./... ) \
+		&& echo "isolated-check: 全新检出构建与离线解析通过" || { rm -rf "$$tmp"; exit 1; }; \
+	rm -rf "$$tmp"
+
+# B05:依赖与镜像预置后关闭下载通道,启动 VM、执行程序并关闭。
+offline-check: guest
+	GOPROXY=off GOFLAGS=-mod=mod go run ./cmd/assistant-sandbox \
+		--module assistant-bash.wasm.gz -c 'printf sandbox-ok' | grep -q sandbox-ok \
+		&& echo "offline-check: 离线启动/执行/关闭通过"
 
 toolchain:
 	@expected=$$(sed -n 's/^go \([0-9.]*\)$$/\1/p' go.mod); actual=$$(go version | sed 's/^go version go//; s/ .*//'); if [ "$$actual" != "$$expected" ]; then echo "Go 版本与 go.mod 声明不一致: 本机 $$actual, 声明 $$expected" >&2; exit 1; fi; echo "Go $$actual(声明 $$expected)"; echo "golangci-lint $(GOLANGCI_LINT_VERSION)(CI action 参数)"; echo "客体工具链: 同一 Go 工具链 GOOS=wasip1 + gzip"
