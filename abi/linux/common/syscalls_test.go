@@ -13,6 +13,7 @@ import (
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fd"
+	vmfs "github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fs"
 )
 
 type fakeMemory struct {
@@ -375,6 +376,9 @@ type fakeFiles struct {
 	entries     []stdfs.DirEntry
 	removeCalls []string
 	statInfo    stdfs.FileInfo
+	statPaths   []string
+	lstatInfo   stdfs.FileInfo
+	lstatErr    error
 }
 
 type fakeDirEntry struct {
@@ -433,7 +437,15 @@ func (f *fakeFiles) Stat(_ context.Context, path string) (stdfs.FileInfo, error)
 	if f.err != nil {
 		return nil, f.err
 	}
+	f.statPaths = append(f.statPaths, path)
 	return f.statInfo, nil
+}
+
+func (f *fakeFiles) Lstat(_ context.Context, path string) (stdfs.FileInfo, error) {
+	if f.lstatErr != nil {
+		return nil, f.lstatErr
+	}
+	return f.lstatInfo, nil
 }
 
 func (f *fakeFiles) Open(_ context.Context, request OpenRequest) (uint64, error) {
@@ -1704,5 +1716,325 @@ func TestReadvWritevScatterGather(t *testing.T) {
 	}
 	if reply := (Syscalls{}).Handle(ctx, Call{Syscall: SysReadv}); reply.Errno != errno.NotImplemented {
 		t.Fatalf("未装配应报 ENOSYS: %v", reply.Errno)
+	}
+}
+
+// statHandle 是暴露 Stat 的描述符句柄替身,模拟文件/目录句柄。
+type statHandle struct {
+	info    stdfs.FileInfo
+	statErr error
+}
+
+func (h *statHandle) Stat() (stdfs.FileInfo, error) { return h.info, h.statErr }
+
+// statFileInfo 是携带扩展元数据的 FileInfo 替身。
+type statFileInfo struct {
+	name    string
+	mode    stdfs.FileMode
+	size    int64
+	modTime time.Time
+	sys     any
+}
+
+func (i statFileInfo) Name() string         { return i.name }
+func (i statFileInfo) Size() int64          { return i.size }
+func (i statFileInfo) Mode() stdfs.FileMode { return i.mode }
+func (i statFileInfo) ModTime() time.Time   { return i.modTime }
+func (i statFileInfo) IsDir() bool          { return i.mode&stdfs.ModeDir != 0 }
+func (i statFileInfo) Sys() any             { return i.sys }
+
+type decodedStat struct {
+	dev, ino, rdev        uint64
+	mode, nlink, uid, gid uint32
+	size, blksize, blocks int64
+	atime, mtime, ctime   int64
+	atimeNsec, mtimeNsec  int64
+	ctimeNsec             int64
+}
+
+func decodeStat(memory *fakeMemory, address uint64) decodedStat {
+	var out decodedStat
+	word := func(offset uint64) uint64 {
+		var raw [8]byte
+		for index := range raw {
+			raw[index] = memory.data[address+offset+uint64(index)]
+		}
+		return binary.LittleEndian.Uint64(raw[:])
+	}
+	half := func(offset uint64) uint32 { return uint32(word(offset)) }
+	out.dev = word(statDev)
+	out.ino = word(statIno)
+	out.mode = half(statMode)
+	out.nlink = half(statNLink)
+	out.uid = half(statUID)
+	out.gid = half(statGID)
+	out.rdev = word(statRDev)
+	out.size = int64(word(statSize))
+	out.blksize = int64(half(statBlksize))
+	out.blocks = int64(word(statBlocks))
+	out.atime = int64(word(statAtime))
+	out.atimeNsec = int64(word(statAtimeNsec))
+	out.mtime = int64(word(statMtime))
+	out.mtimeNsec = int64(word(statMtimeNsec))
+	out.ctime = int64(word(statCtime))
+	out.ctimeNsec = int64(word(statCtimeNsec))
+	return out
+}
+
+func TestFstatEncodesDescriptorMetadata(t *testing.T) {
+	space := newFakeMemory()
+	metadata := &vmfs.Metadata{
+		Inode: 4242, NLink: 2, UID: 1000, GID: 100,
+		AtimeNanos: 1700000000*int64(time.Second) + 123,
+		MtimeNanos: 1600000000*int64(time.Second) + 456,
+		CtimeNanos: 1600000000*int64(time.Second) + 789,
+	}
+	info := statFileInfo{
+		name: "data.bin", mode: 0o644, size: 1536,
+		sys: metadata,
+	}
+	descriptors := &fakeDescriptors{get: &statHandle{info: info}}
+	syscalls := Syscalls{Memory: space, Descriptors: descriptors}
+	reply := syscalls.Handle(context.Background(), call(SysFstat, 5, 0x3000, 0))
+	if reply.Errno != "" || reply.Value != 0 {
+		t.Fatalf("reply=%+v", reply)
+	}
+	stat := decodeStat(space, 0x3000)
+	if stat.ino != 4242 || stat.nlink != 2 || stat.uid != 1000 || stat.gid != 100 {
+		t.Fatalf("身份字段=%+v", stat)
+	}
+	if stat.mode != 0o100644 {
+		t.Fatalf("mode=%o want 0100644", stat.mode)
+	}
+	if stat.size != 1536 || stat.blocks != 3 || stat.blksize != 4096 {
+		t.Fatalf("尺寸字段=%+v", stat)
+	}
+	if stat.dev != 0 || stat.rdev != 0 {
+		t.Fatalf("设备号字段=%+v", stat)
+	}
+	if stat.atime != 1700000000 || stat.atimeNsec != 123 {
+		t.Fatalf("atime=%d.%d", stat.atime, stat.atimeNsec)
+	}
+	if stat.mtime != 1600000000 || stat.mtimeNsec != 456 {
+		t.Fatalf("mtime=%d.%d", stat.mtime, stat.mtimeNsec)
+	}
+	if stat.ctime != 1600000000 || stat.ctimeNsec != 789 {
+		t.Fatalf("ctime=%d.%d", stat.ctime, stat.ctimeNsec)
+	}
+}
+
+func TestFstatRejectsBadHandlesAndFaults(t *testing.T) {
+	ctx := context.Background()
+	// 无 Stat 能力的句柄明确 ENOTSUP。
+	syscalls := Syscalls{Memory: newFakeMemory(), Descriptors: &fakeDescriptors{get: 42}}
+	if reply := syscalls.Handle(ctx, call(SysFstat, 3, 0x3000, 0)); reply.Errno != errno.NotSupported {
+		t.Fatalf("非文件句柄: reply=%+v want ENOTSUP", reply)
+	}
+	// 坏描述符报 EFAULT 之前的原始 errno(EBADF)。
+	badFD := Syscalls{Memory: newFakeMemory(), Descriptors: &fakeDescriptors{seekErr: errno.BadHandle}}
+	if reply := badFD.Handle(ctx, call(SysFstat, 99, 0x3000, 0)); reply.Errno != errno.BadHandle {
+		t.Fatalf("坏描述符: reply=%+v want EBADF", reply)
+	}
+	// 句柄 Stat 失败透传错误。
+	statter := &fakeDescriptors{get: &statHandle{statErr: errno.Permission}}
+	perm := Syscalls{Memory: newFakeMemory(), Descriptors: statter}
+	if reply := perm.Handle(ctx, call(SysFstat, 3, 0x3000, 0)); reply.Errno != errno.Permission {
+		t.Fatalf("句柄故障: reply=%+v want EACCES", reply)
+	}
+	// 客体缓冲区非法报 EFAULT。
+	broken := newFakeMemory()
+	broken.writeErr = errno.Range
+	faulted := Syscalls{Memory: broken, Descriptors: &fakeDescriptors{get: &statHandle{info: statFileInfo{name: "f"}}}}
+	if reply := faulted.Handle(ctx, call(SysFstat, 3, 0x3000, 0)); reply.Errno != errno.Fault {
+		t.Fatalf("缓冲区非法: reply=%+v want EFAULT", reply)
+	}
+	// 未装配端口报 ENOSYS。
+	if reply := (Syscalls{}).Handle(ctx, call(SysFstat, 3, 0x3000, 0)); reply.Errno != errno.NotImplemented {
+		t.Fatalf("未装配: reply=%+v want ENOSYS", reply)
+	}
+}
+
+func TestNewfstatatFollowsAndNoFollow(t *testing.T) {
+	ctx := context.Background()
+	space := newFakeMemory()
+	files := &fakeFiles{
+		statInfo:  statFileInfo{name: "target", mode: 0o600, size: 7, modTime: time.Unix(1600000000, 0)},
+		lstatInfo: statFileInfo{name: "link", mode: stdfs.ModeSymlink | 0o777, size: 6, modTime: time.Unix(1700000000, 0)},
+	}
+	syscalls := Syscalls{Memory: space, Descriptors: &fakeDescriptors{}, Files: files}
+	atFDCWD := atCurrentWorkingDirectory
+
+	// 缺省跟随符号链接,返回目标状态。
+	writeString(space, 0x1000, "link")
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysNewfstatat, Args: [6]uint64{atFDCWD, 0x1000, 0x3000}}); reply.Errno != "" {
+		t.Fatalf("跟随: reply=%+v", reply)
+	}
+	stat := decodeStat(space, 0x3000)
+	if stat.mode != 0o100600 || stat.size != 7 || stat.mtime != 1600000000 {
+		t.Fatalf("目标状态=%+v", stat)
+	}
+	if len(files.statPaths) != 1 || files.statPaths[0] != "link" {
+		t.Fatalf("路径解析=%v", files.statPaths)
+	}
+
+	// AT_SYMLINK_NOFOLLOW 返回链接本身。
+	stat = func() decodedStat {
+		if reply := syscalls.Handle(ctx, Call{Syscall: SysNewfstatat, Args: [6]uint64{atFDCWD, 0x1000, 0x3000, atSymlinkNoFollow}}); reply.Errno != "" {
+			t.Fatalf("lstat: reply=%+v", reply)
+		}
+		return decodeStat(space, 0x3000)
+	}()
+	if stat.mode != 0o120777 || stat.size != 6 || stat.mtime != 1700000000 {
+		t.Fatalf("链接状态=%+v", stat)
+	}
+}
+
+func TestNewfstatatValidatesFlagsAndDirectoryHandles(t *testing.T) {
+	ctx := context.Background()
+	space := newFakeMemory()
+	files := &fakeFiles{statInfo: statFileInfo{name: "x", mode: 0o644}}
+	syscalls := Syscalls{Memory: space, Descriptors: &fakeDescriptors{}, Files: files}
+	writeString(space, 0x1000, "x")
+	atFDCWD := atCurrentWorkingDirectory
+
+	// 未知标志位 EINVAL。
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysNewfstatat, Args: [6]uint64{atFDCWD, 0x1000, 0x3000, 0x4000}}); reply.Errno != errno.Invalid {
+		t.Fatalf("未知标志: reply=%+v want EINVAL", reply)
+	}
+	// 非空路径 + 非 AT_FDCWD 明确 ENOTSUP。
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysNewfstatat, Args: [6]uint64{4, 0x1000, 0x3000}}); reply.Errno != errno.NotSupported {
+		t.Fatalf("目录句柄: reply=%+v want ENOTSUP", reply)
+	}
+	// 路径不存在透传 ENOENT。
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysNewfstatat, Args: [6]uint64{atFDCWD, 0x1800, 0x3000}}); reply.Errno != errno.NotFound {
+		t.Fatalf("缺失路径: reply=%+v want ENOENT", reply)
+	}
+	// 客体缓冲区非法 EFAULT。
+	broken := newFakeMemory()
+	broken.writeErr = errno.Range
+	writeString(broken, 0x1000, "x")
+	faulted := Syscalls{Memory: broken, Descriptors: &fakeDescriptors{}, Files: files}
+	if reply := faulted.Handle(ctx, Call{Syscall: SysNewfstatat, Args: [6]uint64{atFDCWD, 0x1000, 0x3000}}); reply.Errno != errno.Fault {
+		t.Fatalf("缓冲区非法: reply=%+v want EFAULT", reply)
+	}
+	// 未装配端口报 ENOSYS。
+	if reply := (Syscalls{}).Handle(ctx, Call{Syscall: SysNewfstatat}); reply.Errno != errno.NotImplemented {
+		t.Fatalf("未装配: reply=%+v want ENOSYS", reply)
+	}
+}
+
+func TestNewfstatatEmptyPathOperatesOnDescriptor(t *testing.T) {
+	ctx := context.Background()
+	atFDCWD := atCurrentWorkingDirectory
+	space := newFakeMemory()
+	writeString(space, 0x1000, "")
+
+	metadata := &vmfs.Metadata{Inode: 7, NLink: 1}
+	info := statFileInfo{name: "dir", mode: stdfs.ModeDir | 0o755, sys: metadata}
+	descriptors := &fakeDescriptors{get: &statHandle{info: info}}
+	syscalls := Syscalls{Memory: space, Descriptors: descriptors, Files: &fakeFiles{}}
+
+	// AT_EMPTY_PATH + 真实描述符等价 fstat。
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysNewfstatat, Args: [6]uint64{4, 0x1000, 0x3000, atEmptyPath}}); reply.Errno != "" {
+		t.Fatalf("AT_EMPTY_PATH: reply=%+v", reply)
+	}
+	stat := decodeStat(space, 0x3000)
+	if stat.ino != 7 || stat.mode != 0o040755 {
+		t.Fatalf("描述符状态=%+v", stat)
+	}
+	// AT_FDCWD 与空路径即使带 AT_EMPTY_PATH 也报 ENOENT。
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysNewfstatat, Args: [6]uint64{atFDCWD, 0x1000, 0x3000, atEmptyPath}}); reply.Errno != errno.NotFound {
+		t.Fatalf("AT_FDCWD 空路径: reply=%+v want ENOENT", reply)
+	}
+	// 空路径且未带 AT_EMPTY_PATH 报 ENOENT。
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysNewfstatat, Args: [6]uint64{4, 0x1000, 0x3000}}); reply.Errno != errno.NotFound {
+		t.Fatalf("空路径: reply=%+v want ENOENT", reply)
+	}
+}
+
+func decodeStatx(memory *fakeMemory, address uint64) map[string]uint64 {
+	word := func(offset uint64) uint64 {
+		var raw [8]byte
+		for index := range raw {
+			raw[index] = memory.data[address+offset+uint64(index)]
+		}
+		return binary.LittleEndian.Uint64(raw[:])
+	}
+	halfWord := func(offset uint64) uint64 {
+		var raw [4]byte
+		for index := range raw {
+			raw[index] = memory.data[address+offset+uint64(index)]
+		}
+		return uint64(binary.LittleEndian.Uint32(raw[:]))
+	}
+	return map[string]uint64{
+		"mask":      halfWord(0x00),
+		"blksize":   halfWord(0x04),
+		"nlink":     halfWord(0x10),
+		"uid":       halfWord(0x14),
+		"gid":       halfWord(0x18),
+		"mode":      halfWord(0x1c),
+		"ino":       word(0x20),
+		"size":      word(0x28),
+		"blocks":    word(0x30),
+		"attrMask":  word(0x38),
+		"atimeSec":  word(0x40),
+		"btimeSec":  word(0x50),
+		"ctimeSec":  word(0x60),
+		"mtimeSec":  word(0x70),
+		"mtimeNsec": word(0x78),
+	}
+}
+
+func TestStatxEncodesBasicStatsWithMask(t *testing.T) {
+	ctx := context.Background()
+	space := newFakeMemory()
+	metadata := &vmfs.Metadata{
+		Inode: 77, NLink: 3, UID: 1, GID: 2,
+		MtimeNanos: 1600000000*int64(time.Second) + 42,
+	}
+	info := statFileInfo{name: "f", mode: stdfs.ModeDir | 0o755, size: 12345, sys: metadata}
+	files := &fakeFiles{statInfo: info}
+	syscalls := Syscalls{Memory: space, Descriptors: &fakeDescriptors{}, Files: files}
+	writeString(space, 0x1000, "f")
+
+	// statx(dfd, path, flags, mask, buffer)。
+	const basicStats = 0x7ff
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysStatx, Args: [6]uint64{atCurrentWorkingDirectory, 0x1000, 0, basicStats, 0x3000}}); reply.Errno != "" {
+		t.Fatalf("reply=%+v", reply)
+	}
+	fields := decodeStatx(space, 0x3000)
+	if fields["mask"] != basicStats {
+		t.Fatalf("mask=%#x want %#x", fields["mask"], basicStats)
+	}
+	if fields["mode"] != 0o040755 || fields["ino"] != 77 || fields["nlink"] != 3 ||
+		fields["uid"] != 1 || fields["gid"] != 2 || fields["size"] != 12345 {
+		t.Fatalf("字段=%+v", fields)
+	}
+	if fields["mtimeSec"] != 1600000000 || fields["mtimeNsec"] != 42 {
+		t.Fatalf("mtime=%+v", fields)
+	}
+	// btime 未支持,保持零。
+	if fields["btimeSec"] != 0 {
+		t.Fatalf("btime=%+v", fields)
+	}
+	// 请求掩码之外的位不进入返回掩码。
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysStatx, Args: [6]uint64{atCurrentWorkingDirectory, 0x1000, 0, 0x7ff | 0x8000, 0x3000}}); reply.Errno != "" {
+		t.Fatalf("带未知位: reply=%+v", reply)
+	}
+	if got := decodeStatx(space, 0x3000)["mask"]; got != basicStats {
+		t.Fatalf("未知位不应扩展掩码: %#x", got)
+	}
+	// 未知标志 EINVAL。
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysStatx, Args: [6]uint64{atCurrentWorkingDirectory, 0x1000, 0x20000, basicStats, 0x3000}}); reply.Errno != errno.Invalid {
+		t.Fatalf("未知标志: reply=%+v want EINVAL", reply)
+	}
+	// 缓冲区非法 EFAULT。
+	broken := newFakeMemory()
+	broken.writeErr = errno.Range
+	writeString(broken, 0x1000, "f")
+	faulted := Syscalls{Memory: broken, Descriptors: &fakeDescriptors{}, Files: files}
+	if reply := faulted.Handle(ctx, Call{Syscall: SysStatx, Args: [6]uint64{atCurrentWorkingDirectory, 0x1000, 0, basicStats, 0x3000}}); reply.Errno != errno.Fault {
+		t.Fatalf("缓冲区非法: reply=%+v want EFAULT", reply)
 	}
 }

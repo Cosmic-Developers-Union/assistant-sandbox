@@ -185,7 +185,7 @@ Python 和 Node.js 的验收必须执行客体运行时，不能通过调用宿�
 - [ ] I05 接入 dup、dup3 与 fcntl 描述符标志。验收：CLOEXEC、NONBLOCK、关闭和复制语义正确。
 - [ ] I06 完善 read/write 的短读短写。验收：部分完成、EOF、零长度及中断结果与 Linux 一致。
 - [x] I07 实现 readv/writev 与位置读写。验收：跨多个缓冲区的部分完成、偏移和无效指针处理正确。 证据:abi/linux/common/syscalls.go readv/writev(跨多 iovec 累计、EOF/短读结束、部分完成返回已完成量、单段 ≤ BufferLimit、零长度段跳过)、riscv64 登记号 65/66;syscalls_test.go TestReadvWritevScatterGather(分散写入/聚集写出/IOV_MAX/ENOSYS)。测试:`make docker-test TEST_ARGS=./abi/linux/common/`。CI:Test 工作流。
-- [ ] I08 接入 stat/fstat/fstatat 与 statx 必需子集。验收：inode、类型、链接数、权限、所有权、时间及设备号布局正确。
+- [x] I08 接入 stat/fstat/fstatat 与 statx 必需子集。验收：inode、类型、链接数、权限、所有权、时间及设备号布局正确。 证据:abi/linux/common/syscalls.go fstat/newfstatat/statx handler(AT_FDCWD、AT_SYMLINK_NOFOLLOW、AT_EMPTY_PATH,未知标志 EINVAL,目录句柄相对解析待 I02 明确 ENOTSUP)、statInput(Go FileMode→st_mode 类型/权限/SetUID/GID/Sticky 位,Sys() 携带 vm/fs.Metadata 时取 inode/nlink/uid/gid/三时间)、structs.go encodeStatx(256 字节 statx,返回掩码=请求∩BASIC_STATS)、vm/fs/contract.go Metadata 增 Atime/Mtime/Ctime 纳秒字段、filesystem/memfs/file.go Sys() 填充时间、riscv64 登记号 79/80/291;syscalls_test.go TestFstatEncodesDescriptorMetadata(逐字段解码 128 字节 stat)、TestFstatRejectsBadHandlesAndFaults、TestNewfstatatFollowsAndNoFollow、TestNewfstatatValidatesFlagsAndDirectoryHandles、TestNewfstatatEmptyPathOperatesOnDescriptor、TestStatxEncodesBasicStatsWithMask;adapter_test.go TestSyscallNumberMapping 增 79/80/291。测试:`make docker-test TEST_ARGS=./abi/...`。CI:Test 工作流。备注:memfs 不单独维护 ctime,以 mtime 充当;dev/rdev 报 0,G05 的 encodeStat 接线就此复核。
 - [ ] I09 接入 getdents64。验收：小缓冲区、多次读取、目录项类型和目录游标正确。
 - [ ] I10 接入 mkdirat/unlinkat/renameat 所需子集。验收：目录、文件、覆盖和跨挂载失败语义正确。
 - [ ] I11 接入 linkat/symlinkat/readlinkat。验收：硬链接计数、相对符号链接及删除后内容生命周期正确。

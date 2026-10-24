@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
+	vmfs "github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fs"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/memory"
 )
 
@@ -89,6 +90,8 @@ type Files interface {
 
 	Stat(ctx context.Context, path string) (stdfs.FileInfo, error)
 
+	Lstat(ctx context.Context, path string) (stdfs.FileInfo, error)
+
 	Readlink(ctx context.Context, path string) (string, error)
 
 	Mkdir(ctx context.Context, path string, mode uint32) error
@@ -110,6 +113,13 @@ const atCurrentWorkingDirectory = ^uint64(0) - 99
 
 // asm-generic 的 AT_REMOVEDIR:unlinkat 借此表达 rmdir 语义。
 const atRemovedir = 0o1000
+
+// asm-generic 的 fstatat 标志。
+const (
+	atSymlinkNoFollow = 0x100
+	atEmptyPath       = 0x1000
+	atFlagMask        = atSymlinkNoFollow | atEmptyPath
+)
 
 const DefaultBufferLimit = 1 << 20
 
@@ -258,6 +268,12 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 		return s.dup3(ctx, call)
 	case SysGetdents64:
 		return s.getdents64(ctx, call)
+	case SysFstat:
+		return s.fstat(ctx, call)
+	case SysNewfstatat:
+		return s.newfstatat(ctx, call)
+	case SysStatx:
+		return s.statx(ctx, call)
 	case SysSocket, SysBind, SysListen, SysAccept, SysConnect, SysSocketpair, SysSendto, SysRecvfrom, SysShutdown, SysSetsockopt, SysGetsockopt, SysGetsockname, SysGetpeername:
 		return Reply{Errno: errno.NotImplemented}
 	case SysReadlinkat:
@@ -1537,6 +1553,239 @@ func (s Syscalls) getdents64(ctx context.Context, call Call) Reply {
 		return Reply{Errno: errno.Fault}
 	}
 	return Reply{Value: uint64(len(out))}
+}
+
+// statter 是持有文件元数据的描述符句柄的可选能力(文件与目录句柄)。
+type statter interface {
+	Stat() (stdfs.FileInfo, error)
+}
+
+// asm-generic 的文件类型位(st_mode 高位)。
+const (
+	modeFifo     = 0o010000
+	modeCharDev  = 0o020000
+	modeDir      = 0o040000
+	modeRegular  = 0o100000
+	modeBlockDev = 0o060000
+	modeSymlink  = 0o120000
+	modeSocket   = 0o140000
+
+	modeSetuid = 0o4000
+	modeSetgid = 0o2000
+	modeSticky = 0o1000
+
+	// statPreferredBlksize 是 struct stat 的 st_blksize 报告值。
+	statPreferredBlksize = 4096
+)
+
+// unixModeBits 把 Go 的 FileMode 转为 st_mode 的类型与权限位。
+func unixModeBits(mode stdfs.FileMode) uint32 {
+	var kind uint32
+	switch {
+	case mode&stdfs.ModeDir != 0:
+		kind = modeDir
+	case mode&stdfs.ModeSymlink != 0:
+		kind = modeSymlink
+	case mode&stdfs.ModeDevice != 0 && mode&stdfs.ModeCharDevice != 0:
+		kind = modeCharDev
+	case mode&stdfs.ModeDevice != 0:
+		kind = modeBlockDev
+	case mode&stdfs.ModeNamedPipe != 0:
+		kind = modeFifo
+	case mode&stdfs.ModeSocket != 0:
+		kind = modeSocket
+	default:
+		kind = modeRegular
+	}
+	perm := uint32(mode.Perm())
+	if mode&stdfs.ModeSetuid != 0 {
+		perm |= modeSetuid
+	}
+	if mode&stdfs.ModeSetgid != 0 {
+		perm |= modeSetgid
+	}
+	if mode&stdfs.ModeSticky != 0 {
+		perm |= modeSticky
+	}
+	return kind | perm
+}
+
+// statBlockCount 按 512 字节扇区向上取整,与 Linux st_blocks 记账一致。
+func statBlockCount(size int64) int64 {
+	return (size + 511) / 512
+}
+
+func splitNanos(total int64) (int64, int64) {
+	seconds := total / nanosPerSecond
+	nanoseconds := total % nanosPerSecond
+	if nanoseconds < 0 {
+		seconds--
+		nanoseconds += nanosPerSecond
+	}
+	return seconds, nanoseconds
+}
+
+// statInput 从文件系统返回的 FileInfo 构造 struct stat 编码输入。
+// Sys() 携带 fs.Metadata 时以扩展元数据为准;否则 inode/nlink/所有权取
+// 缺省值,三个时间以修改时间报告。
+func statInput(info stdfs.FileInfo) StatInput {
+	input := StatInput{
+		Mode:    unixModeBits(info.Mode()),
+		NLink:   1,
+		Size:    info.Size(),
+		Blksize: statPreferredBlksize,
+		Blocks:  statBlockCount(info.Size()),
+	}
+	modified := info.ModTime()
+	input.AtimeSec, input.AtimeNsec = splitNanos(modified.UnixNano())
+	input.MtimeSec, input.MtimeNsec = splitNanos(modified.UnixNano())
+	input.CtimeSec, input.CtimeNsec = splitNanos(modified.UnixNano())
+	if metadata, ok := info.Sys().(*vmfs.Metadata); ok {
+		input.Ino = metadata.Inode
+		input.NLink = uint32(metadata.NLink)
+		input.UID, input.GID = metadata.UID, metadata.GID
+		input.AtimeSec, input.AtimeNsec = splitNanos(metadata.AtimeNanos)
+		input.MtimeSec, input.MtimeNsec = splitNanos(metadata.MtimeNanos)
+		input.CtimeSec, input.CtimeNsec = splitNanos(metadata.CtimeNanos)
+	}
+	return input
+}
+
+// writeStat 把 FileInfo 编码为 asm-generic struct stat 写入客体缓冲区。
+func (s Syscalls) writeStat(ctx context.Context, address uint64, info stdfs.FileInfo) Reply {
+	encoded := encodeStat(statInput(info))
+	if err := s.Memory.Write(ctx, address, encoded[:]); err != nil {
+		return Reply{Errno: errno.Fault}
+	}
+	return Reply{}
+}
+
+// statDescriptor 对描述符句柄取状态;句柄不支持时明确 ENOTSUP。
+func (s Syscalls) statDescriptor(ctx context.Context, descriptor, address uint64) Reply {
+	handle, err := s.Descriptors.Get(ctx, descriptor)
+	if err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	return s.writeStatFromHandle(ctx, address, handle)
+}
+
+// writeStatFromHandle 对已解析的句柄取状态并写入 struct stat。
+func (s Syscalls) writeStatFromHandle(ctx context.Context, address uint64, handle any) Reply {
+	stater, ok := handle.(statter)
+	if !ok {
+		return Reply{Errno: errno.NotSupported}
+	}
+	info, err := stater.Stat()
+	if err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	return s.writeStat(ctx, address, info)
+}
+
+func (s Syscalls) fstat(ctx context.Context, call Call) Reply {
+	if s.Descriptors == nil || s.Memory == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	return s.statDescriptor(ctx, call.Args[0], call.Args[1])
+}
+
+// statPathTarget 解析 fstatat/statx 共用的状态目标:非空路径按 AT_FDCWD
+// 解析(目录句柄相对解析由 I02 交付,当前明确 ENOTSUP);空路径仅在
+// AT_EMPTY_PATH 且 dirfd 指向真实描述符时返回该句柄。
+func (s Syscalls) statPathTarget(ctx context.Context, dirfd, pathAddress, flags uint64) (stdfs.FileInfo, any, errno.Code) {
+	pathname, code := s.readPath(ctx, pathAddress)
+	if code != "" {
+		if code != errno.NotFound || flags&atEmptyPath == 0 {
+			return nil, nil, code
+		}
+	}
+	if pathname == "" {
+		if flags&atEmptyPath == 0 || dirfd == atCurrentWorkingDirectory {
+			return nil, nil, errno.NotFound
+		}
+		if s.Descriptors == nil {
+			return nil, nil, errno.NotImplemented
+		}
+		handle, err := s.Descriptors.Get(ctx, dirfd)
+		if err != nil {
+			return nil, nil, errnoOf(err)
+		}
+		return nil, handle, ""
+	}
+	if dirfd != atCurrentWorkingDirectory {
+		return nil, nil, errno.NotSupported
+	}
+	var (
+		info stdfs.FileInfo
+		err  error
+	)
+	if flags&atSymlinkNoFollow != 0 {
+		info, err = s.Files.Lstat(ctx, pathname)
+	} else {
+		info, err = s.Files.Stat(ctx, pathname)
+	}
+	if err != nil {
+		return nil, nil, errnoOf(err)
+	}
+	return info, nil, ""
+}
+
+// newfstatat 支持 AT_FDCWD、AT_SYMLINK_NOFOLLOW 与 AT_EMPTY_PATH。
+func (s Syscalls) newfstatat(ctx context.Context, call Call) Reply {
+	if s.Files == nil || s.Memory == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	flags := call.Args[3]
+	if flags&^uint64(atFlagMask) != 0 {
+		return Reply{Errno: errno.Invalid}
+	}
+	info, handle, code := s.statPathTarget(ctx, call.Args[0], call.Args[1], flags)
+	if code != "" {
+		return Reply{Errno: code}
+	}
+	if info == nil {
+		return s.writeStatFromHandle(ctx, call.Args[2], handle)
+	}
+	return s.writeStat(ctx, call.Args[2], info)
+}
+
+// asm-generic 的 statx 附加标志:AT_NO_AUTOMOUNT 与同步类型位可接受为空操作。
+const (
+	atNoAutomask    = 0x800
+	atStatxSyncType = 0x6000
+	atStatxFlagMask = atSymlinkNoFollow | atEmptyPath | atNoAutomask | atStatxSyncType
+)
+
+// statx(int dfd, pathname, flags, mask, buffer) 按 mask 报告 statx 子集。
+func (s Syscalls) statx(ctx context.Context, call Call) Reply {
+	if s.Files == nil || s.Memory == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	flags := call.Args[2]
+	if flags&^uint64(atStatxFlagMask) != 0 {
+		return Reply{Errno: errno.Invalid}
+	}
+	info, handle, code := s.statPathTarget(ctx, call.Args[0], call.Args[1], flags)
+	if code != "" {
+		return Reply{Errno: code}
+	}
+	target := info
+	if target == nil {
+		stater, ok := handle.(statter)
+		if !ok {
+			return Reply{Errno: errno.NotSupported}
+		}
+		var err error
+		target, err = stater.Stat()
+		if err != nil {
+			return Reply{Errno: errnoOf(err)}
+		}
+	}
+	encoded := encodeStatx(statInput(target), uint32(call.Args[3]))
+	if err := s.Memory.Write(ctx, call.Args[4], encoded[:]); err != nil {
+		return Reply{Errno: errno.Fault}
+	}
+	return Reply{}
 }
 
 func (s Syscalls) fcntl(ctx context.Context, call Call) Reply {

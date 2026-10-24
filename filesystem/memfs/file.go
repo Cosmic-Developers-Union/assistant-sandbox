@@ -149,7 +149,12 @@ func (i fileInfo) ModTime() time.Time {
 }
 func (i fileInfo) IsDir() bool { return i.node.kind == kindDir }
 func (i fileInfo) Sys() any {
-	return &vmfs.Metadata{Inode: i.node.id, NLink: i.node.nlink, UID: i.node.uid, GID: i.node.gid}
+	return &vmfs.Metadata{
+		Inode: i.node.id, NLink: i.node.nlink, UID: i.node.uid, GID: i.node.gid,
+		AtimeNanos: i.node.atime,
+		MtimeNanos: i.node.mtime,
+		CtimeNanos: i.node.mtime, // memfs 不单独维护 ctime,以 mtime 充当
+	}
 }
 
 type dirEntry struct{ info fileInfo }

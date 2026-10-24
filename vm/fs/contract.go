@@ -11,6 +11,11 @@ type Metadata struct {
 	NLink uint64
 	UID   uint32
 	GID   uint32
+	// AtimeNanos/MtimeNanos/CtimeNanos 是文件系统自行维护的纳秒时间戳;
+	// 未单独维护 ctime 的实现以 mtime 充当。
+	AtimeNanos int64
+	MtimeNanos int64
+	CtimeNanos int64
 }
 
 const ChownUnchanged int64 = -1

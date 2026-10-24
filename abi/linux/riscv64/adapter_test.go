@@ -216,6 +216,7 @@ func TestSyscallNumberMapping(t *testing.T) {
 		numberGetGID: common.SysGetGID, numberGetEGID: common.SysGetEGID,
 		numberAcct: common.SysAcct, numberPtrace: common.SysPtrace,
 		numberMmap: common.SysMmap, numberMunmap: common.SysMunmap, numberMprotect: common.SysMprotect,
+		numberNewfstatat: common.SysNewfstatat, numberFstat: common.SysFstat, numberStatx: common.SysStatx,
 		numberClockNanosleep: common.SysClockNanosleep,
 		999:                  common.SysUnknown,
 	} {

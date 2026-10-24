@@ -193,6 +193,10 @@ const (
 	SysInotifyInit1
 	SysInotifyAddWatch
 	SysInotifyRmWatch
+
+	SysFstat
+	SysNewfstatat
+	SysStatx
 )
 
 func (s Syscall) String() string {
@@ -431,6 +435,12 @@ func (s Syscall) String() string {
 		return "inotify_add_watch"
 	case SysInotifyRmWatch:
 		return "inotify_rm_watch"
+	case SysFstat:
+		return "fstat"
+	case SysNewfstatat:
+		return "newfstatat"
+	case SysStatx:
+		return "statx"
 	case SysReadlinkat:
 		return "readlinkat"
 	case SysUmask:
