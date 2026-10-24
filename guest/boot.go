@@ -6,13 +6,13 @@ import (
 	"io"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/executor/elf"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/platform/entropy"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/platform/filesystem"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/platform/modules"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/userland/shell"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/capability"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/clock"
-	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/entropy"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fd"
 	vmfs "github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fs"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/identity"
@@ -68,7 +68,7 @@ func NewWithClockFS(dir string, environment []string, stdin io.Reader, stdout, s
 			FD:       fd.New(),
 			Identity: identity.SingleUser{},
 			Clock:    clockOrVirtual(source),
-			Entropy:  &entropy.Counter{},
+			Entropy:  entropy.NewProduction(),
 			Bridge:   modules.Modules{},
 
 			Resources: meters,

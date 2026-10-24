@@ -2389,3 +2389,18 @@ func decodeStatfs(memory *fakeMemory, address uint64) map[string]uint64 {
 		"namelen": half(0x38),
 	}
 }
+
+func TestGetrandomValidatesFlags(t *testing.T) {
+	ctx := context.Background()
+	space := newFakeMemory()
+	syscalls := Syscalls{Memory: space, Descriptors: &fakeDescriptors{}}
+	// 未知标志位 EINVAL。
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysGetrandom, Args: [6]uint64{0x1000, 8, 0x8}}); reply.Errno != errno.Invalid {
+		t.Fatalf("未知标志: %+v want EINVAL", reply)
+	}
+	// 已知标志(GRND_NONBLOCK/GRND_RANDOM/GRND_INSECURE)组合被接受;
+	// 数据来源由客体熵源配置决定,标志不切换来源。
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysGetrandom, Args: [6]uint64{0x1000, 8, 0x7}}); reply.Errno != errno.NotImplemented {
+		t.Fatalf("已知标志: %+v want ENOSYS(未装配熵源)", reply)
+	}
+}

@@ -1133,9 +1133,21 @@ func (s Syscalls) domainname() string {
 	return s.Domainname
 }
 
+// asm-generic 的 getrandom 标志;两种随机流都由客体配置的
+// 熵源统一提供,GRND_RANDOM/GRND_INSECURE 不切换数据来源。
+const (
+	grndNonblock = 0x1
+	grndRandom   = 0x2
+	grndInsecure = 0x4
+	grndFlagMask = grndNonblock | grndRandom | grndInsecure
+)
+
 func (s Syscalls) getrandom(ctx context.Context, call Call) Reply {
 	if s.Memory == nil {
 		return Reply{Errno: errno.NotImplemented}
+	}
+	if call.Args[2]&^uint64(grndFlagMask) != 0 {
+		return Reply{Errno: errno.Invalid}
 	}
 	length := call.Args[1]
 	if length == 0 {

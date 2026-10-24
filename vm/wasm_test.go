@@ -59,6 +59,9 @@ func TestVMProductionCodeHasNoAmbientHostImports(t *testing.T) {
 		"platform/filesystem/fifo_linux.go":  {"syscall": true},
 		"platform/modules/modules_wasi.go":   {"unsafe": true},
 
+		"platform/entropy/entropy_native.go": {"crypto/rand": true},
+		"platform/entropy/entropy_wasi.go":   {"crypto/rand": true},
+
 		"filesystem/memfs/file.go": {"time": true},
 		"guest/cmd/main.go":        {"os": true},
 
