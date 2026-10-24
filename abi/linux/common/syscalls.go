@@ -420,7 +420,8 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 	case SysStatx:
 		return s.statx(ctx, call)
 	case SysSocket, SysBind, SysListen, SysAccept, SysConnect, SysSocketpair, SysSendto, SysRecvfrom, SysShutdown, SysSetsockopt, SysGetsockopt, SysGetsockname, SysGetpeername:
-		return Reply{Errno: errno.NotImplemented}
+		// 网络栈整组未交付(M 组);已登记但能力缺失按约定报 ENOTSUP。
+		return Reply{Errno: errno.NotSupported}
 	case SysReadlinkat:
 		return s.readlinkat(ctx, call)
 	case SysUmask:

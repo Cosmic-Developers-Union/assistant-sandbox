@@ -42,9 +42,9 @@ Python 和 Node.js 的验收必须执行客体运行时，不能通过调用宿�
 
 ## A. 架构、兼容范围与验收资产
 
-- [ ] A01 盘点现有包的职责、所有权和实际调用链。验收：一张从 SDK 到 CPU、ABI、内核、存储的依赖图，逐项链接源码，标明重复实现。
-- [ ] A02 决定 VM 类型、主执行架构和部署后端。验收：ADR 明确 Linux ABI VM 或可启动 Linux 内核的全系统 VM、客体 ISA、Linux ABI、宿主平台、WASI 的角色及 S 组是否必做；目标获得确认。
-- [ ] A03 定义首个 Linux 兼容配置。验收：列出必须支持的指令、系统调用、文件类型、设备、进程、网络和不支持项，并映射到本文任务和用例。
+- [x] A01 盘点现有包的职责、所有权和实际调用链。验收：一张从 SDK 到 CPU、ABI、内核、存储的依赖图，逐项链接源码，标明重复实现。 证据：docs/architecture/dependency-map.md（203 包按入口/契约/部署/执行/ABI/装载/内核/存储/宿主边界/用户态分层，主调用链 SDK→deployment/native→vm.Kernel→executor/elf→abi/linux→executor/cpu 与存储链逐项链接源码；7 项重复实现及 C/R 组收敛方向；文档内附 go list 依赖图再生成命令，全部源码链接经存在性校验）。测试：文档命令复核 + `go build ./...`。CI：Test 工作流。
+- [x] A02 决定 VM 类型、主执行架构和部署后端。验收：ADR 明确 Linux ABI VM 或可启动 Linux 内核的全系统 VM、客体 ISA、Linux ABI、宿主平台、WASI 的角色及 S 组是否必做；目标获得确认。 证据：docs/adr/vm-architecture.md（Linux ABI 虚拟机、RV64GC+Zicsr/Zifencei、asm-generic riscv64 ABI、宿主 linux/amd64+arm64、WASI=部署载体与开发基线不缩减 Linux 需求、顺序解释器为语义基准后端、S 组不适用及其依据与后果；以 TODO「目标与边界」为确认来源）。TODO.md 核对状态与 S 组状态块同步更新。测试：`go build ./...`。CI：Test 工作流。
+- [x] A03 定义首个 Linux 兼容配置。验收：列出必须支持的指令、系统调用、文件类型、设备、进程、网络和不支持项，并映射到本文任务和用例。 证据：docs/compat/linux-profile.md（linux-rv64gc-1：指令集 7 类、100 项登记系统调用三表——已交付 61/明确 ENOTSUP 33/声明语义 6，ENOSYS 清单 34 项，文件/路径/地址空间/进程信号时间/设备网络边界与差分基线，逐项映射任务与测试）；abi/linux/common/profile_test.go TestProfileSyscallTablesMatchRegistry（文档三表与 Registered() 逐名一致、ENOTSUP 表逐项行为断言）；修复伪成功存根：setpgid/setsid/itimer×2/priority×2/mlock 族×4/mincore/umask/setuid 族×8 共 20 项无操作成功改 ENOTSUP，socket 族 13 项 ENOSYS 统一 ENOTSUP（TestUnsupportedCallsAreHonestENOTSUP）。测试：`go test ./abi/...`。CI：Test 工作流。
 - [ ] A04 固定 CPython、Node.js、libc 与客体构建配置。验收：清单含确切版本、源码摘要、目标 ABI、编译选项、依赖与许可证；Node 的 JIT 策略明确，所选版本处于适用支持期。
 - [ ] A05 确定 Node JIT 与可执行内存策略。验收：ADR 明确是否允许受控 JIT、W^X 转换规则；若先采用 jitless，单独记录阶段限制和最终支持配置，不把它等同于全部 V8 能力。
 - [ ] A06 迁入新模型接口和行为场景。验收：独立仓库可读、可运行，不访问原项目目录；保留原始 Console、Connect、共享文件系统和 Shutdown 需求。
@@ -369,7 +369,7 @@ Python 和 Node.js 的验收必须执行客体运行时，不能通过调用宿�
 
 依赖：A02 明确要求启动原版 Linux 内核时，本组全部为必做。以下任务以 RISC-V 全系统路线描述；若选用其他后端，按同等可验收目标替换，不强制自研已有成熟后端。
 
-> 状态：当前唯一 ADR（docs/adr/standalone-module.md）仅确立 WASI 执行模型，未记录全系统路线取舍；按第 9 行，S 组是否必做须经目标确认并在 ADR 中说明。确认前本组保持未勾选。
+> 状态：A02 已决策（docs/adr/vm-architecture.md）：本仓库走 Linux ABI 虚拟机路线，不启动原版 Linux 内核，S01–S19 整组判定为不适用；Linux 语义正确性由 G–O 黑盒验收与 A09 差分执行器承担。若未来目标变更须以新 ADR 推翻。
 
 采用此路径时，Linux 系统调用的应用语义由客体 Linux 内核提供；G 至 O 中的验收仍必须通过，但不要求重复在宿主重写 Linux 内核实现。A10 必须记录每项能力由哪一层提供。
 
