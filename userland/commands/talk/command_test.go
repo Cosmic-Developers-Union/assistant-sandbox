@@ -177,9 +177,12 @@ func (f *fixture) start(args ...string) <-chan error {
 	return done
 }
 
+// awaitDeadline 覆盖满负载 CI 的调度延迟;这些是功能等待而非性能门禁。
+const awaitDeadline = 30 * time.Second
+
 func (f *fixture) run(args ...string) <-chan error {
 	done := f.start(args...)
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(awaitDeadline)
 	for time.Now().Before(deadline) {
 		f.drained += string(f.terminal.Drain())
 		if strings.Contains(f.drained, "等待对端") {
@@ -194,7 +197,7 @@ func (f *fixture) await(ready func(seen string) bool) string {
 	f.t.Helper()
 	seen := f.drained
 	f.drained = ""
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(awaitDeadline)
 	for time.Now().Before(deadline) {
 		seen += string(f.terminal.Drain())
 		if ready(seen) {
@@ -213,7 +216,7 @@ func (f *fixture) awaitText(want string) string {
 
 func (f *fixture) until(ready func() bool) {
 	f.t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(awaitDeadline)
 	for time.Now().Before(deadline) {
 		if ready() {
 			return
@@ -228,7 +231,7 @@ func (f *fixture) waitDone(done <-chan error) error {
 	select {
 	case err := <-done:
 		return err
-	case <-time.After(5 * time.Second):
+	case <-time.After(awaitDeadline):
 		f.cancel()
 		<-done
 		f.t.Fatal("talk 未退出（已取消会话）")
@@ -270,7 +273,7 @@ func TestDeclaredUserAccepted(t *testing.T) {
 	if err := os.Rename(incoming, channelHostPath(f.dir)); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(awaitDeadline)
 	seen := ""
 	for time.Now().Before(deadline) {
 		seen += string(f.terminal.Drain())
@@ -282,7 +285,7 @@ func TestDeclaredUserAccepted(t *testing.T) {
 	if _, err := f.terminal.Input([]byte("hi back\n")); err != nil {
 		t.Error(err)
 	}
-	deadline = time.Now().Add(5 * time.Second)
+	deadline = time.Now().Add(awaitDeadline)
 	for time.Now().Before(deadline) {
 		seen += string(f.terminal.Drain())
 		if strings.Contains(seen, "[me] hi back") {
