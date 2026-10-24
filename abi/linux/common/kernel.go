@@ -315,6 +315,25 @@ func (p ProcessFiles) Link(ctx context.Context, oldpath, newpath string) error {
 	return p.System.Link(ctx, oldpath, newpath)
 }
 
+// LinkFollowing 转发 linkat(2) AT_SYMLINK_FOLLOW 能力;
+// 底层文件系统不支持时明确 ENOTSUP。
+func (p ProcessFiles) LinkFollowing(ctx context.Context, oldpath, newpath string) error {
+	if p.System == nil {
+		return errno.Wrap(errno.NotImplemented, "文件端口未装配")
+	}
+	if !strings.HasPrefix(oldpath, "/") {
+		oldpath = pathpkg.Join(p.Dir, oldpath)
+	}
+	if !strings.HasPrefix(newpath, "/") {
+		newpath = pathpkg.Join(p.Dir, newpath)
+	}
+	follow, ok := p.System.(fs.LinkFollow)
+	if !ok {
+		return errno.Wrap(errno.NotSupported, "文件系统不支持跟随符号链接建链")
+	}
+	return follow.LinkFollowing(ctx, oldpath, newpath)
+}
+
 func (p ProcessFiles) ReadDir(ctx context.Context, path string) ([]stdfs.DirEntry, error) {
 	if p.System == nil {
 		return nil, errno.Wrap(errno.NotImplemented, "文件端口未装配")

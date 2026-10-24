@@ -273,6 +273,19 @@ func (c chargeFS) Link(ctx context.Context, from, to string) error {
 	return c.base.Link(ctx, from, to)
 }
 
+// LinkFollowing 转发 linkat(2) AT_SYMLINK_FOLLOW 能力;
+// 底层文件系统不支持时明确 ENOTSUP。
+func (c chargeFS) LinkFollowing(ctx context.Context, from, to string) error {
+	if err := c.scope.charge(ctx, costNamespace); err != nil {
+		return err
+	}
+	follow, ok := c.base.(fs.LinkFollow)
+	if !ok {
+		return errno.Wrap(errno.NotSupported, "文件系统不支持跟随符号链接建链")
+	}
+	return follow.LinkFollowing(ctx, from, to)
+}
+
 func (c chargeFS) Symlink(ctx context.Context, target, link string) error {
 	if err := c.scope.charge(ctx, costNamespace); err != nil {
 		return err

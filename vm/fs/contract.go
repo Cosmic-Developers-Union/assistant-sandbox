@@ -44,10 +44,18 @@ type System interface {
 
 	Rename(context.Context, string, string) error
 
+	// Link 按 link(2)/linkat(2) 默认语义:oldpath 为符号链接时
+	// 不解引用,硬链接指向链接本身(AT_SYMLINK_FOLLOW 见 LinkFollow)。
 	Link(context.Context, string, string) error
 	Symlink(context.Context, string, string) error
 
 	Readlink(context.Context, string) (string, error)
+}
+
+// LinkFollow 是 linkat(2) AT_SYMLINK_FOLLOW 的可选能力:
+// oldpath 为符号链接时解引用,对目标文件建立硬链接。
+type LinkFollow interface {
+	LinkFollowing(context.Context, string, string) error
 }
 
 type Timestamps interface {

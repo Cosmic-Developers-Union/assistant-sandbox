@@ -1553,7 +1553,8 @@ func (s Syscalls) readlinkat(ctx context.Context, call Call) Reply {
 	if err := s.Memory.Write(ctx, call.Args[2], data); err != nil {
 		return Reply{Errno: errno.Fault}
 	}
-	return Reply{Value: uint64(len(target))}
+	// Linux readlink(2) 返回放入缓冲区的字节数:截断时即截断长度。
+	return Reply{Value: uint64(len(data))}
 }
 
 func (s Syscalls) mkdirat(ctx context.Context, call Call) Reply {
@@ -1627,12 +1628,20 @@ func (s Syscalls) symlinkat(ctx context.Context, call Call) Reply {
 	return Reply{}
 }
 
+// linkat 的 AT_SYMLINK_FOLLOW(asm-generic 0x400)。
+const atSymlinkFollow = 0o2000
+
 func (s Syscalls) linkat(ctx context.Context, call Call) Reply {
 	if s.Files == nil || s.Memory == nil {
 		return Reply{Errno: errno.NotImplemented}
 	}
 	if call.Args[0] != atCurrentWorkingDirectory || call.Args[2] != atCurrentWorkingDirectory {
 		return Reply{Errno: errno.NotSupported}
+	}
+	// linkat 只接受 AT_SYMLINK_FOLLOW;未知 flags 位报 EINVAL。
+	flags := call.Args[4]
+	if flags&^uint64(atSymlinkFollow) != 0 {
+		return Reply{Errno: errno.Invalid}
 	}
 	oldpath, code := s.readPath(ctx, call.Args[1])
 	if code != "" {
@@ -1641,6 +1650,18 @@ func (s Syscalls) linkat(ctx context.Context, call Call) Reply {
 	newpath, code := s.readPath(ctx, call.Args[3])
 	if code != "" {
 		return Reply{Errno: code}
+	}
+	// 默认不解引用符号链接(link(2) 语义,经 System.Link);
+	// AT_SYMLINK_FOLLOW 需要文件系统显式支持该能力。
+	if flags&uint64(atSymlinkFollow) != 0 {
+		follow, ok := s.Files.(vmfs.LinkFollow)
+		if !ok {
+			return Reply{Errno: errno.NotSupported}
+		}
+		if err := follow.LinkFollowing(ctx, oldpath, newpath); err != nil {
+			return Reply{Errno: errnoOf(err)}
+		}
+		return Reply{}
 	}
 	if err := s.Files.Link(ctx, oldpath, newpath); err != nil {
 		return Reply{Errno: errnoOf(err)}

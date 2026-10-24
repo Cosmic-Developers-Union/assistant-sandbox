@@ -779,3 +779,129 @@ func TestReadWriteShortSemanticsAgainstRealFileSystem(t *testing.T) {
 		t.Fatalf("EOF 读: %+v want 0", reply)
 	}
 }
+
+// TestLinkSymlinkLifecycleAgainstRealFileSystem 验证 I11:linkat 默认
+// 不解引用符号链接(链接指向链接本身,nlink 可观察),AT_SYMLINK_FOLLOW
+// 对目标文件建链;readlinkat 截断返回放入缓冲区的字节数;删除目标后
+// 符号链接悬空但 readlinkat 仍可读,硬链接内容经其余链接存续。
+func TestLinkSymlinkLifecycleAgainstRealFileSystem(t *testing.T) {
+	ctx := context.Background()
+	system, err := memfs.New(&clock.Virtual{}, memfs.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const pid = 61
+	table := fd.New()
+	table.Attach(pid, fd.Streams{})
+	files := ProcessFiles{System: system, Store: table, PID: pid, Dir: "/"}
+	descriptors := ProcessDescriptors{Table: table, PID: pid}
+	syscalls := Syscalls{Memory: newFakeMemory(), Descriptors: descriptors, Files: files}
+
+	writePath := func(address uint64, path string) {
+		t.Helper()
+		if err := syscalls.Memory.Write(ctx, address, append([]byte(path), 0)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	note, err := files.Open(ctx, OpenRequest{Path: "/note", Flags: OpenFlags{Mode: OpenReadWrite, Create: true}, Perm: 0o644})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := descriptors.Write(ctx, note, []byte("payload")); err != nil {
+		t.Fatal(err)
+	}
+
+	// symlinkat + readlinkat:完整读取与截断(计数为放入缓冲区的字节数)。
+	writePath(0x1000, "note")
+	writePath(0x1010, "/link")
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysSymlinkat, Args: [6]uint64{0x1000, atCurrentWorkingDirectory, 0x1010}}); reply.Errno != "" {
+		t.Fatalf("symlinkat: %+v", reply)
+	}
+	writePath(0x1010, "/link")
+	if err := syscalls.Memory.Write(ctx, 0x2000, make([]byte, 16)); err != nil {
+		t.Fatal(err)
+	}
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysReadlinkat, Args: [6]uint64{atCurrentWorkingDirectory, 0x1010, 0x2000, 16}}); reply.Value != 4 {
+		t.Fatalf("readlinkat 完整: %+v want 4", reply)
+	}
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysReadlinkat, Args: [6]uint64{atCurrentWorkingDirectory, 0x1010, 0x2000, 2}}); reply.Value != 2 {
+		t.Fatalf("readlinkat 截断: %+v want 2", reply)
+	}
+	var text [2]byte
+	if err := syscalls.Memory.Read(ctx, 0x2000, text[:]); err != nil || string(text[:]) != "no" {
+		t.Fatalf("截断内容=%q err=%v", text, err)
+	}
+
+	// linkat 默认:链接指向符号链接本身——/hard 也是指向 note 的链接,
+	// 两者 lstat 的 nlink 均为 2;write 内容经 /note 可见。
+	writePath(0x1010, "/link")
+	writePath(0x1020, "/hard")
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysLinkat, Args: [6]uint64{atCurrentWorkingDirectory, 0x1010, atCurrentWorkingDirectory, 0x1020, 0}}); reply.Errno != "" {
+		t.Fatalf("linkat 默认: %+v", reply)
+	}
+	assertNlink := func(path string, want uint64) {
+		t.Helper()
+		writePath(0x1030, path)
+		if reply := syscalls.Handle(ctx, Call{Syscall: SysNewfstatat, Args: [6]uint64{atCurrentWorkingDirectory, 0x1030, 0x2000, atSymlinkNoFollow, 0}}); reply.Errno != "" {
+			t.Fatalf("fstatat %s: %+v", path, reply)
+		}
+		var raw [144]byte
+		if err := syscalls.Memory.Read(ctx, 0x2000, raw[:]); err != nil {
+			t.Fatal(err)
+		}
+		// asm-generic struct stat:nlink 是偏移 20 的 u32。
+		if nlink := uint64(binary.LittleEndian.Uint32(raw[20:])); nlink != want {
+			t.Fatalf("%s nlink=%d want %d", path, nlink, want)
+		}
+	}
+	assertNlink("/link", 2)
+	assertNlink("/hard", 2)
+
+	// linkat AT_SYMLINK_FOLLOW:对解引用后的目标文件建链;
+	// 目标路径已存在时报 EEXIST,新路径成功且 note nlink=2。
+	writePath(0x1020, "/hard")
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysLinkat, Args: [6]uint64{atCurrentWorkingDirectory, 0x1010, atCurrentWorkingDirectory, 0x1020, atSymlinkFollow}}); reply.Errno != errno.Exist {
+		t.Fatalf("linkat FOLLOW 覆盖既有路径: %+v want EEXIST", reply)
+	}
+	writePath(0x1020, "/hard2")
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysLinkat, Args: [6]uint64{atCurrentWorkingDirectory, 0x1010, atCurrentWorkingDirectory, 0x1020, atSymlinkFollow}}); reply.Errno != "" {
+		t.Fatalf("linkat FOLLOW: %+v", reply)
+	}
+	assertNlink("/note", 2)
+	if _, err := descriptors.Seek(ctx, note, 0, SeekSet); err != nil {
+		t.Fatal(err)
+	}
+	buffer := make([]byte, 8)
+	if loaded, err := descriptors.Read(ctx, note, buffer); err != nil || string(buffer[:loaded]) != "payload" {
+		t.Fatalf("经 /hard2 建链后 /note 内容=%q err=%v", buffer[:loaded], err)
+	}
+
+	// linkat 未知 flags EINVAL。
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysLinkat, Args: [6]uint64{atCurrentWorkingDirectory, 0x1010, atCurrentWorkingDirectory, 0x1020, 1 << 20}}); reply.Errno != errno.Invalid {
+		t.Fatalf("未知 flags: %+v want EINVAL", reply)
+	}
+
+	// 删除生命周期:删除 /note(硬链接之一)后内容经 /hard3 存续;
+	// 符号链接悬空但 readlinkat 仍返回目标;打开悬空链接 ENOENT。
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysUnlinkat, Args: [6]uint64{atCurrentWorkingDirectory, 0x1000, 0}}); reply.Errno != "" {
+		t.Fatalf("unlink /note: %+v", reply)
+	}
+	if _, err := files.Open(ctx, OpenRequest{Path: "/note", Flags: OpenFlags{Mode: OpenRead}}); !errors.Is(err, errno.NotFound) {
+		t.Fatalf("已删目标: %v want ENOENT", err)
+	}
+	dangling, err := files.Open(ctx, OpenRequest{Path: "/hard2", Flags: OpenFlags{Mode: OpenRead}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := descriptors.Read(ctx, dangling, buffer)
+	if err != nil || string(buffer[:loaded]) != "payload" {
+		t.Fatalf("硬链接内容存续: %q err=%v", buffer[:loaded], err)
+	}
+	writePath(0x1010, "/link")
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysReadlinkat, Args: [6]uint64{atCurrentWorkingDirectory, 0x1010, 0x2000, 16}}); reply.Value != 4 {
+		t.Fatalf("悬空链接 readlinkat: %+v want 4", reply)
+	}
+	if _, err := files.Open(ctx, OpenRequest{Path: "/link", Flags: OpenFlags{Mode: OpenRead}}); !errors.Is(err, errno.NotFound) {
+		t.Fatalf("悬空链接打开: %v want ENOENT", err)
+	}
+}

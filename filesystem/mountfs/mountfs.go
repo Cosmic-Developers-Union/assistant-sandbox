@@ -165,6 +165,23 @@ func (m *Mounts) Link(ctx context.Context, oldPath, newPath string) error {
 	return entry.sys.Link(ctx, m.relative(entry, oldPath), m.relative(entry, newPath))
 }
 
+// LinkFollowing 转发 linkat(2) AT_SYMLINK_FOLLOW 能力到挂载目标;
+// 目标不支持时明确 ENOTSUP。
+func (m *Mounts) LinkFollowing(ctx context.Context, oldPath, newPath string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	entry, err := m.sameMount(oldPath, newPath)
+	if err != nil {
+		return err
+	}
+	follow, ok := entry.sys.(vmfs.LinkFollow)
+	if !ok {
+		return errno.Wrap(errno.NotSupported, "挂载目标不支持跟随符号链接建链")
+	}
+	return follow.LinkFollowing(ctx, m.relative(entry, oldPath), m.relative(entry, newPath))
+}
+
 func (m *Mounts) Symlink(ctx context.Context, target, link string) error {
 	entry, err := m.resolve(link)
 	if err != nil {

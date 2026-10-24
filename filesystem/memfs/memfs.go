@@ -539,17 +539,30 @@ func (f *FS) Rename(ctx context.Context, oldPath, newPath string) error {
 	return nil
 }
 
+// Link 实现 link(2)/linkat(2) 默认语义:oldpath 为符号链接时
+// 不解引用,硬链接指向链接本身(I11)。
 func (f *FS) Link(ctx context.Context, oldPath, newPath string) error {
+	return f.link(ctx, oldPath, newPath, false)
+}
+
+// LinkFollowing 实现 linkat(2) 的 AT_SYMLINK_FOLLOW:解引用
+// 符号链接,对目标文件建立硬链接。
+func (f *FS) LinkFollowing(ctx context.Context, oldPath, newPath string) error {
+	return f.link(ctx, oldPath, newPath, true)
+}
+
+func (f *FS) link(ctx context.Context, oldPath, newPath string, follow bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	src, _, _, err := f.lookup(oldPath, true)
+	src, _, _, err := f.lookup(oldPath, follow)
 	if err != nil {
 		return err
 	}
-	if src.kind != kindFile {
+	// 不跟随的硬链接可以指向符号链接本身;目录始终拒绝。
+	if src.kind != kindFile && src.kind != kindSymlink {
 		return errno.Invalid
 	}
 	dstParent, dstName, err := f.checkWritable(newPath)
