@@ -131,8 +131,8 @@ Python 和 Node.js 的验收必须执行客体运行时，不能通过调用宿�
 - [x] F02 支持合法的同页 LOAD 段布局。验收：真实链接器生成的相邻段正确装载，权限与数据不互相覆盖。 证据:loader/elf/elf.go clusterSegments(同页段合并为页簇:文件内容按虚拟地址拼装、簇内文件重叠拒绝、保护位取并集且 W^X 拒绝、预算按联合尺寸)、入口与 PHDR 检查仍对原始段执行;elf_test.go TestSamePageLoadSegmentsShareOneCluster(同页代码+只读尾段合并为单簇 R|X、内容按偏移就位、空隙零填充)、既有 页内重叠 拒绝用例仍生效(文件内容重叠)。测试:`make docker-test TEST_ARGS=./loader/...`。CI:Test 工作流。
 - [ ] F03 完善初始栈与辅助向量。验收：argc、argv、envp、对齐和所选 libc 所需 AT 项通过客体探针。
 - [ ] F04 支持 PIE 装载偏移。验收：不同合法基址启动同一程序，入口及辅助向量正确。
-- [ ] F05 从客体文件系统解析 PT_INTERP。验收：动态解释器路径不能访问宿主，缺失时返回明确加载错误。
-- [ ] F06 同时映射主程序与动态解释器。验收：入口、load bias、AT_BASE、AT_ENTRY 和程序头地址使参考加载器可启动。
+- [x] F05 从客体文件系统解析 PT_INTERP。验收：动态解释器路径不能访问宿主，缺失时返回明确加载错误。 证据:loader/elf/elf.go collectSegments 捕获 PT_INTERP(不再整体拒绝;interpPath 要求 NUL 终止的客体绝对路径,长度 ≤4KB,多个 PT_INTERP 报格式错误;路径串不产生可装载段)并经 Plan.InterpreterPath 暴露、executor/elf/program.go loadProgram 经 readImage(进程绑定的客体文件系统,宿主路径不可达)解析解释器,缺失报 ENOENT。既有 PT_DYNAMIC/PT_TLS 仍明确 ENOTSUP(真实 glibc 二进制待 F07/K 链)。测试:elf_test.go TestPTInterpCapturedAndAtBaseWired、TestLoadRejections 断言更新(NUL 缺失→ENOEXEC)、exec_test.go TestRealELFMissingInterpreterFailsClearly(真实 ELF 端到端 ENOENT)。测试:`go test ./loader/... ./executor/elf/`。CI:Test 工作流。
+- [x] F06 同时映射主程序与动态解释器。验收：入口、load bias、AT_BASE、AT_ENTRY 和程序头地址使参考加载器可启动。 证据:loader/elf/stack.go AT_BASE 记录 Options.InterpreterBase(AT_ENTRY/AT_PHDR 保持主程序值)、executor/elf/program.go loadProgram+loadedProgram(解释器以固定槽位 interpreterBase=0x40000000 作为 ET_DYN 基址装载,与主程序段/堆/栈经 overlaps 检查无冲突,段随主映像并行装入 populateSegments+chargeSegments 独立计量)、初始入口重定向至解释器(loaded.Entry),execve 动态程序经同一 loadProgram 链(H07)。测试:elf_test.go TestPTInterpCapturedAndAtBaseWired(遍历初始栈 auxv:AT_BASE=基址、AT_ENTRY=主程序入口)、exec_test.go TestRealELFDynamicProgramRunsInterpreter(真实 ET_DYN 解释器接管入口,主程序退出码 0x7E 未出现)。测试:`go test ./loader/... ./executor/elf/`。CI:Test 工作流。备注:解释器槽位为固定值,真实 ld.so 接入(F07)后由顶层分配器替代;PT_DYNAMIC/TLS 未支持前真实 glibc 二进制仍被拒绝。
 - [ ] F07 让客体动态加载器处理共享库。验收：依赖库、符号重定位及缺失符号错误与参考一致，不在宿主替代执行库代码。
 - [ ] F08 支持所选 libc 的 TLS 启动约定。验收：主线程 TLS 与 errno 可读写，线程间测试接入 K 组。
 - [ ] F09 打通最小静态 libc 程序。验收：启动、分配内存、文件读写、正常退出均成功。
