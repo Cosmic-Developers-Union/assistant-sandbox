@@ -92,12 +92,12 @@ Python 和 Node.js 的验收必须执行客体运行时，不能通过调用宿�
 - [ ] D01 固定 CPU 架构配置与状态格式。验收：声明字长、端序、扩展集、寄存器和异常模型，客体与加载器检查一致。
 - [ ] D02 审计整数基础指令。验收：逐条差分覆盖立即数、符号扩展、溢出、分支和寄存器零值。
 - [x] D03 审计整数乘除指令。验收：除零、有符号最小值、余数和高位乘积与参考一致。 证据:executor/cpu/riscv64/core.go 乘除实现、core_test.go TestRV64MultiplicationAndDivision(除零/有符号最小值/余数/高位乘积)。测试:`go test ./executor/cpu/riscv64/`。CI:Test 工作流。备注:向量为规范用例,A09 差分执行器落地前以规范断言为准。
-- [ ] D04 实现目标所需压缩指令。验收：混合长度指令的取指、跳转和异常地址正确。
+- [x] D04 实现目标所需压缩指令。验收：混合长度指令的取指、跳转和异常地址正确。 证据:executor/cpu/riscv64/compressed.go(expandCompressed 覆盖 RV64C 三象限全部编码,HINT 按基指令展开,F 依赖与保留编码区分报告)、core.go 两段取指(2/4 字节)、loader/elf 接受 EF_RISCV_RVC;compressed_test.go TestExpandCompressedAgainstCanonicalEncoding(44 组向量)、TestMixedLengthFetchAndBranch、TestCompressedLoadStoreAndStackRoundTrip、TestCompressedJumpRegistersExecute、core_test.go TestReservedCompressedEncodingsTrap。测试:`make docker-test TEST_ARGS=./executor/cpu/riscv64/`。CI:Test 工作流。备注:C.FLD/FSD/FLDSP/FSDSP 报未实现,随 D07/D08 浮点落地复核。
 - [x] D05 实现原子读改写指令。验收：多客体线程竞争计数，结果与内存序契约一致。 证据:executor/cpu/riscv64/core.go(amo/amoOperation/amoWidth,9 种操作 × W/D)、core_test.go TestAmoReadModifyWrite(17 组含进位/符号扩展/双字长)、TestAmoSignExtendsWordResult、TestAmoRejectsMisalignedAndReservedEncodings、TestAmoWritesMemoryWithZeroDestination。测试:`make docker-test TEST_ARGS=./executor/cpu/riscv64/`。CI:Test 工作流 go test。备注:aq/rl 位在顺序解释器中为空操作。
 - [x] D06 实现保留加载与条件存储。验收：写入冲突、任务切换和映射变化正确使保留失效。 证据:core.go atomic/loadReserved/storeConditional/invalidateReservation、Reset 清保留;core_test.go TestLoadReservedThenStoreConditional、TestStoreConditionalFailsWithoutMatchingReservation、TestOverlappingStoreInvalidatesReservation、TestNonOverlappingStoreKeepsReservation、TestAmoAndFreshLRInvalidateReservation、TestStoreConditionalConsumesReservation、TestResetClearsReservation、TestReservedAccessRejectsMisalignedAndMismatchedEncodings。测试:`make docker-test TEST_ARGS=./executor/cpu/riscv64/`。CI:Test 工作流。备注:AMO 与重叠写使保留失效、任务切换经 Reset 失效;映射变化路径随 H04 fork 落地复核。
 - [ ] D07 实现单精度浮点指令和状态。验收：运算、转换、NaN、无穷和状态标志通过选定参考向量。
 - [ ] D08 实现双精度浮点指令和状态。验收：运算、转换、舍入与异常标志通过选定参考向量。
-- [ ] D09 实现用户态必要的 CSR、计数器和栅栏。验收：权限、不支持访问和可见顺序符合目标配置。
+- [x] D09 实现用户态必要的 CSR、计数器和栅栏。验收：权限、不支持访问和可见顺序符合目标配置。 证据:executor/cpu/riscv64/core.go csr(cycle/instret 只读,任何写意图非法,time 与其余 CSR 明确 not-implemented)、retired 退休计数器;core_test.go TestCSRCountersAreReadable、TestCSRWritesAndUnknownAddressesAreRejected。测试:`make docker-test TEST_ARGS=./executor/cpu/riscv64/`。CI:Test 工作流。备注:time 依赖时钟源,随 C04/L 组宿主时钟接入复核。
 - [ ] D10 将完整 CPU 状态接入任务切换。验收：交替运行两个线程，整数、浮点、TLS 寄存器互不污染。
 - [ ] D11 实现有界执行时间片。验收：纯 CPU 死循环可被调度器暂停，其他任务继续前进。
 - [x] D12 完善非法指令与取指故障。验收：记录准确 PC、指令与故障地址，不导致宿主崩溃。 证据:executor/cpu/riscv64/core.go Trap 携带 PC/指令/故障地址、core_test.go TestTrapKindsAreDistinguished、TestMemoryFaultIsTrapped、TestIllegalEncodingsAreRejected。测试:`go test ./executor/cpu/riscv64/`。CI:Test 工作流。
@@ -108,7 +108,7 @@ Python 和 Node.js 的验收必须执行客体运行时，不能通过调用宿�
 依赖：C02、D01；涉及 CPU 执行的验收依赖 D02。
 
 - [ ] E01 审计页区间与地址运算。验收：零长度、溢出、跨页和部分重叠处理一致。
-- [ ] E02 分离取指、读取和写入权限检查。验收：不可执行页不能取指，只读页不能写入，故障携带访问类型。
+- [x] E02 分离取指、读取和写入权限检查。验收：不可执行页不能取指，只读页不能写入，故障携带访问类型。 证据:executor/cpu/contract.go ExecutableChecker 可选接口、core.go checkExecutable(2/4 字节分段校验,故障携带取指地址与指令编码)、vm/memory/table.go Executable;table_test.go TestExecutableDistinguishesProt、compressed_test.go TestFetchRequiresExecutablePage。测试:`make docker-test TEST_ARGS=./vm/memory/`。CI:Test 工作流。
 - [x] E03 实现匿名私有 mmap。验收：零填充、地址提示、页对齐及失败 errno 与 Linux 一致。 证据:abi/linux/common/syscalls.go mmap handler(对齐/标志/长度校验+Mappable 端口)、executor/elf/mapper.go(自 4GiB 自底向上选址+内存计量)、common syscalls_test.go TestMmapValidatesAndDelegates、program_test.go TestMapperPlacesAndReplacesAnonymous、TestMapperValidatesProtAndBounds。测试:`make docker-test TEST_ARGS=./abi/linux/common/`。CI:Test 工作流。备注:仅匿名私有映射;文件映射按当前兼容配置明确 ENOTSUP,待 E09。
 - [x] E04 实现安全的固定地址映射语义。验收：替换映射与 NOREPLACE 冲突分别处理，失败不留下半成品。 证据:vm/memory/table.go Replace(原子替换、NOREPLACE、净额预算、页丢弃)、table_test.go TestReplaceOverwritesOverlap、TestReplaceNoReplaceFailsAtomically、TestReplaceRespectsBudget;program_test.go TestMapperFixedAndNoReplace。测试:`make docker-test TEST_ARGS=./vm/memory/`。CI:Test 工作流。
 - [x] E05 实现 munmap 的区间拆分。验收：取消中间页、边界页和空洞后，相邻映射数据正确。 证据:vm/memory/table.go Unmap 重写(coversLocked 无缝覆盖校验+落界拆分)、table_test.go TestUnmapSplitsRegionAndKeepsNeighbors、TestUnmapFailsOnPartiallyCoveredRange、paged_test.go TestUnmapDropsPages。测试:`make docker-test TEST_ARGS=./vm/memory/`。CI:Test 工作流。
