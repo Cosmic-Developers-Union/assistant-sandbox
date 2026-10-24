@@ -108,6 +108,9 @@ const PathLimit = 4096
 
 const atCurrentWorkingDirectory = ^uint64(0) - 99
 
+// asm-generic 的 AT_REMOVEDIR:unlinkat 借此表达 rmdir 语义。
+const atRemovedir = 0o1000
+
 const DefaultBufferLimit = 1 << 20
 
 type Random interface {
@@ -1084,7 +1087,16 @@ func (s Syscalls) unlinkat(ctx context.Context, call Call) Reply {
 		return Reply{Errno: code}
 	}
 	flags := call.Args[2]
-	_ = flags
+	info, statErr := s.Files.Stat(ctx, path)
+	if statErr == nil && info != nil {
+		if flags&atRemovedir != 0 {
+			if !info.IsDir() {
+				return Reply{Errno: errno.NotDirectory}
+			}
+		} else if info.IsDir() {
+			return Reply{Errno: errno.IsDirectory}
+		}
+	}
 	if err := s.Files.Remove(ctx, path); err != nil {
 		return Reply{Errno: errnoOf(err)}
 	}
@@ -1221,73 +1233,26 @@ func (s Syscalls) getdents64(ctx context.Context, call Call) Reply {
 	out := make([]byte, 0, capacity)
 	offset := uint64(0)
 	for _, entry := range entries {
-		name := entry.Name()
-		nameBytes := append([]byte(name), 0)
-		reclen := 19 + len(nameBytes)
-		reclen = (reclen + 7) &^ 7
-		if len(out)+reclen > capacity {
-			break
-		}
-		// d_ino
-		ino := uint64(1)
-		for i := 0; i < 8; i++ {
-			out = append(out, byte(ino>>(8*i)))
-		}
-		// d_off
-		offset += uint64(reclen)
-		for i := 0; i < 8; i++ {
-			out = append(out, byte(offset>>(8*i)))
-		}
-		// d_reclen
-		out = append(out, byte(reclen), byte(reclen>>8))
-		// d_type
-		typ := byte(8) // DT_REG
-		if entry.IsDir() {
-			typ = 4 // DT_DIR
-		}
-		out = append(out, typ)
-		// name + padding
-		out = append(out, nameBytes...)
-		for len(out)%reclen != 0 {
-			// pad within this record: ensure total record length is reclen
-			if len(out) >= (len(out)/reclen+1)*reclen {
-				break
-			}
-			out = append(out, 0)
-		}
-		// ensure exact reclen
-		recordStart := len(out) - (len(out) % reclen) // not reliable; instead pad to multiple
-		_ = recordStart
-	}
-	// Fix padding: rebuild with exact reclen padding
-	// (The above loop may not pad correctly; redo below.)
-	out = make([]byte, 0, capacity)
-	offset = 0
-	for _, entry := range entries {
-		name := entry.Name()
-		nameBytes := append([]byte(name), 0)
+		nameBytes := append([]byte(entry.Name()), 0)
 		reclen := (19 + len(nameBytes) + 7) &^ 7
 		if len(out)+reclen > capacity {
 			break
 		}
 		record := make([]byte, reclen)
-		ino := uint64(1)
-		for i := 0; i < 8; i++ {
-			record[i] = byte(ino >> (8 * i))
-		}
+		const inodePlaceholder = 1
+		binary.LittleEndian.PutUint64(record[0:], inodePlaceholder)
 		offset += uint64(reclen)
-		for i := 0; i < 8; i++ {
-			record[8+i] = byte(offset >> (8 * i))
-		}
-		record[16] = byte(reclen)
-		record[17] = byte(reclen >> 8)
-		typ := byte(8)
+		binary.LittleEndian.PutUint64(record[8:], offset)
+		binary.LittleEndian.PutUint16(record[16:], uint16(reclen))
+		record[18] = 8 // DT_REG
 		if entry.IsDir() {
-			typ = 4
+			record[18] = 4 // DT_DIR
 		}
-		record[18] = typ
 		copy(record[19:], nameBytes)
 		out = append(out, record...)
+	}
+	if len(out) == 0 {
+		return Reply{Value: 0}
 	}
 	if err := s.Memory.Write(ctx, call.Args[1], out); err != nil {
 		return Reply{Errno: errno.Fault}

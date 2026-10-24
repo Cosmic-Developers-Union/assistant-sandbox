@@ -9,6 +9,7 @@ import (
 	stdfs "io/fs"
 	"math"
 	"testing"
+	"time"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fd"
@@ -58,6 +59,7 @@ type fakeDescriptors struct {
 	seekErr    error
 	eventfd    [][2]uint64
 	eventfdErr error
+	get        any
 }
 
 func (d *fakeDescriptors) Write(_ context.Context, _ uint64, buffer []byte) (int, error) {
@@ -86,7 +88,10 @@ func (d *fakeDescriptors) Fcntl(_ context.Context, descriptor uint64, cmd uint64
 }
 
 func (d *fakeDescriptors) Get(_ context.Context, descriptor uint64) (any, error) {
-	return nil, d.seekErr
+	if d.seekErr != nil {
+		return nil, d.seekErr
+	}
+	return d.get, nil
 }
 
 func (d *fakeDescriptors) Truncate(_ context.Context, _ uint64, size int64) error {
@@ -364,18 +369,57 @@ func TestSyscallsOverProcessDescriptors(t *testing.T) {
 }
 
 type fakeFiles struct {
-	requests []OpenRequest
-	next     uint64
-	err      error
+	requests    []OpenRequest
+	next        uint64
+	err         error
+	entries     []stdfs.DirEntry
+	removeCalls []string
+	statInfo    stdfs.FileInfo
 }
 
-func (f *fakeFiles) Mkdir(_ context.Context, path string, mode uint32) error  { return f.err }
-func (f *fakeFiles) Remove(_ context.Context, path string) error              { return f.err }
+type fakeDirEntry struct {
+	name    string
+	dir     bool
+	infoErr error
+}
+
+func (e fakeDirEntry) Name() string { return e.name }
+func (e fakeDirEntry) IsDir() bool  { return e.dir }
+func (e fakeDirEntry) Type() stdfs.FileMode {
+	if e.dir {
+		return stdfs.ModeDir
+	}
+	return 0
+}
+func (e fakeDirEntry) Info() (stdfs.FileInfo, error) { return nil, e.infoErr }
+
+type fakeFileInfo struct{ dir bool }
+
+func (i fakeFileInfo) Name() string { return "stub" }
+func (i fakeFileInfo) Size() int64  { return 0 }
+func (i fakeFileInfo) Mode() stdfs.FileMode {
+	if i.dir {
+		return stdfs.ModeDir
+	}
+	return 0
+}
+func (i fakeFileInfo) ModTime() time.Time { return time.Time{} }
+func (i fakeFileInfo) IsDir() bool        { return i.dir }
+func (i fakeFileInfo) Sys() any           { return nil }
+
+func (f *fakeFiles) Mkdir(_ context.Context, path string, mode uint32) error { return f.err }
+func (f *fakeFiles) Remove(_ context.Context, path string) error {
+	f.removeCalls = append(f.removeCalls, path)
+	return f.err
+}
 func (f *fakeFiles) Symlink(_ context.Context, target, linkpath string) error { return f.err }
 func (f *fakeFiles) Link(_ context.Context, oldpath, newpath string) error    { return f.err }
 func (f *fakeFiles) Rename(_ context.Context, oldpath, newpath string) error  { return f.err }
 func (f *fakeFiles) ReadDir(_ context.Context, path string) ([]stdfs.DirEntry, error) {
-	return nil, f.err
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.entries, nil
 }
 
 func (f *fakeFiles) Readlink(_ context.Context, path string) (string, error) {
@@ -389,7 +433,7 @@ func (f *fakeFiles) Stat(_ context.Context, path string) (stdfs.FileInfo, error)
 	if f.err != nil {
 		return nil, f.err
 	}
-	return nil, nil
+	return f.statInfo, nil
 }
 
 func (f *fakeFiles) Open(_ context.Context, request OpenRequest) (uint64, error) {
@@ -1281,4 +1325,102 @@ func cstring(raw []byte) string {
 		return string(raw[:index])
 	}
 	return string(raw)
+}
+
+type namedHandle struct{ name string }
+
+func (n namedHandle) Name() string { return n.name }
+
+func TestGetdents64EncodesRecordsAndRespectsCapacity(t *testing.T) {
+	ctx := context.Background()
+	memory := newFakeMemory()
+	descriptors := &fakeDescriptors{get: namedHandle{name: "/tmp"}}
+	files := &fakeFiles{entries: []stdfs.DirEntry{
+		fakeDirEntry{name: "a.txt"},
+		fakeDirEntry{name: "sub", dir: true},
+	}}
+	handler := Syscalls{Memory: memory, Descriptors: descriptors, Files: files}
+
+	// 小缓冲区只装得下第一条记录(32 字节),返回值等于已写入字节。
+	if reply := handler.Handle(ctx, Call{Syscall: SysGetdents64, Args: [6]uint64{3, 0x2000, 32}}); reply.Errno != "" || reply.Value != 32 {
+		t.Fatalf("getdents64: %+v", reply)
+	}
+	var record [32]byte
+	if err := memory.Read(ctx, 0x2000, record[:]); err != nil {
+		t.Fatal(err)
+	}
+	if ino := binary.LittleEndian.Uint64(record[0:]); ino != 1 {
+		t.Fatalf("d_ino=%d want 1", ino)
+	}
+	reclen := binary.LittleEndian.Uint16(record[16:])
+	if reclen != 32 {
+		t.Fatalf("d_reclen=%d want 32", reclen)
+	}
+	if record[18] != 8 {
+		t.Fatalf("d_type=%d want DT_REG", record[18])
+	}
+	if string(record[19:25]) != "a.txt\x00" {
+		t.Fatalf("名字未按 NUL 结尾: %q", record[19:25])
+	}
+
+	// 大缓冲区两条记录一次读完(32+24=56),d_off 递增且按 8 对齐。
+	if reply := handler.Handle(ctx, Call{Syscall: SysGetdents64, Args: [6]uint64{3, 0x3000, 256}}); reply.Errno != "" || reply.Value != 56 {
+		t.Fatalf("两条记录应共 56 字节: %+v", reply)
+	}
+	var both [56]byte
+	if err := memory.Read(ctx, 0x3000, both[:]); err != nil {
+		t.Fatal(err)
+	}
+	if dOff := binary.LittleEndian.Uint64(both[32+8:]); dOff != 56 {
+		t.Fatalf("第二条 d_off=%d want 56", dOff)
+	}
+	if both[32+18] != 4 {
+		t.Fatalf("目录项 d_type=%d want DT_DIR", both[32+18])
+	}
+	if padding := both[25:32]; !bytes.Equal(padding, []byte{0, 0, 0, 0, 0, 0, 0}) {
+		t.Fatalf("记录尾部填充必须为零: %v", padding)
+	}
+
+	// 缓冲区容不下任何记录时返回 0(目录读取结束)。
+	if reply := handler.Handle(ctx, Call{Syscall: SysGetdents64, Args: [6]uint64{3, 0x2000, 24}}); reply.Errno != "" || reply.Value != 0 {
+		t.Fatalf("过小缓冲区应返回 0: %+v", reply)
+	}
+
+	if reply := (Syscalls{}).Handle(ctx, Call{Syscall: SysGetdents64}); reply.Errno != errno.NotImplemented {
+		t.Fatalf("未装配应报 ENOSYS: %v", reply.Errno)
+	}
+	descriptors.get = namedHandle{name: "/x"}
+	descriptors.seekErr = errno.BadHandle
+	if reply := handler.Handle(ctx, Call{Syscall: SysGetdents64, Args: [6]uint64{9, 0x2000, 256}}); reply.Errno != errno.BadHandle {
+		t.Fatalf("描述符错误应透传: %v", reply.Errno)
+	}
+}
+
+func TestUnlinkatDistinguishesFilesAndDirectories(t *testing.T) {
+	ctx := context.Background()
+	memory := newFakeMemory()
+	if err := memory.Write(ctx, 0x1000, []byte("/tmp\x00")); err != nil {
+		t.Fatal(err)
+	}
+	files := &fakeFiles{}
+	handler := Syscalls{Memory: memory, Files: files}
+
+	files.statInfo = fakeFileInfo{dir: true}
+	if reply := handler.Handle(ctx, Call{Syscall: SysUnlinkat, Args: [6]uint64{atCurrentWorkingDirectory, 0x1000, 0}}); reply.Errno != errno.IsDirectory {
+		t.Fatalf("unlink 目录应报 EISDIR: %v", reply.Errno)
+	}
+	if reply := handler.Handle(ctx, Call{Syscall: SysUnlinkat, Args: [6]uint64{atCurrentWorkingDirectory, 0x1000, atRemovedir}}); reply.Errno != "" {
+		t.Fatalf("AT_REMOVEDIR 删目录应成功: %v", reply.Errno)
+	}
+
+	files.statInfo = fakeFileInfo{dir: false}
+	if reply := handler.Handle(ctx, Call{Syscall: SysUnlinkat, Args: [6]uint64{atCurrentWorkingDirectory, 0x1000, atRemovedir}}); reply.Errno != errno.NotDirectory {
+		t.Fatalf("AT_REMOVEDIR 删文件应报 ENOTDIR: %v", reply.Errno)
+	}
+	if reply := handler.Handle(ctx, Call{Syscall: SysUnlinkat, Args: [6]uint64{atCurrentWorkingDirectory, 0x1000, 0}}); reply.Errno != "" {
+		t.Fatalf("unlink 文件应成功: %v", reply.Errno)
+	}
+	if len(files.removeCalls) != 2 || files.removeCalls[0] != "/tmp" {
+		t.Fatalf("Remove 应收到解析后的路径: %+v", files.removeCalls)
+	}
 }
