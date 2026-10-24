@@ -198,6 +198,8 @@ const (
 	SysNewfstatat
 	SysStatx
 	SysUtimensat
+	SysStatfs
+	SysFstatfs
 )
 
 func (s Syscall) String() string {
@@ -444,6 +446,10 @@ func (s Syscall) String() string {
 		return "statx"
 	case SysUtimensat:
 		return "utimensat"
+	case SysStatfs:
+		return "statfs"
+	case SysFstatfs:
+		return "fstatfs"
 	case SysReadlinkat:
 		return "readlinkat"
 	case SysUmask:

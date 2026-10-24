@@ -493,3 +493,43 @@ func TestUtimensatAndFtruncateAgainstRealFileSystem(t *testing.T) {
 		t.Fatalf("fd atime=%d err=%v", atime, err)
 	}
 }
+
+func TestStatfsAgainstRealQuota(t *testing.T) {
+	ctx := context.Background()
+	system, err := memfs.New(&clock.Virtual{}, memfs.Options{TotalBytes: 8192, MaxNodes: 64})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const pid = 41
+	table := fd.New()
+	table.Attach(pid, fd.Streams{})
+	files := ProcessFiles{System: system, Store: table, PID: pid, Dir: "/"}
+	descriptors := ProcessDescriptors{Table: table, PID: pid}
+	syscalls := Syscalls{Memory: newFakeMemory(), Descriptors: descriptors, Files: files}
+
+	// 路径形态:statfs("/")。
+	writeString(syscalls.Memory.(*fakeMemory), 0x1000, "/")
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysStatfs, Args: [6]uint64{atCurrentWorkingDirectory, 0x1000, 0x3000}}); reply.Errno != "" {
+		t.Fatalf("statfs: %+v", reply)
+	}
+	memory := syscalls.Memory.(*fakeMemory)
+	if blocks := binary.LittleEndian.Uint64([]byte{readByte(memory, 0x3000+8), readByte(memory, 0x3000+9), readByte(memory, 0x3000+10), readByte(memory, 0x3000+11), readByte(memory, 0x3000+12), readByte(memory, 0x3000+13), readByte(memory, 0x3000+14), readByte(memory, 0x3000+15)}); blocks != 2 {
+		t.Fatalf("blocks=%d want 2", blocks)
+	}
+
+	// 句柄形态:fstatfs(fd) 与 statfs 一致。
+	filefd, err := files.Open(ctx, OpenRequest{Path: "/f", Flags: OpenFlags{Mode: OpenReadWrite, Create: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysFstatfs, Args: [6]uint64{filefd, 0x3000}}); reply.Errno != "" {
+		t.Fatalf("fstatfs: %+v", reply)
+	}
+	if blocks := binary.LittleEndian.Uint64([]byte{readByte(memory, 0x3000+8), readByte(memory, 0x3000+9), readByte(memory, 0x3000+10), readByte(memory, 0x3000+11), readByte(memory, 0x3000+12), readByte(memory, 0x3000+13), readByte(memory, 0x3000+14), readByte(memory, 0x3000+15)}); blocks != 2 {
+		t.Fatalf("fstatfs blocks=%d want 2", blocks)
+	}
+}
+
+func readByte(memory *fakeMemory, address uint64) byte {
+	return memory.data[address]
+}

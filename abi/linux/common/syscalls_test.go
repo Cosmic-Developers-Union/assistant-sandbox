@@ -377,6 +377,8 @@ type fakeFiles struct {
 	lstatErr     error
 	setTimeErr   error
 	setTimeCalls []setTimeCall
+	statfsInfo   StatfsInfo
+	statfsErr    error
 }
 
 type setTimeCall struct {
@@ -427,6 +429,13 @@ func (f *fakeFiles) Stat(_ context.Context, path string) (stdfs.FileInfo, error)
 	}
 	f.statPaths = append(f.statPaths, path)
 	return f.statInfo, nil
+}
+
+func (f *fakeFiles) Statfs(_ context.Context, path string) (StatfsInfo, error) {
+	if f.statfsErr != nil {
+		return StatfsInfo{}, f.statfsErr
+	}
+	return f.statfsInfo, nil
 }
 
 func (f *fakeFiles) SetTimes(_ context.Context, path string, atime, mtime int64, follow bool) error {
@@ -1784,6 +1793,8 @@ type statHandle struct {
 	syncErr   error
 	times     []setTimeCall
 	timesErr  error
+	space     vmfs.Space
+	spaceErr  error
 }
 
 func (h *statHandle) Stat() (stdfs.FileInfo, error) { return h.info, h.statErr }
@@ -1810,6 +1821,13 @@ func (h *statHandle) SetTimes(atime, mtime int64) error {
 	}
 	h.times = append(h.times, setTimeCall{atime: atime, mtime: mtime})
 	return nil
+}
+
+func (h *statHandle) Space(context.Context) (vmfs.Space, error) {
+	if h.spaceErr != nil {
+		return vmfs.Space{}, h.spaceErr
+	}
+	return h.space, nil
 }
 
 // bareHandle 无任何可选能力,模拟管道/eventfd 等描述符。
@@ -2276,5 +2294,98 @@ func TestUtimensatResolvesNowOmitAndValidates(t *testing.T) {
 	noClock := Syscalls{Memory: space, Descriptors: descriptors, Files: files}
 	if reply := noClock.Handle(ctx, Call{Syscall: SysUtimensat, Args: [6]uint64{atFDCWD, 0x1000, 0}}); reply.Errno != errno.NotImplemented {
 		t.Fatalf("无时钟: %+v want ENOSYS", reply)
+	}
+}
+
+func TestStatfsEncodesQuotas(t *testing.T) {
+	ctx := context.Background()
+	space := newFakeMemory()
+	files := &fakeFiles{statfsInfo: StatfsInfo{
+		Bytes:  vmfs.Quota{Declared: true, Total: 8192, Used: 2048, Free: 6144},
+		Inodes: vmfs.Quota{Declared: true, Total: 100, Used: 3, Free: 97},
+	}}
+	syscalls := Syscalls{Memory: space, Descriptors: &fakeDescriptors{}, Files: files}
+	writeString(space, 0x1000, "/tmp")
+
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysStatfs, Args: [6]uint64{atCurrentWorkingDirectory, 0x1000, 0x3000}}); reply.Errno != "" {
+		t.Fatalf("statfs: %+v", reply)
+	}
+	stat := decodeStatfs(space, 0x3000)
+	if stat["type"] != 0x01021994 || stat["bsize"] != 4096 || stat["namelen"] != 255 {
+		t.Fatalf("类型字段=%+v", stat)
+	}
+	if stat["blocks"] != 2 || stat["bfree"] != 1 || stat["bavail"] != 1 {
+		t.Fatalf("块容量=%+v", stat)
+	}
+	if stat["files"] != 100 || stat["ffree"] != 97 {
+		t.Fatalf("inode 容量=%+v", stat)
+	}
+
+	// fstatfs 经句柄能力。
+	handle := &statHandle{space: vmfs.Space{
+		Bytes:  vmfs.Quota{Declared: true, Total: 4096, Free: 0},
+		Inodes: vmfs.Quota{Declared: true, Total: 10, Used: 10, Free: 0},
+	}}
+	fstatfs := Syscalls{Memory: space, Descriptors: &fakeDescriptors{get: handle}}
+	if reply := fstatfs.Handle(ctx, Call{Syscall: SysFstatfs, Args: [6]uint64{5, 0x3000}}); reply.Errno != "" {
+		t.Fatalf("fstatfs: %+v", reply)
+	}
+	stat = decodeStatfs(space, 0x3000)
+	if stat["blocks"] != 1 || stat["bfree"] != 0 || stat["ffree"] != 0 {
+		t.Fatalf("fstatfs 容量=%+v", stat)
+	}
+
+	// 未声明配额按 0 报告。
+	empty := &fakeFiles{statfsInfo: StatfsInfo{}}
+	undeclared := Syscalls{Memory: space, Descriptors: &fakeDescriptors{}, Files: empty}
+	if reply := undeclared.Handle(ctx, Call{Syscall: SysStatfs, Args: [6]uint64{atCurrentWorkingDirectory, 0x1000, 0x3000}}); reply.Errno != "" {
+		t.Fatalf("未声明: %+v", reply)
+	}
+	stat = decodeStatfs(space, 0x3000)
+	if stat["blocks"] != 0 || stat["files"] != 0 {
+		t.Fatalf("未声明配额=%+v", stat)
+	}
+
+	// 非目录句柄 ENOTSUP;未装配 ENOSYS;路径错误透传。
+	bare := Syscalls{Memory: space, Descriptors: &fakeDescriptors{get: bareHandle{}}}
+	if reply := bare.Handle(ctx, Call{Syscall: SysFstatfs, Args: [6]uint64{5, 0x3000}}); reply.Errno != errno.NotSupported {
+		t.Fatalf("不可报容量: %+v want ENOTSUP", reply)
+	}
+	if reply := (Syscalls{}).Handle(ctx, Call{Syscall: SysStatfs}); reply.Errno != errno.NotImplemented {
+		t.Fatalf("未装配: %+v want ENOSYS", reply)
+	}
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysStatfs, Args: [6]uint64{4, 0x1000, 0x3000}}); reply.Errno != errno.NotSupported {
+		t.Fatalf("非 AT_FDCWD: %+v want ENOTSUP", reply)
+	}
+	files.statfsErr = errno.Permission
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysStatfs, Args: [6]uint64{atCurrentWorkingDirectory, 0x1000, 0x3000}}); reply.Errno != errno.Permission {
+		t.Fatalf("容量查询故障: %+v want EACCES", reply)
+	}
+}
+
+func decodeStatfs(memory *fakeMemory, address uint64) map[string]uint64 {
+	word := func(offset uint64) uint64 {
+		var raw [8]byte
+		for index := range raw {
+			raw[index] = memory.data[address+offset+uint64(index)]
+		}
+		return binary.LittleEndian.Uint64(raw[:])
+	}
+	half := func(offset uint64) uint64 {
+		var raw [4]byte
+		for index := range raw {
+			raw[index] = memory.data[address+offset+uint64(index)]
+		}
+		return uint64(binary.LittleEndian.Uint32(raw[:]))
+	}
+	return map[string]uint64{
+		"type":    half(0x00),
+		"bsize":   half(0x04),
+		"blocks":  word(0x08),
+		"bfree":   word(0x10),
+		"bavail":  word(0x18),
+		"files":   word(0x20),
+		"ffree":   word(0x28),
+		"namelen": half(0x38),
 	}
 }

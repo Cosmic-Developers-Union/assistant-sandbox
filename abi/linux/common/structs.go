@@ -1,6 +1,10 @@
 package common
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+
+	vmfs "github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fs"
+)
 
 const timespecSize = 16
 
@@ -164,5 +168,56 @@ func encodeStatx(input StatInput, requested uint32) [statxSizeTotal]byte {
 	putTimestamp(statxAtime, input.AtimeSec, input.AtimeNsec)
 	putTimestamp(statxCtime, input.CtimeSec, input.CtimeNsec)
 	putTimestamp(statxMtime, input.MtimeSec, input.MtimeNsec)
+	return out
+}
+
+// asm-generic struct statfs:84 有效字节 + 4 尾部对齐,共 88 字节。
+const (
+	statfsTypeOff  = 0x00
+	statfsBsizeOff = 0x04
+	statfsBlocks   = 0x08
+	statfsBfree    = 0x10
+	statfsBAvail   = 0x18
+	statfsFilesOff = 0x20
+	statfsFFree    = 0x28
+	statfsFsid     = 0x30
+	statfsNameLen  = 0x38
+	statfsFrsize   = 0x3c
+	statfsFlagsOff = 0x40
+	statfsSize     = 88
+)
+
+// tmpfsMagic 是 memfs 型文件系统报告的 f_type(TMPFS_MAGIC)。
+const tmpfsMagic = 0x01021994
+
+// nameMax 是客体文件名长度上限。
+const nameMax = 255
+
+// statfsBlock 是容量换算的块大小。
+const statfsBlock = 4096
+
+// encodeStatfs 把客体文件系统容量编码为 struct statfs。
+// 未声明的配额按 0 报告(与"未配置容量"语义一致)。
+func encodeStatfs(bytesQuota, inodesQuota vmfs.Quota) [statfsSize]byte {
+	var out [statfsSize]byte
+	putU32 := func(offset int, value uint32) {
+		binary.LittleEndian.PutUint32(out[offset:], value)
+	}
+	putU64 := func(offset int, value uint64) {
+		binary.LittleEndian.PutUint64(out[offset:], value)
+	}
+	putU32(statfsTypeOff, tmpfsMagic)
+	putU32(statfsBsizeOff, statfsBlock)
+	if bytesQuota.Declared {
+		putU64(statfsBlocks, bytesQuota.Total/statfsBlock)
+		putU64(statfsBfree, bytesQuota.Free/statfsBlock)
+		putU64(statfsBAvail, bytesQuota.Free/statfsBlock)
+	}
+	if inodesQuota.Declared {
+		putU64(statfsFilesOff, inodesQuota.Total)
+		putU64(statfsFFree, inodesQuota.Free)
+	}
+	putU32(statfsNameLen, nameMax)
+	putU32(statfsFrsize, statfsBlock)
 	return out
 }

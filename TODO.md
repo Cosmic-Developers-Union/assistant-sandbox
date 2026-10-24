@@ -196,7 +196,7 @@ Python 和 Node.js 的验收必须执行客体运行时，不能通过调用宿�
 - [x] I16 完善挂载、只读层和写时复制层。验收：同 VM 一致可见、跨 VM 隔离，复制失败不损坏下层。 证据:filesystem/overlay(copyup/whiteout/只读下层/句柄跨 copy-up/故障注入)、mountfs 挂载表,overlay_test.go、copyup_test.go、mountfs_test.go。测试:`go test ./filesystem/...`。CI:Test 工作流。
 - [ ] I17 实现持久化崩溃恢复。验收：在写入关键步骤注入中断，重启后仅出现已定义的一致状态。
 - [x] I18 实现磁盘与 inode 配额。验收：超额返回 ENOSPC，删除或关闭后按定义释放，硬链接不错误重复计费。 证据:filesystem/memfs/capacity_test.go、overlay/mountfs 容量测试(超容 ENOSPC、硬链接计一次、unlink 后仍占用、恢复重建账目)。测试:`go test ./filesystem/...`。CI:Test 工作流。
-- [ ] I19 接入 statfs/fstatfs。验收：容量与实际配额一致，运行时可据此判断临时空间。
+- [x] I19 接入 statfs/fstatfs。验收：容量与实际配额一致，运行时可据此判断临时空间。 证据:abi/linux/common/structs.go encodeStatfs(asm-generic struct statfs 88 字节:TMPFS_MAGIC、bsize 4096、块/inode 配额按 4096 换算、未声明配额按 0、namelen 255、frsize、零填充)、syscalls.go statfs/fstatfs handler(Files.Statfs 端口经 vm/fs.Capacity、fstatfs 经句柄 Space 能力、非 AT_FDCWD ENOTSUP)、kernel.go ProcessFiles.Statfs、memfs/file.go handle.Space、riscv64 登记号 43/44;syscalls_test.go TestStatfsEncodesQuotas(块换算/未声明归零/ENOTSUP/EACCES)、kernel_test.go TestStatfsAgainstRealQuota(配额 memfs 端到端 statfs("/")与 fstatfs(fd) 一致)。测试:`make docker-test TEST_ARGS="./abi/... ./filesystem/memfs/"`。CI:Test 工作流。备注:overlay 未实现 Capacity,经 overlay 挂载的路径 statfs 明确 ENOTSUP,随挂载表接线复核。
 - [ ] I20 接入文件变更通知所需子集。验收：inotify 创建、写入、删除、队列溢出与关闭可供 Node/Python 使用。
 
 ## J. 信号与客体异常

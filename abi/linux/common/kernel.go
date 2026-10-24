@@ -255,6 +255,25 @@ func (p ProcessFiles) Rename(ctx context.Context, oldpath, newpath string) error
 	return p.System.Rename(ctx, oldpath, newpath)
 }
 
+func (p ProcessFiles) Statfs(ctx context.Context, path string) (StatfsInfo, error) {
+	if p.System == nil {
+		return StatfsInfo{}, errno.Wrap(errno.NotImplemented, "文件端口未装配")
+	}
+	target := path
+	if !strings.HasPrefix(target, "/") {
+		target = pathpkg.Join(p.Dir, target)
+	}
+	capacity, ok := p.System.(fs.Capacity)
+	if !ok {
+		return StatfsInfo{}, errno.Wrap(errno.NotSupported, "文件系统不支持容量查询")
+	}
+	space, err := capacity.Space(ctx, target)
+	if err != nil {
+		return StatfsInfo{}, err
+	}
+	return StatfsInfo{Bytes: space.Bytes, Inodes: space.Inodes}, nil
+}
+
 func (p ProcessFiles) SetTimes(ctx context.Context, path string, atime, mtime int64, follow bool) error {
 	if p.System == nil {
 		return errno.Wrap(errno.NotImplemented, "文件端口未装配")

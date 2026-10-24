@@ -2,6 +2,7 @@ package memfs
 
 import (
 	"cmp"
+	"context"
 	"io"
 	stdfs "io/fs"
 	"slices"
@@ -229,6 +230,16 @@ func (h *handle) Sync(bool) error {
 		return errno.BadHandle
 	}
 	return nil
+}
+
+// Space 报告句柄所在文件系统的容量(fstatfs 的句柄路径)。
+func (h *handle) Space(ctx context.Context) (vmfs.Space, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.closed {
+		return vmfs.Space{}, errno.BadHandle
+	}
+	return h.fs.Space(ctx, "/")
 }
 
 // SetTimes 以纳秒更新句柄文件的访问与修改时间(utimensat 的 fd 路径)。

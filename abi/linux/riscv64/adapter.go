@@ -83,6 +83,8 @@ const (
 	numberFstat           = 80
 	numberStatx           = 291
 	numberUtimensat       = 88
+	numberStatfs          = 43
+	numberFstatfs         = 44
 	numberSocket          = 198
 	numberBind            = 200
 	numberListen          = 201
@@ -359,6 +361,10 @@ func syscallOf(number uint64) common.Syscall {
 		return common.SysStatx
 	case numberUtimensat:
 		return common.SysUtimensat
+	case numberStatfs:
+		return common.SysStatfs
+	case numberFstatfs:
+		return common.SysFstatfs
 	case numberSocket:
 		return common.SysSocket
 	case numberBind:

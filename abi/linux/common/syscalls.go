@@ -108,6 +108,16 @@ type Files interface {
 	// SetTimes 以纳秒更新访问/修改时间;follow 决定是否解析路径
 	// 末端的符号链接(utimensat AT_SYMLINK_NOFOLLOW)。
 	SetTimes(ctx context.Context, path string, atime, mtime int64, follow bool) error
+
+	// Statfs 报告路径所在文件系统的容量视图(statfs)。
+	Statfs(ctx context.Context, path string) (StatfsInfo, error)
+}
+
+// StatfsInfo 是 statfs 编码所需的文件系统容量视图;
+// 配额未声明时按 0 报告。
+type StatfsInfo struct {
+	Bytes  vmfs.Quota
+	Inodes vmfs.Quota
 }
 
 const PathLimit = 4096
@@ -261,6 +271,10 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 		return s.ftruncate(ctx, call)
 	case SysUtimensat:
 		return s.utimensat(ctx, call)
+	case SysStatfs:
+		return s.statfs(ctx, call)
+	case SysFstatfs:
+		return s.fstatfs(ctx, call)
 	case SysFcntl:
 		return s.fcntl(ctx, call)
 	case SysPipe:
@@ -2089,6 +2103,56 @@ func (s Syscalls) fsync(ctx context.Context, call Call, fdatasync bool) Reply {
 	}
 	if err := target.Sync(fdatasync); err != nil {
 		return Reply{Errno: errnoOf(err)}
+	}
+	return Reply{}
+}
+
+// spaceReporter 是文件句柄的可选能力:报告所在文件系统容量(fstatfs)。
+type spaceReporter interface {
+	Space(ctx context.Context) (vmfs.Space, error)
+}
+
+func (s Syscalls) statfs(ctx context.Context, call Call) Reply {
+	if s.Files == nil || s.Memory == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	if call.Args[0] != atCurrentWorkingDirectory {
+		return Reply{Errno: errno.NotSupported}
+	}
+	pathname, code := s.readPath(ctx, call.Args[1])
+	if code != "" {
+		return Reply{Errno: code}
+	}
+	info, err := s.Files.Statfs(ctx, pathname)
+	if err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	return s.writeStatfs(ctx, call.Args[2], info)
+}
+
+func (s Syscalls) fstatfs(ctx context.Context, call Call) Reply {
+	if s.Descriptors == nil || s.Memory == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	handle, err := s.Descriptors.Get(ctx, call.Args[0])
+	if err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	reporter, ok := handle.(spaceReporter)
+	if !ok {
+		return Reply{Errno: errno.NotSupported}
+	}
+	space, err := reporter.Space(ctx)
+	if err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	return s.writeStatfs(ctx, call.Args[1], StatfsInfo{Bytes: space.Bytes, Inodes: space.Inodes})
+}
+
+func (s Syscalls) writeStatfs(ctx context.Context, address uint64, info StatfsInfo) Reply {
+	encoded := encodeStatfs(info.Bytes, info.Inodes)
+	if err := s.Memory.Write(ctx, address, encoded[:]); err != nil {
+		return Reply{Errno: errno.Fault}
 	}
 	return Reply{}
 }
