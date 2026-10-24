@@ -118,6 +118,12 @@ type Canceller interface {
 	Cancelled() bool
 }
 
+// ExecutableChecker 由带权限位的内存实现提供;不可执行页取指报错。
+// Core 通过类型断言发现该能力,缺失时不做取指权限检查。
+type ExecutableChecker interface {
+	Executable(ctx context.Context, address uint64, length uint64) error
+}
+
 type Meter interface {
 	Charge(instructions uint64) error
 }

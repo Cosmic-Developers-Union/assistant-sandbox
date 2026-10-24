@@ -541,3 +541,28 @@ func TestProtectSpansMultipleRegions(t *testing.T) {
 		t.Fatalf("失败时不得改动映射: %+v", regions)
 	}
 }
+
+func TestExecutableDistinguishesProt(t *testing.T) {
+	ctx := context.Background()
+	table := New(0)
+	if err := table.Map(ctx, Region{Start: page(1), End: page(2), Prot: ProtRead | ProtExec}); err != nil {
+		t.Fatal(err)
+	}
+	if err := table.Map(ctx, Region{Start: page(2), End: page(3), Prot: ProtRead | ProtWrite}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := table.Executable(ctx, page(1), 4); err != nil {
+		t.Fatalf("代码页取指应允许: %v", err)
+	}
+	if err := table.Executable(ctx, page(1)+PageSize-2, 2); err != nil {
+		t.Fatalf("代码页末尾 2 字节取指应允许: %v", err)
+	}
+	err := table.Executable(ctx, page(2), 4)
+	if !errors.Is(err, errno.Permission) {
+		t.Fatalf("数据页取指应报 EACCES: %v", err)
+	}
+	if err := table.Executable(ctx, page(9), 2); !errors.Is(err, errno.Range) {
+		t.Fatalf("未映射取指应报 ERANGE: %v", err)
+	}
+}

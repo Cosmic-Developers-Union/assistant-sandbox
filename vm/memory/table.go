@@ -149,6 +149,19 @@ func (t *Table) Check(ctx context.Context, address, length uint64, prot Prot) er
 	return t.checkLocked(address, length, prot)
 }
 
+// Executable 校验 [address,address+length) 具备执行权限,供取指路径调用。
+func (t *Table) Executable(ctx context.Context, address, length uint64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if err := t.checkLocked(address, length, ProtExec); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (t *Table) checkLocked(address, length uint64, prot Prot) error {
 	if length == 0 {
 		return nil

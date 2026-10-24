@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/executor/cpu"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 )
 
 // C 指令编码构造器:逐位组装,与 expandCompressed 相互独立,用于交叉验证。
@@ -300,5 +301,76 @@ func TestCompressedJumpRegistersExecute(t *testing.T) {
 	}
 	if _, err := port.Step(ctx); !errors.As(err, new(cpu.Trap)) {
 		t.Fatalf("应到达 c.ebreak: %v", err)
+	}
+}
+
+// execSparse 在 sparse 之上叠加执行权限位,用于取指权限测试。
+type execSparse struct {
+	*sparse
+	exec map[uint64]uint64
+}
+
+func (s *execSparse) Executable(_ context.Context, address, length uint64) error {
+	end := address + length
+	for base, limit := range s.exec {
+		if address >= base && end <= base+limit {
+			return nil
+		}
+	}
+	return errno.Permission
+}
+
+func TestFetchRequiresExecutablePage(t *testing.T) {
+	ctx := context.Background()
+	memory := &execSparse{sparse: newSparse(), exec: map[uint64]uint64{0: 10}}
+	// 0x00: c.li a0,1(2 字节,在可执行区间内);0x02: 4 字节 nop(0x13)跨出 8 字节边界外的部分;
+	// 0x08: c.jalr 跳到 a1=0x100(不可执行页)。
+	if err := memory.Write(ctx, 0, []byte{0x01, 0x05}); err != nil { // c.li a0, 1
+		t.Fatal(err)
+	}
+	var nop [4]byte
+	binary.LittleEndian.PutUint32(nop[:], encodeOpImm(0x0, 0, 0, 0))
+	if err := memory.Write(ctx, 2, nop[:]); err != nil {
+		t.Fatal(err)
+	}
+	if err := memory.Write(ctx, 6, []byte{0x01, 0x05}); err != nil { // c.addi a0, 1
+		t.Fatal(err)
+	}
+	if err := memory.Write(ctx, 8, []byte{0x82, 0x85}); err != nil { // c.jr a1 @0x08
+		t.Fatal(err)
+	}
+	port, err := New(cpu.Config{Memory: memory, Entry: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := port.WriteRegister(11, 0x100); err != nil {
+		t.Fatal(err)
+	}
+
+	if outcome, err := port.Step(ctx); err != nil || outcome != cpu.Continued {
+		t.Fatalf("可执行页内取指应成功: outcome=%v err=%v", outcome, err)
+	}
+	// 4 字节 nop 起始 0x02,长度 4 → 覆盖 [2,6) ⊂ [0,8) 可执行。
+	if outcome, err := port.Step(ctx); err != nil || outcome != cpu.Continued {
+		t.Fatalf("页内 4 字节取指应成功: outcome=%v err=%v", outcome, err)
+	}
+	// 0x06: c.addi a0, 1,推进到 0x08 的 c.jr。
+	if outcome, err := port.Step(ctx); err != nil || outcome != cpu.Continued {
+		t.Fatalf("可执行页内压缩取指应成功: outcome=%v err=%v", outcome, err)
+	}
+	// c.jr 本身可执行,跳转后的取指才落在不可执行页。
+	if outcome, err := port.Step(ctx); err != nil || outcome != cpu.Continued {
+		t.Fatalf("c.jr 应成功跳转: outcome=%v err=%v", outcome, err)
+	}
+	var trap cpu.Trap
+	_, stepErr := port.Step(ctx)
+	if !errors.As(stepErr, &trap) || trap.Kind != cpu.TrapMemoryFault {
+		t.Fatalf("不可执行取指应产生访存故障: %v", err)
+	}
+	if !errors.Is(stepErr, errno.Permission) {
+		t.Fatalf("故障应携带 EACCES 身份: %v", stepErr)
+	}
+	if trap.Detail != 0x100 {
+		t.Fatalf("故障应携带取指地址 0x100: %+v", trap)
 	}
 }

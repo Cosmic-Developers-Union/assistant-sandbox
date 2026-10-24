@@ -12,6 +12,7 @@ import (
 type Core struct {
 	machine cpu.Machine
 	memory  cpu.Memory
+	exec    cpu.ExecutableChecker
 	meter   cpu.Meter
 	cancel  cpu.Canceller
 	lr      reservation
@@ -43,6 +44,9 @@ func New(config cpu.Config) (*Core, error) {
 		memory: config.Memory,
 		meter:  config.Meter,
 		cancel: config.Canceller,
+	}
+	if checker, ok := config.Memory.(cpu.ExecutableChecker); ok {
+		core.exec = checker
 	}
 
 	core.machine = cpu.Machine{PC: config.Entry, Registers: make([]uint64, numRegs)}
@@ -114,6 +118,9 @@ func (c *Core) Step(ctx context.Context) (cpu.Outcome, error) {
 		// RV64C:取 16 位编码并展开为等价的 32 位指令执行。
 		raw := binary.LittleEndian.Uint16(first[:])
 		c.machine.PC = pc + 2
+		if err := c.checkExecutable(ctx, pc, 2, uint32(raw)); err != nil {
+			return cpu.Trapped, *err
+		}
 		expanded, status := expandCompressed(raw)
 		switch status {
 		case compressedOK:
@@ -145,6 +152,9 @@ func (c *Core) Step(ctx context.Context) (cpu.Outcome, error) {
 	instruction := binary.LittleEndian.Uint32(encoded[:])
 
 	c.machine.PC = pc + 4
+	if err := c.checkExecutable(ctx, pc, 4, instruction); err != nil {
+		return cpu.Trapped, *err
+	}
 	outcome, trap, err := c.execute(ctx, pc, instruction)
 	if err != nil {
 		return 0, err
@@ -153,6 +163,19 @@ func (c *Core) Step(ctx context.Context) (cpu.Outcome, error) {
 		return cpu.Trapped, *trap
 	}
 	return outcome, nil
+}
+
+// checkExecutable 在取指后执行前校验执行权限;故障携带取指地址与指令编码。
+func (c *Core) checkExecutable(ctx context.Context, pc uint64, length uint64, instruction uint32) *cpu.Trap {
+	if c.exec == nil {
+		return nil
+	}
+	if err := c.exec.Executable(ctx, pc, length); err != nil {
+		return &cpu.Trap{
+			Kind: cpu.TrapMemoryFault, Address: pc, Instruction: instruction, Detail: pc, Cause: err,
+		}
+	}
+	return nil
 }
 
 func (c *Core) execute(ctx context.Context, pc uint64, instruction uint32) (cpu.Outcome, *cpu.Trap, error) {
