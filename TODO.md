@@ -117,8 +117,8 @@ Python 和 Node.js 的验收必须执行客体运行时，不能通过调用宿�
 - [ ] E08 实现文件私有映射。验收：客体可读取映射，私有修改不写回源文件。
 - [ ] E09 实现文件共享映射和 msync。验收：两个地址空间与文件读取观察约定的共享数据及持久化结果。
 - [ ] E10 实现 fork 所需地址空间克隆。验收：父子私有页互不影响，共享映射仍共享；先允许复制实现，优化单列。
-- [ ] E11 实现运行时需要的 mremap。验收：移动、扩张及失败时旧映射和数据保持正确。
-- [ ] E12 实现运行时需要的 madvise 子集。验收：每个声明支持的 advice 有真实语义，不支持值返回正确 errno。
+- [x] E11 实现运行时需要的 mremap。验收：移动、扩张及失败时旧映射和数据保持正确。 证据:vm/memory/table.go Resize(原地缩放:收缩丢尾页、扩张要求尾部空闲、预算净额)、Move(整段迁移含页数据,目标空闲校验、源重叠 EINVAL)、abi/linux/common/syscalls.go mremap handler(对齐/标志/FIXED 校验)与 Mappable.Mremap、executor/elf/mapper.go Mremap(收缩/原地扩张/尾部占用时 MAYMOVE 迁移);table_test.go TestResizeShrinksAndDropsTail、TestResizeGrowsInPlaceOnlyWhenFree、TestMoveRelocatesRegionAndPages;program_test.go TestMapperMremapShrinksAndGrows、TestMapperMremapMovesWhenTailBlocked;syscalls_test.go TestMremapValidatesAndDelegates。测试:`make docker-test TEST_ARGS=./vm/memory/`。CI:Test 工作流。备注:旧范围须恰好为一个映射(整段重映射语义);MREMAP_FIXED 目标须空闲。
+- [x] E12 实现运行时需要的 madvise 子集。验收：每个声明支持的 advice 有真实语义，不支持值返回正确 errno。 证据:vm/memory/table.go DropPages(覆盖校验+丢页回到零填充)、abi/linux/common/syscalls.go madvise handler(advice 校验、零长度直通)与 Mappable.Madvise、executor/elf/mapper.go Madvise(DONTNEED 真实语义,NORMAL/RANDOM/SEQUENTIAL/WILLNEED 无可观察差异如实返回);table_test.go TestDropPagesKeepsMappingButDropsContent、program_test.go TestMapperMadviseDropsContents、syscalls_test.go TestMadviseValidatesAndDelegates。测试:`make docker-test TEST_ARGS=./vm/memory/`。CI:Test 工作流。备注:madvise 从无条件成功桩改为真实 handler;FREE/REMOVE 未纳入,未知 advice 报 EINVAL。
 - [ ] E13 实现栈边界与保护页。验收：栈溢出转为客体故障，不能写入其他进程内存。
 - [ ] E14 实现跨 VM 与跨进程内存隔离。验收：相同虚拟地址读到各自数据，越权访问失败。
 - [ ] E15 明确映射、物理页及共享页预算。验收：配额耗尽、释放、fork 与共享映射记账无遗漏或错误重复扣费。
@@ -128,7 +128,7 @@ Python 和 Node.js 的验收必须执行客体运行时，不能通过调用宿�
 依赖：D01、E02；动态装载依赖 E03 至 E09、I 组相应文件能力。
 
 - [x] F01 审计静态 ELF 校验。验收：损坏头、溢出、错误架构和截断段均拒绝且无资源泄漏。 证据:loader/elf/elf.go 与 image.go 校验链(头/段/对齐/预算)、elf_test.go TestLoadRejections、TestLoadRejectsEmptyImage。测试:`go test ./loader/elf/`。CI:Test 工作流。
-- [ ] F02 支持合法的同页 LOAD 段布局。验收：真实链接器生成的相邻段正确装载，权限与数据不互相覆盖。
+- [x] F02 支持合法的同页 LOAD 段布局。验收：真实链接器生成的相邻段正确装载，权限与数据不互相覆盖。 证据:loader/elf/elf.go clusterSegments(同页段合并为页簇:文件内容按虚拟地址拼装、簇内文件重叠拒绝、保护位取并集且 W^X 拒绝、预算按联合尺寸)、入口与 PHDR 检查仍对原始段执行;elf_test.go TestSamePageLoadSegmentsShareOneCluster(同页代码+只读尾段合并为单簇 R|X、内容按偏移就位、空隙零填充)、既有 页内重叠 拒绝用例仍生效(文件内容重叠)。测试:`make docker-test TEST_ARGS=./loader/...`。CI:Test 工作流。
 - [ ] F03 完善初始栈与辅助向量。验收：argc、argv、envp、对齐和所选 libc 所需 AT 项通过客体探针。
 - [ ] F04 支持 PIE 装载偏移。验收：不同合法基址启动同一程序，入口及辅助向量正确。
 - [ ] F05 从客体文件系统解析 PT_INTERP。验收：动态解释器路径不能访问宿主，缺失时返回明确加载错误。
