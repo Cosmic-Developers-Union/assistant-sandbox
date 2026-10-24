@@ -1105,3 +1105,180 @@ func TestEventfd2ValidatesAndDelegates(t *testing.T) {
 		t.Fatalf("实现层错误应透传: %v", reply.Errno)
 	}
 }
+
+type fakeLimiter struct {
+	limit  uint64
+	ok     bool
+	set    uint64
+	setErr error
+}
+
+func (l *fakeLimiter) DescriptorLimit(context.Context) (uint64, bool) { return l.limit, l.ok }
+
+func (l *fakeLimiter) SetDescriptorLimit(_ context.Context, value uint64) error {
+	if l.setErr != nil {
+		return l.setErr
+	}
+	l.limit, l.ok, l.set = value, true, value
+	return nil
+}
+
+func TestGetrlimitReportsConfiguredLimits(t *testing.T) {
+	ctx := context.Background()
+	memory := newFakeMemory()
+	handler := Syscalls{Memory: memory, Limiter: &fakeLimiter{limit: 64, ok: true}}
+
+	if reply := handler.Handle(ctx, Call{Syscall: SysGetrlimit, Args: [6]uint64{rlimitNoFile, 0x2000}}); reply.Errno != "" {
+		t.Fatalf("NOFILE 查询: %v", reply.Errno)
+	}
+	var encoded [16]byte
+	if err := memory.Read(ctx, 0x2000, encoded[:]); err != nil {
+		t.Fatal(err)
+	}
+	if got := binary.LittleEndian.Uint64(encoded[0:]); got != 64 {
+		t.Fatalf("NOFILE 应报告真实限额 64, got %d", got)
+	}
+
+	if reply := handler.Handle(ctx, Call{Syscall: SysGetrlimit, Args: [6]uint64{9, 0x2100}}); reply.Errno != "" {
+		t.Fatalf("未配置资源查询: %v", reply.Errno)
+	}
+	if err := memory.Read(ctx, 0x2100, encoded[:]); err != nil {
+		t.Fatal(err)
+	}
+	if got := binary.LittleEndian.Uint64(encoded[0:]); got != rlimInfinity {
+		t.Fatalf("未配置资源应报告 RLIM_INFINITY, got %d", got)
+	}
+
+	if reply := handler.Handle(ctx, Call{Syscall: SysGetrlimit, Args: [6]uint64{rlimitNoFile, 0}}); reply.Errno != errno.Invalid {
+		t.Fatalf("空指针应报 EINVAL: %v", reply.Errno)
+	}
+}
+
+func TestSetrlimitCannotExceedRealBudget(t *testing.T) {
+	ctx := context.Background()
+	memory := newFakeMemory()
+	limiter := &fakeLimiter{limit: 64, ok: true, setErr: errno.Permission}
+	handler := Syscalls{Memory: memory, Limiter: limiter}
+
+	lower := make([]byte, 16)
+	binary.LittleEndian.PutUint64(lower[0:], 16)
+	binary.LittleEndian.PutUint64(lower[8:], 16)
+	if err := memory.Write(ctx, 0x2000, lower); err != nil {
+		t.Fatal(err)
+	}
+	if reply := handler.Handle(ctx, Call{Syscall: SysSetrlimit, Args: [6]uint64{rlimitNoFile, 0x2000}}); reply.Errno != errno.Permission {
+		t.Fatalf("限额设置被真实预算拒绝时应返回 EPERM: %v", reply.Errno)
+	}
+
+	limiter.setErr = nil
+	if reply := handler.Handle(ctx, Call{Syscall: SysSetrlimit, Args: [6]uint64{rlimitNoFile, 0x2000}}); reply.Errno != "" {
+		t.Fatalf("预算内下调应成功: %v", reply.Errno)
+	}
+	if limiter.set != 16 || limiter.limit != 16 {
+		t.Fatalf("下调应写入限额器: %d", limiter.set)
+	}
+	if reply := handler.Handle(ctx, Call{Syscall: SysGetrlimit, Args: [6]uint64{rlimitNoFile, 0x2100}}); reply.Errno != "" {
+		t.Fatal(reply.Errno)
+	}
+	var encoded [16]byte
+	if err := memory.Read(ctx, 0x2100, encoded[:]); err != nil {
+		t.Fatal(err)
+	}
+	if got := binary.LittleEndian.Uint64(encoded[0:]); got != 16 {
+		t.Fatalf("查询应反映下调后的限额: %d", got)
+	}
+
+	above := make([]byte, 16)
+	binary.LittleEndian.PutUint64(above[0:], 32)
+	binary.LittleEndian.PutUint64(above[8:], 16)
+	if err := memory.Write(ctx, 0x2200, above); err != nil {
+		t.Fatal(err)
+	}
+	if reply := handler.Handle(ctx, Call{Syscall: SysSetrlimit, Args: [6]uint64{rlimitNoFile, 0x2200}}); reply.Errno != errno.Invalid {
+		t.Fatalf("cur 超过 max 应报 EINVAL: %v", reply.Errno)
+	}
+
+	if reply := handler.Handle(ctx, Call{Syscall: SysSetrlimit, Args: [6]uint64{9, 0x2000}}); reply.Errno != errno.NotSupported {
+		t.Fatalf("未配置资源的设置应明确拒绝: %v", reply.Errno)
+	}
+}
+
+func TestPrlimit64WritesOldAndAppliesNew(t *testing.T) {
+	ctx := context.Background()
+	memory := newFakeMemory()
+	limiter := &fakeLimiter{limit: 64, ok: true}
+	handler := Syscalls{Memory: memory, Limiter: limiter}
+
+	request := make([]byte, 16)
+	binary.LittleEndian.PutUint64(request[0:], 8)
+	binary.LittleEndian.PutUint64(request[8:], 8)
+	if err := memory.Write(ctx, 0x2000, request); err != nil {
+		t.Fatal(err)
+	}
+	if reply := handler.Handle(ctx, Call{Syscall: SysPrlimit64, Args: [6]uint64{0, rlimitNoFile, 0x2000, 0x3000}}); reply.Errno != "" {
+		t.Fatalf("prlimit 设置: %v", reply.Errno)
+	}
+	if limiter.set != 8 {
+		t.Fatalf("新限额应生效: %d", limiter.set)
+	}
+	var encoded [16]byte
+	if err := memory.Read(ctx, 0x3000, encoded[:]); err != nil {
+		t.Fatal(err)
+	}
+	if got := binary.LittleEndian.Uint64(encoded[0:]); got != 8 {
+		t.Fatalf("旧值指针应收到设置后的限额: %d", got)
+	}
+}
+
+func TestUnameAndSysinfoUseConfiguredIdentity(t *testing.T) {
+	ctx := context.Background()
+	memory := newFakeMemory()
+	handler := Syscalls{Memory: memory, Sysname: "Linux", Release: "6.8.0-vm", Machine: "riscv64"}
+
+	if reply := handler.Handle(ctx, Call{Syscall: SysUname, Args: [6]uint64{0x2000}}); reply.Errno != "" {
+		t.Fatalf("uname: %v", reply.Errno)
+	}
+	var encoded [390]byte
+	if err := memory.Read(ctx, 0x2000, encoded[:]); err != nil {
+		t.Fatal(err)
+	}
+	if got := cstring(encoded[0*65 : 1*65]); got != "Linux" {
+		t.Fatalf("sysname=%q want Linux", got)
+	}
+	if got := cstring(encoded[2*65 : 3*65]); got != "6.8.0-vm" {
+		t.Fatalf("release=%q want 6.8.0-vm", got)
+	}
+	if got := cstring(encoded[4*65 : 5*65]); got != "riscv64" {
+		t.Fatalf("machine=%q want riscv64", got)
+	}
+	if got := cstring(encoded[1*65 : 2*65]); got != "assistant-sandbox" {
+		t.Fatalf("nodename 应来自客体配置而非宿主: %q", got)
+	}
+
+	if reply := handler.Handle(ctx, Call{Syscall: SysSysinfo, Args: [6]uint64{0x3000}}); reply.Errno != "" {
+		t.Fatalf("sysinfo: %v", reply.Errno)
+	}
+	var info [128]byte
+	if err := memory.Read(ctx, 0x3000, info[:]); err != nil {
+		t.Fatal(err)
+	}
+	// 内存/负载/交换空间字段必须为零填充,不泄露宿主数值;仅 procs=1。
+	for index, b := range info {
+		if index == 80 {
+			continue
+		}
+		if b != 0 {
+			t.Fatalf("sysinfo[%d]=%d 应为零填充", index, b)
+		}
+	}
+	if info[80] != 1 {
+		t.Fatalf("procs 应为 1: %d", info[80])
+	}
+}
+
+func cstring(raw []byte) string {
+	if index := bytes.IndexByte(raw, 0); index >= 0 {
+		return string(raw[:index])
+	}
+	return string(raw)
+}

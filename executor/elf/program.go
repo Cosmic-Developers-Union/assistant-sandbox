@@ -184,6 +184,7 @@ func syscalls(ctx context.Context, process proc.Proc, space *memory.Table, plan 
 	if m := newMapper(space, process, plan); m != nil {
 		handler.Mapper = m
 	}
+	handler.Limiter = &limiter{meters: metersOf(process), pid: uint64(process.ID)}
 	if source, err := process.Resources.Time(); err == nil {
 		handler.Clock = source
 		handler.Sleeper = source

@@ -184,3 +184,39 @@ func (m *mapper) release(ctx context.Context, size uint64) {
 }
 
 var _ common.Mappable = (*mapper)(nil)
+
+// limiter 把会话计量器的描述符预算接到 rlimit 查询;
+// 进程运行期内的 setrlimit 只能在真实预算内下调。
+type limiter struct {
+	meters   resources.Meter
+	pid      uint64
+	override uint64
+	has      bool
+}
+
+func (l *limiter) DescriptorLimit(ctx context.Context) (uint64, bool) {
+	if l.has {
+		return l.override, true
+	}
+	if l.meters == nil {
+		return 0, false
+	}
+	view, err := l.meters.View(ctx, l.pid)
+	if err != nil || view.DescriptorLimit == 0 {
+		return 0, false
+	}
+	return view.DescriptorLimit, true
+}
+
+func (l *limiter) SetDescriptorLimit(ctx context.Context, value uint64) error {
+	if l.meters != nil {
+		view, err := l.meters.View(ctx, l.pid)
+		if err == nil && view.DescriptorLimit != 0 && value > view.DescriptorLimit {
+			return errno.Permission
+		}
+	}
+	l.override, l.has = value, true
+	return nil
+}
+
+var _ common.Limiter = (*limiter)(nil)

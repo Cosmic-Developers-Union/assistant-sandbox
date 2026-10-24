@@ -62,6 +62,15 @@ type Sleeper interface {
 	Sleep(ctx context.Context, nanoseconds uint64) error
 }
 
+// Limiter 暴露客体进程的真实资源限额,供 getrlimit/prlimit64 查询;
+// 上限只允许下调,尝试超过真实预算的设置返回 EPERM。
+type Limiter interface {
+	// DescriptorLimit 返回 NOFILE 限额;false 表示未配置,按 RLIM_INFINITY 报告。
+	DescriptorLimit(ctx context.Context) (uint64, bool)
+
+	SetDescriptorLimit(ctx context.Context, value uint64) error
+}
+
 type Identity struct {
 	PID  uint64
 	PPID uint64
@@ -121,6 +130,8 @@ type Syscalls struct {
 	Mapper Mappable
 
 	Sleeper Sleeper
+
+	Limiter Limiter
 
 	BufferLimit uint64
 
@@ -196,7 +207,7 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 	case SysGetrlimit:
 		return s.getrlimit(ctx, call)
 	case SysSetrlimit:
-		return Reply{Value: 0}
+		return s.setrlimit(ctx, call)
 	case SysGetrusage:
 		return s.getrusage(ctx, call)
 	case SysGetitimer, SysSetitimer:
@@ -894,21 +905,80 @@ func (s Syscalls) getgroups(ctx context.Context, call Call) Reply {
 	return Reply{Value: 0}
 }
 
+// asm-generic 的 RLIMIT_NOFILE;其余资源未纳入客体限额配置,按 RLIM_INFINITY 报告。
+const rlimitNoFile = 7
+
+const rlimInfinity = ^uint64(0)
+
+func (s Syscalls) rlimitPair(ctx context.Context, resource uint64) [16]byte {
+	var encoded [16]byte
+	value := rlimInfinity
+	if resource == rlimitNoFile && s.Limiter != nil {
+		if limit, ok := s.Limiter.DescriptorLimit(ctx); ok {
+			value = limit
+		}
+	}
+	binary.LittleEndian.PutUint64(encoded[0:], value)
+	binary.LittleEndian.PutUint64(encoded[8:], value)
+	return encoded
+}
+
+func (s Syscalls) writeRlimit(ctx context.Context, address, resource uint64) errno.Code {
+	encoded := s.rlimitPair(ctx, resource)
+	if err := s.Memory.Write(ctx, address, encoded[:]); err != nil {
+		return errno.Fault
+	}
+	return ""
+}
+
 func (s Syscalls) prlimit64(ctx context.Context, call Call) Reply {
-	if s.Memory == nil && call.Args[2] != 0 {
+	if s.Memory == nil {
 		return Reply{Errno: errno.NotImplemented}
 	}
-	// RLIM_INFINITY
-	const infinity = ^uint64(0)
 	if call.Args[2] != 0 {
-		var encoded [16]byte
-		binary.LittleEndian.PutUint64(encoded[0:], infinity)
-		binary.LittleEndian.PutUint64(encoded[8:], infinity)
-		if err := s.Memory.Write(ctx, call.Args[2], encoded[:]); err != nil {
-			return Reply{Errno: errno.Fault}
+		if err := s.applyRlimit(ctx, call.Args[1], call.Args[2]); err != "" {
+			return Reply{Errno: err}
+		}
+	}
+	if call.Args[3] != 0 {
+		if code := s.writeRlimit(ctx, call.Args[3], call.Args[1]); code != "" {
+			return Reply{Errno: code}
 		}
 	}
 	return Reply{}
+}
+
+func (s Syscalls) applyRlimit(ctx context.Context, resource, address uint64) errno.Code {
+	var encoded [16]byte
+	if err := s.Memory.Read(ctx, address, encoded[:]); err != nil {
+		return errno.Fault
+	}
+	current := binary.LittleEndian.Uint64(encoded[0:])
+	ceiling := binary.LittleEndian.Uint64(encoded[8:])
+	if current > ceiling {
+		return errno.Invalid
+	}
+	if resource != rlimitNoFile {
+		// 未纳入限额配置的资源不接受设置,明确拒绝而非伪成功。
+		return errno.NotSupported
+	}
+	if s.Limiter == nil {
+		return errno.NotImplemented
+	}
+	if err := s.Limiter.SetDescriptorLimit(ctx, current); err != nil {
+		return errnoOf(err)
+	}
+	return ""
+}
+
+func (s Syscalls) setrlimit(ctx context.Context, call Call) Reply {
+	if s.Memory == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	if err := s.applyRlimit(ctx, call.Args[0], call.Args[1]); err != "" {
+		return Reply{Errno: err}
+	}
+	return Reply{Value: 0}
 }
 
 func (s Syscalls) getrusage(ctx context.Context, call Call) Reply {
@@ -949,12 +1019,8 @@ func (s Syscalls) getrlimit(ctx context.Context, call Call) Reply {
 	if call.Args[1] == 0 {
 		return Reply{Errno: errno.Invalid}
 	}
-	const infinity = ^uint64(0)
-	var encoded [16]byte
-	binary.LittleEndian.PutUint64(encoded[0:], infinity)
-	binary.LittleEndian.PutUint64(encoded[8:], infinity)
-	if err := s.Memory.Write(ctx, call.Args[1], encoded[:]); err != nil {
-		return Reply{Errno: errno.Fault}
+	if code := s.writeRlimit(ctx, call.Args[1], call.Args[0]); code != "" {
+		return Reply{Errno: code}
 	}
 	return Reply{Value: 0}
 }
