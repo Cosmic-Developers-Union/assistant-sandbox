@@ -84,7 +84,10 @@ func TestVMProductionCodeHasNoAmbientHostImports(t *testing.T) {
 			return err
 		}
 		if d.IsDir() {
-			if d.Name() == "testdata" || d.Name() == "build" || d.Name() == "generate" || d.Name() == "internal" || d.Name() == "cmd" || d.Name() == "test" || d.Name() == ".git" {
+			// model/ 是 A06/A07 的契约套件与参考实现宿主侧替身
+			// (入口 Suite(t *testing.T,…)),只在宿主测试进程运行,
+			// 永不进入客体执行;与 internal/、test/ 同属测试基础设施。
+			if d.Name() == "testdata" || d.Name() == "build" || d.Name() == "generate" || d.Name() == "internal" || d.Name() == "cmd" || d.Name() == "test" || d.Name() == "model" || d.Name() == ".git" {
 				return filepath.SkipDir
 			}
 			return nil
