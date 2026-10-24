@@ -38,6 +38,7 @@ const (
 	SysGetEGID
 
 	SysClockGettime
+	SysClockNanosleep
 
 	SysClockGetres
 
@@ -224,6 +225,8 @@ func (s Syscall) String() string {
 		return "getegid"
 	case SysClockGettime:
 		return "clock_gettime"
+	case SysClockNanosleep:
+		return "clock_nanosleep"
 	case SysClockGetres:
 		return "clock_getres"
 	case SysGettimeofday:

@@ -39,6 +39,7 @@ const (
 	numberMunmap          = 215
 	numberMprotect        = 226
 	numberUname           = 160
+	numberClockNanosleep  = 115
 	numberGetcwd          = 17
 	numberSysinfo         = 179
 	numberGetpgid         = 155
@@ -233,6 +234,8 @@ func syscallOf(number uint64) common.Syscall {
 		return common.SysLseek
 	case numberClockGettime:
 		return common.SysClockGettime
+	case numberClockNanosleep:
+		return common.SysClockNanosleep
 	case numberClockGetres:
 		return common.SysClockGetres
 	case numberGettimeofday:

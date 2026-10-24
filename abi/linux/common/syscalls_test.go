@@ -903,3 +903,160 @@ func TestMprotectValidatesAndDelegates(t *testing.T) {
 		t.Fatalf("实现层错误应透传: %v", reply.Errno)
 	}
 }
+
+type fakeSleeper struct {
+	durations []uint64
+	err       error
+	onSleep   func(nanoseconds uint64)
+}
+
+func (s *fakeSleeper) Sleep(_ context.Context, nanoseconds uint64) error {
+	s.durations = append(s.durations, nanoseconds)
+	if s.onSleep != nil {
+		s.onSleep(nanoseconds)
+	}
+	return s.err
+}
+
+func TestClockNanosleepRelative(t *testing.T) {
+	ctx := context.Background()
+	clock := &fakeClock{wall: 1_000, monotonic: 5_000}
+	sleeper := &fakeSleeper{}
+	handler := Syscalls{Memory: newFakeMemory(), Clock: clock, Sleeper: sleeper}
+
+	request := make([]byte, 16)
+	binary.LittleEndian.PutUint64(request[0:], 2)
+	binary.LittleEndian.PutUint64(request[8:], 500)
+	if err := handler.Memory.Write(ctx, 0x2000, request); err != nil {
+		t.Fatal(err)
+	}
+	reply := handler.Handle(ctx, Call{Syscall: SysClockNanosleep, Args: [6]uint64{clockMonotonic, 0, 0x2000}})
+	if reply.Errno != "" {
+		t.Fatalf("相对睡眠应成功: %v", reply.Errno)
+	}
+	if len(sleeper.durations) != 1 || sleeper.durations[0] != 2*nanosPerSecond+500 {
+		t.Fatalf("应等待请求的时长: %+v", sleeper.durations)
+	}
+
+	// 零时长直接成功。
+	binary.LittleEndian.PutUint64(request[0:], 0)
+	binary.LittleEndian.PutUint64(request[8:], 0)
+	if reply := handler.Handle(ctx, Call{Syscall: SysClockNanosleep, Args: [6]uint64{clockRealtime, 0, 0x2000}}); reply.Errno != "" {
+		t.Fatalf("零时长应成功: %v", reply.Errno)
+	}
+}
+
+func TestClockNanosleepValidates(t *testing.T) {
+	ctx := context.Background()
+	clock := &fakeClock{}
+	handler := Syscalls{Memory: newFakeMemory(), Clock: clock, Sleeper: &fakeSleeper{}}
+
+	request := make([]byte, 16)
+	binary.LittleEndian.PutUint64(request[8:], nanosPerSecond)
+	if err := handler.Memory.Write(ctx, 0x2000, request); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		label string
+		args  [6]uint64
+		want  errno.Code
+	}{
+		{"未知时钟", [6]uint64{99, 0, 0x2000}, errno.Invalid},
+		{"纳秒越界", [6]uint64{clockMonotonic, 0, 0x2000}, errno.Invalid},
+		{"未知标志", [6]uint64{clockMonotonic, 2, 0x2000}, errno.Invalid},
+	} {
+		if reply := handler.Handle(ctx, Call{Syscall: SysClockNanosleep, Args: tc.args}); reply.Errno != tc.want {
+			t.Errorf("%s: err=%v want %v", tc.label, reply.Errno, tc.want)
+		}
+	}
+
+	faulty := Syscalls{Memory: &fakeMemory{readErr: errno.Fault}, Clock: clock, Sleeper: &fakeSleeper{}}
+	if reply := faulty.Handle(ctx, Call{Syscall: SysClockNanosleep, Args: [6]uint64{clockMonotonic, 0, 0x2000}}); reply.Errno != errno.Fault {
+		t.Errorf("请求指针坏: err=%v want EFAULT", reply.Errno)
+	}
+
+	if reply := (Syscalls{Memory: newFakeMemory(), Clock: clock}).Handle(ctx, Call{Syscall: SysClockNanosleep}); reply.Errno != errno.NotImplemented {
+		t.Fatalf("未装配 Sleeper 应报 ENOSYS: %v", reply.Errno)
+	}
+}
+
+func TestClockNanosleepInterruptReportsRemaining(t *testing.T) {
+	ctx := context.Background()
+	// 相对睡眠被中断:单调钟在等待期间前进 1 秒,剩余应为 1 秒。
+	clock := &fakeClock{monotonic: 10 * nanosPerSecond}
+	sleeper := &fakeSleeper{err: errno.Interrupted, onSleep: func(uint64) {
+		clock.monotonic += nanosPerSecond
+	}}
+	handler := Syscalls{Memory: newFakeMemory(), Clock: clock, Sleeper: sleeper}
+
+	request := make([]byte, 16)
+	binary.LittleEndian.PutUint64(request[0:], 2)
+	if err := handler.Memory.Write(ctx, 0x2000, request); err != nil {
+		t.Fatal(err)
+	}
+	remain := make([]byte, 16)
+	if err := handler.Memory.Write(ctx, 0x3000, remain); err != nil {
+		t.Fatal(err)
+	}
+	reply := handler.Handle(ctx, Call{Syscall: SysClockNanosleep, Args: [6]uint64{clockMonotonic, 0, 0x2000, 0x3000}})
+	if reply.Errno != errno.Interrupted {
+		t.Fatalf("中断应返回 EINTR: %v", reply.Errno)
+	}
+	if err := handler.Memory.Read(ctx, 0x3000, remain); err != nil {
+		t.Fatal(err)
+	}
+	gotSeconds := binary.LittleEndian.Uint64(remain[0:])
+	gotNanos := binary.LittleEndian.Uint64(remain[8:])
+	if gotSeconds != 1 || gotNanos != 0 {
+		t.Fatalf("剩余时间=%ds+%dns want 1s+0ns", gotSeconds, gotNanos)
+	}
+
+	// 绝对期限被中断时不回填剩余时间。
+	absoluteClock := &fakeClock{monotonic: nanosPerSecond}
+	abst := &fakeSleeper{err: errno.Interrupted, onSleep: func(uint64) {
+		absoluteClock.monotonic += nanosPerSecond / 2
+	}}
+	abshandler := Syscalls{Memory: newFakeMemory(), Clock: absoluteClock, Sleeper: abst}
+	request[0], request[8] = 3, 0
+	if err := abshandler.Memory.Write(ctx, 0x2000, request); err != nil {
+		t.Fatal(err)
+	}
+	reply = abshandler.Handle(ctx, Call{Syscall: SysClockNanosleep, Args: [6]uint64{clockMonotonic, timerAbstime, 0x2000, 0x3000}})
+	if reply.Errno != errno.Interrupted {
+		t.Fatalf("绝对期限中断应返回 EINTR: %v", reply.Errno)
+	}
+}
+
+func TestClockNanosleepAbsoluteDeadline(t *testing.T) {
+	ctx := context.Background()
+	clock := &fakeClock{monotonic: 2 * nanosPerSecond}
+	handler := Syscalls{Memory: newFakeMemory(), Clock: clock, Sleeper: &fakeSleeper{}}
+
+	request := make([]byte, 16)
+	binary.LittleEndian.PutUint64(request[0:], 1)
+	if err := handler.Memory.Write(ctx, 0x2000, request); err != nil {
+		t.Fatal(err)
+	}
+	if reply := handler.Handle(ctx, Call{Syscall: SysClockNanosleep, Args: [6]uint64{clockMonotonic, timerAbstime, 0x2000}}); reply.Errno != "" {
+		t.Fatalf("期限已过应直接成功: %v", reply.Errno)
+	}
+
+	binary.LittleEndian.PutUint64(request[0:], 3)
+	if err := handler.Memory.Write(ctx, 0x2000, request); err != nil {
+		t.Fatal(err)
+	}
+	// 等待一次后时钟推进到期限,循环应在下一次检查时退出。
+	sleeper := handler.Sleeper.(*fakeSleeper)
+	sleeper.onSleep = func(nanoseconds uint64) {
+		if nanoseconds != nanosPerSecond {
+			t.Errorf("应等待到期限还差的 1 秒: %d", nanoseconds)
+		}
+		clock.monotonic += nanoseconds
+	}
+	if reply := handler.Handle(ctx, Call{Syscall: SysClockNanosleep, Args: [6]uint64{clockMonotonic, timerAbstime, 0x2000}}); reply.Errno != "" {
+		t.Fatalf("未到期应等待: %v", reply.Errno)
+	}
+	if len(sleeper.durations) != 1 {
+		t.Fatalf("到期后不得继续等待: %+v", sleeper.durations)
+	}
+}

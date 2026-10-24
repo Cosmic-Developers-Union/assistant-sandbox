@@ -54,6 +54,12 @@ type Clock interface {
 	Monotonic(ctx context.Context) (uint64, error)
 }
 
+// Sleeper 提供可被取消的纳秒级等待;ctx 取消或内核关闭时返回错误,
+// clock_nanosleep 将其转换为 EINTR 并报告剩余时间。
+type Sleeper interface {
+	Sleep(ctx context.Context, nanoseconds uint64) error
+}
+
 type Identity struct {
 	PID  uint64
 	PPID uint64
@@ -112,6 +118,8 @@ type Syscalls struct {
 
 	Mapper Mappable
 
+	Sleeper Sleeper
+
 	BufferLimit uint64
 
 	Random Random
@@ -144,6 +152,8 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 		return s.identity(call)
 	case SysClockGettime:
 		return s.clockGettime(ctx, call)
+	case SysClockNanosleep:
+		return s.clockNanosleep(ctx, call)
 	case SysClockGetres:
 		return s.clockGetres(ctx, call)
 	case SysGettimeofday:
@@ -452,6 +462,148 @@ func (s Syscalls) clockGettime(ctx context.Context, call Call) Reply {
 }
 
 const nanosPerSecond = 1_000_000_000
+
+// TIMER_ABSTIME 要求把请求值解释为时钟绝对时间。
+const timerAbstime = 1
+
+func (s Syscalls) clockNanosleep(ctx context.Context, call Call) Reply {
+	if s.Memory == nil || s.Clock == nil || s.Sleeper == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	if call.Args[0] != clockRealtime && call.Args[0] != clockMonotonic {
+		return Reply{Errno: errno.Invalid}
+	}
+	flags := call.Args[1]
+	if flags&^uint64(timerAbstime) != 0 {
+		return Reply{Errno: errno.Invalid}
+	}
+	seconds, nanoseconds, code := s.readTimespec(ctx, call.Args[2])
+	if code != "" {
+		return Reply{Errno: code}
+	}
+	if nanoseconds >= nanosPerSecond {
+		return Reply{Errno: errno.Invalid}
+	}
+	abstime := flags&uint64(timerAbstime) != 0
+	if !abstime && int64(seconds) < 0 {
+		return Reply{Errno: errno.Invalid}
+	}
+
+	if abstime {
+		return s.sleepUntil(ctx, call, call.Args[0], int64(seconds), int64(nanoseconds))
+	}
+	duration, ok := addDuration(int64(seconds), int64(nanoseconds))
+	if !ok {
+		return Reply{Errno: errno.Overflow}
+	}
+	return s.sleepRelative(ctx, call, call.Args[0], duration)
+}
+
+func (s Syscalls) readTimespec(ctx context.Context, address uint64) (uint64, uint64, errno.Code) {
+	var raw [16]byte
+	if err := s.Memory.Read(ctx, address, raw[:]); err != nil {
+		return 0, 0, errno.Fault
+	}
+	return binary.LittleEndian.Uint64(raw[0:]), binary.LittleEndian.Uint64(raw[8:]), ""
+}
+
+func addDuration(seconds, nanoseconds int64) (int64, bool) {
+	if seconds > (1<<63-1-nanoseconds)/nanosPerSecond {
+		return 0, false
+	}
+	total, ok := mulNoOverflow(seconds, nanosPerSecond)
+	if !ok {
+		return 0, false
+	}
+	sum, err := addNoOverflow(total, nanoseconds)
+	if err != nil {
+		return 0, false
+	}
+	return sum, true
+}
+
+func mulNoOverflow(left, right int64) (int64, bool) {
+	if left == 0 || right == 0 {
+		return 0, true
+	}
+	product := left * right
+	if product/right != left {
+		return 0, false
+	}
+	return product, true
+}
+
+func addNoOverflow(left, right int64) (int64, error) {
+	sum := left + right
+	if sum < left && right > 0 || sum > left && right < 0 {
+		return 0, errno.Overflow
+	}
+	return sum, nil
+}
+
+func (s Syscalls) sleepRelative(ctx context.Context, call Call, clockID uint64, duration int64) Reply {
+	started, err := s.clockNow(ctx, clockID)
+	if err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	if err := s.Sleeper.Sleep(ctx, uint64(duration)); err != nil {
+		return s.interrupted(call, clockID, duration, started)
+	}
+	return Reply{}
+}
+
+func (s Syscalls) sleepUntil(ctx context.Context, call Call, clockID uint64, seconds, nanoseconds int64) Reply {
+	target, ok := addDuration(seconds, nanoseconds)
+	if !ok {
+		return Reply{Errno: errno.Overflow}
+	}
+	for {
+		now, err := s.clockNow(ctx, clockID)
+		if err != nil {
+			return Reply{Errno: errnoOf(err)}
+		}
+		if now >= target {
+			return Reply{}
+		}
+		if err := s.Sleeper.Sleep(ctx, uint64(target-now)); err != nil {
+			// 绝对期限被中断时不更新剩余时间指针。
+			return Reply{Errno: errno.Interrupted}
+		}
+	}
+}
+
+func (s Syscalls) clockNow(ctx context.Context, clockID uint64) (int64, error) {
+	if clockID == clockMonotonic {
+		monotonic, err := s.Clock.Monotonic(ctx)
+		if err != nil {
+			return 0, err
+		}
+		return int64(monotonic), nil
+	}
+	return s.Clock.Wall(ctx)
+}
+
+// interrupted 把等待失败统一呈现为 EINTR,并尽力回填剩余时间。
+func (s Syscalls) interrupted(call Call, clockID uint64, duration, started int64) Reply {
+	if call.Args[3] != 0 {
+		remaining := duration
+		if now, err := s.clockNow(context.Background(), clockID); err == nil && now > started {
+			if elapsed := now - started; elapsed < remaining {
+				remaining -= elapsed
+			} else {
+				remaining = 0
+			}
+		}
+		if remaining < 0 {
+			remaining = 0
+		}
+		encoded := encodeTimespec(remaining/nanosPerSecond, remaining%nanosPerSecond)
+		if err := s.Memory.Write(context.Background(), call.Args[3], encoded[:]); err != nil {
+			return Reply{Errno: errno.Fault}
+		}
+	}
+	return Reply{Errno: errno.Interrupted}
+}
 
 type Heap interface {
 	Break(ctx context.Context) (uint64, error)

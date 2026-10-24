@@ -186,6 +186,7 @@ func syscalls(ctx context.Context, process proc.Proc, space *memory.Table, plan 
 	}
 	if source, err := process.Resources.Time(); err == nil {
 		handler.Clock = source
+		handler.Sleeper = source
 	}
 	if credentials, err := process.Resources.Credentials(); err == nil {
 		if current, err := credentials.Lookup(ctx, uint64(process.ID)); err == nil {

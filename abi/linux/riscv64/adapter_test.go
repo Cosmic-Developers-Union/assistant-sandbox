@@ -216,7 +216,8 @@ func TestSyscallNumberMapping(t *testing.T) {
 		numberGetGID: common.SysGetGID, numberGetEGID: common.SysGetEGID,
 		numberAcct: common.SysAcct, numberPtrace: common.SysPtrace,
 		numberMmap: common.SysMmap, numberMunmap: common.SysMunmap, numberMprotect: common.SysMprotect,
-		999: common.SysUnknown,
+		numberClockNanosleep: common.SysClockNanosleep,
+		999:                  common.SysUnknown,
 	} {
 		if got := syscallOf(number); got != want {
 			t.Fatalf("%d=%v want %v", number, got, want)
