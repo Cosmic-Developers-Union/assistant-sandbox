@@ -1515,3 +1515,194 @@ func TestMadviseValidatesAndDelegates(t *testing.T) {
 		t.Fatalf("实现层错误应透传: %v", reply.Errno)
 	}
 }
+
+func TestReadStringVectorBoundsAndTermination(t *testing.T) {
+	ctx := context.Background()
+	memory := newFakeMemory()
+	handler := Syscalls{Memory: memory, VectorLimit: 8}
+
+	// 三个字符串指针 + NULL:hello / w / 空串。
+	put := func(address uint64, value string) {
+		data := append([]byte(value), 0)
+		if err := memory.Write(ctx, address, data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	put(0x1000, "hello")
+	put(0x1100, "w")
+	put(0x1200, "")
+	writePtr := func(slot uint64, target uint64) {
+		var raw [8]byte
+		binary.LittleEndian.PutUint64(raw[:], target)
+		if err := memory.Write(ctx, slot, raw[:]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writePtr(0x2000, 0x1000)
+	writePtr(0x2008, 0x1100)
+	writePtr(0x2010, 0x1200)
+	writePtr(0x2018, 0)
+
+	got, code := handler.readStringVector(ctx, 0x2000)
+	if code != "" {
+		t.Fatalf("向量读取: %v", code)
+	}
+	if len(got) != 3 || got[0] != "hello" || got[1] != "w" || got[2] != "" {
+		t.Fatalf("向量内容不符: %q", got)
+	}
+
+	// 字符串读取越界:EFAULT(fakeMemory 默认零填充,用 readErr 触发)。
+	faulty := Syscalls{Memory: &fakeMemory{readErr: errno.Fault}, VectorLimit: 8}
+	if _, code := faulty.readStringVector(ctx, 0x2000); code != errno.Fault {
+		t.Fatalf("数组读取越界应报 EFAULT: %v", code)
+	}
+
+	// 条目数超上限:E2BIG。
+	limit := handler.vectorLimit()
+	for slot, target := uint64(0x2000), uint64(0x1000); slot < 0x2000+limit*8; slot, target = slot+8, target+8 {
+		var raw [8]byte
+		binary.LittleEndian.PutUint64(raw[:], target)
+		if err := memory.Write(ctx, slot, raw[:]); err != nil {
+			t.Fatal(err)
+		}
+		if err := memory.Write(ctx, target, []byte{0}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, code := handler.readStringVector(ctx, 0x2000); code != errno.TooBig {
+		t.Fatalf("超上限应报 E2BIG: %v", code)
+	}
+}
+
+func TestReadIovecsBounds(t *testing.T) {
+	ctx := context.Background()
+	memory := newFakeMemory()
+	handler := Syscalls{Memory: memory}
+	raw := make([]byte, 2*16)
+	binary.LittleEndian.PutUint64(raw[0:], 0x5000)
+	binary.LittleEndian.PutUint64(raw[8:], 16)
+	binary.LittleEndian.PutUint64(raw[16:], 0x6000)
+	binary.LittleEndian.PutUint64(raw[24:], 32)
+	if err := memory.Write(ctx, 0x7000, raw); err != nil {
+		t.Fatal(err)
+	}
+
+	got, code := handler.readIovecs(ctx, 0x7000, 2)
+	if code != "" {
+		t.Fatalf("iovec 读取: %v", code)
+	}
+	if len(got) != 2 || got[0] != (Iovec{Base: 0x5000, Length: 16}) || got[1] != (Iovec{Base: 0x6000, Length: 32}) {
+		t.Fatalf("iovec 内容不符: %+v", got)
+	}
+
+	if _, code := handler.readIovecs(ctx, 0x7000, iovMax+1); code != errno.Invalid {
+		t.Fatalf("超 IOV_MAX 应报 EINVAL: %v", code)
+	}
+	if _, code := handler.readIovecs(ctx, 0x7000, 0); code != errno.Invalid {
+		t.Fatalf("零长度应报 EINVAL: %v", code)
+	}
+	faulty := Syscalls{Memory: &fakeMemory{readErr: errno.Fault}}
+	if _, code := faulty.readIovecs(ctx, 0x7000, 2); code != errno.Fault {
+		t.Fatalf("越界数组应报 EFAULT: %v", code)
+	}
+}
+
+func TestEncodeStatMatchesAsmGenericLayout(t *testing.T) {
+	// 逐字段断言与 riscv64 asm-generic struct stat 布局一致(128 字节)。
+	input := StatInput{
+		Dev: 0x102, Ino: 0x1234, Mode: 0o100644, NLink: 3, UID: 1000, GID: 1000,
+		RDev: 0, Size: 0xABC, Blksize: 4096, Blocks: 24,
+		AtimeSec: 1700000000, AtimeNsec: 111, MtimeSec: 1700000001, MtimeNsec: 222,
+		CtimeSec: 1700000002, CtimeNsec: 333,
+	}
+	encoded := encodeStat(input)
+	if len(encoded) != 128 {
+		t.Fatalf("struct stat 应为 128 字节: %d", len(encoded))
+	}
+	assertU64 := func(offset int, want uint64) {
+		if got := binary.LittleEndian.Uint64(encoded[offset:]); got != want {
+			t.Errorf("offset %d: %#x want %#x", offset, got, want)
+		}
+	}
+	assertU32 := func(offset int, want uint32) {
+		if got := binary.LittleEndian.Uint32(encoded[offset:]); got != want {
+			t.Errorf("offset %d: %#x want %#x", offset, got, want)
+		}
+	}
+	assertU64(statDev, 0x102)
+	assertU64(statIno, 0x1234)
+	assertU32(statMode, 0o100644)
+	assertU32(statNLink, 3)
+	assertU32(statUID, 1000)
+	assertU32(statGID, 1000)
+	assertU64(statRDev, 0)
+	assertU64(statSize, 0xABC)
+	assertU32(statBlksize, 4096)
+	assertU64(statBlocks, 24)
+	assertU64(statAtime, 1700000000)
+	assertU64(statAtimeNsec, 111)
+	assertU64(statMtime, 1700000001)
+	assertU64(statMtimeNsec, 222)
+	assertU64(statCtime, 1700000002)
+	assertU64(statCtimeNsec, 333)
+	// 填充字段必须为零。
+	for _, offset := range []int{40, 60, 120, 124} {
+		assertU32(offset, 0)
+	}
+
+	iov := encodeIovec(0x5000, 16)
+	if binary.LittleEndian.Uint64(iov[0:]) != 0x5000 || binary.LittleEndian.Uint64(iov[8:]) != 16 {
+		t.Fatalf("iovec 布局不符: % x", iov[:])
+	}
+}
+
+func TestReadvWritevScatterGather(t *testing.T) {
+	ctx := context.Background()
+	memory := newFakeMemory()
+	descriptors := &fakeDescriptors{input: []byte("hello world!")}
+	handler := Syscalls{Memory: memory, Descriptors: descriptors}
+
+	// readv:两个 iovec,第二个超出剩余数据 → 短读结束。
+	raw := make([]byte, 2*16)
+	binary.LittleEndian.PutUint64(raw[0:], 0x5000)
+	binary.LittleEndian.PutUint64(raw[8:], 8)
+	binary.LittleEndian.PutUint64(raw[16:], 0x6000)
+	binary.LittleEndian.PutUint64(raw[24:], 4)
+	if err := memory.Write(ctx, 0x7000, raw); err != nil {
+		t.Fatal(err)
+	}
+	reply := handler.Handle(ctx, Call{Syscall: SysReadv, Args: [6]uint64{3, 0x7000, 2}})
+	if reply.Errno != "" || reply.Value != 12 {
+		t.Fatalf("readv 应返回累计字节数 12(数据耗尽短读): %+v", reply)
+	}
+	_ = reply
+	var got [8]byte
+	if err := memory.Read(ctx, 0x5000, got[:]); err != nil {
+		t.Fatal(err)
+	}
+	if string(got[:]) != "hello wo" {
+		t.Fatalf("第一段应写入 hello wo: %q", got)
+	}
+
+	// writev:两段拼接写出(第二段 4 字节)。
+	if err := memory.Write(ctx, 0x5000, []byte("hello wo")); err != nil {
+		t.Fatal(err)
+	}
+	if err := memory.Write(ctx, 0x6000, []byte("rld!")); err != nil {
+		t.Fatal(err)
+	}
+	reply = handler.Handle(ctx, Call{Syscall: SysWritev, Args: [6]uint64{3, 0x7000, 2}})
+	if reply.Errno != "" || reply.Value != 12 {
+		t.Fatalf("writev 应返回累计 12: %+v", reply)
+	}
+	if string(descriptors.written) != "hello world!" {
+		t.Fatalf("写出内容: %q", descriptors.written)
+	}
+
+	if reply := handler.Handle(ctx, Call{Syscall: SysReadv, Args: [6]uint64{3, 0x7000, iovMax + 1}}); reply.Errno != errno.Invalid {
+		t.Fatalf("超 IOV_MAX 应报 EINVAL: %v", reply.Errno)
+	}
+	if reply := (Syscalls{}).Handle(ctx, Call{Syscall: SysReadv}); reply.Errno != errno.NotImplemented {
+		t.Fatalf("未装配应报 ENOSYS: %v", reply.Errno)
+	}
+}

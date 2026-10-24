@@ -138,6 +138,9 @@ type Syscalls struct {
 
 	BufferLimit uint64
 
+	// VectorLimit 约束 argv/envp 等指针向量的条目数;0 使用默认值。
+	VectorLimit uint64
+
 	Random Random
 
 	Sysname    string
@@ -186,6 +189,10 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 		return s.mremap(ctx, call)
 	case SysMadvise:
 		return s.madvise(ctx, call)
+	case SysReadv:
+		return s.readv(ctx, call)
+	case SysWritev:
+		return s.writev(ctx, call)
 	case SysUname:
 		return s.uname(ctx, call)
 	case SysGetrandom:
@@ -756,6 +763,191 @@ func (s Syscalls) munmap(ctx context.Context, call Call) Reply {
 		return Reply{Errno: errnoOf(err)}
 	}
 	return Reply{}
+}
+
+// IOV_MAX 是单次分散/聚集 IO 的向量条目上限(asm-generic)。
+const iovMax = 1024
+
+// DefaultVectorLimit 是 argv/envp 指针数默认上限。
+const DefaultVectorLimit = 4096
+
+// Iovec 是分散/聚集 IO 的缓冲区描述符(struct iovec)。
+type Iovec struct {
+	Base   uint64
+	Length uint64
+}
+
+func (s Syscalls) vectorLimit() uint64 {
+	if s.VectorLimit > 0 {
+		return s.VectorLimit
+	}
+	return DefaultVectorLimit
+}
+
+// readStringVector 读取以空指针结尾的字符串指针数组(argv/envp 形态)。
+// 数组缺少 NULL 终止时报 EFAULT(越界读取),条目数超限报 E2BIG,
+// 单个字符串超长报 ENAMETOOLONG,总字节超限报 E2BIG——不允许无限分配。
+func (s Syscalls) readStringVector(ctx context.Context, address uint64) ([]string, errno.Code) {
+	if s.Memory == nil {
+		return nil, errno.NotImplemented
+	}
+	limit := s.vectorLimit()
+	byteLimit := s.BufferLimit
+	if byteLimit == 0 {
+		byteLimit = DefaultBufferLimit
+	}
+	out := make([]string, 0, 8)
+	var total uint64
+	var pointer [8]byte
+	for index := uint64(0); index < limit; index++ {
+		if err := s.Memory.Read(ctx, address+index*8, pointer[:]); err != nil {
+			return nil, errno.Fault
+		}
+		entry := binary.LittleEndian.Uint64(pointer[:])
+		if entry == 0 {
+			return out, ""
+		}
+		str, code := s.readVectorString(ctx, entry)
+		if code != "" {
+			return nil, code
+		}
+		total += uint64(len(str)) + 1
+		if total > byteLimit {
+			return nil, errno.TooBig
+		}
+		out = append(out, str)
+	}
+	return nil, errno.TooBig
+}
+
+// readVectorString 读取单个 NUL 结尾字符串;与路径不同,空串合法(argv 可含空参数)。
+func (s Syscalls) readVectorString(ctx context.Context, address uint64) (string, errno.Code) {
+	var buffer [1]byte
+	out := make([]byte, 0, 64)
+	for offset := uint64(0); offset < PathLimit; offset++ {
+		if err := s.Memory.Read(ctx, address+offset, buffer[:]); err != nil {
+			return "", errno.Fault
+		}
+		if buffer[0] == 0 {
+			return string(out), ""
+		}
+		out = append(out, buffer[0])
+	}
+	return "", errno.NameTooLong
+}
+
+// readIovecs 读取 iovec 数组;个数超限报 EINVAL,数组读取失败报 EFAULT。
+func (s Syscalls) readIovecs(ctx context.Context, address, count uint64) ([]Iovec, errno.Code) {
+	if s.Memory == nil {
+		return nil, errno.NotImplemented
+	}
+	if count == 0 || count > iovMax {
+		return nil, errno.Invalid
+	}
+	raw := make([]byte, count*16)
+	if err := s.Memory.Read(ctx, address, raw); err != nil {
+		return nil, errno.Fault
+	}
+	out := make([]Iovec, count)
+	for index := range out {
+		out[index] = Iovec{
+			Base:   binary.LittleEndian.Uint64(raw[index*16:]),
+			Length: binary.LittleEndian.Uint64(raw[index*16+8:]),
+		}
+	}
+	return out, ""
+}
+
+// readv/writev 的单段缓冲区上限,复用 BufferLimit 约束内存分配。
+func (s Syscalls) scatterGatherLimit() uint64 {
+	if s.BufferLimit > 0 {
+		return s.BufferLimit
+	}
+	return DefaultBufferLimit
+}
+
+func (s Syscalls) readv(ctx context.Context, call Call) Reply {
+	if s.Memory == nil || s.Descriptors == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	iovecs, code := s.readIovecs(ctx, call.Args[1], call.Args[2])
+	if code != "" {
+		return Reply{Errno: code}
+	}
+	limit := s.scatterGatherLimit()
+	total := 0
+	for _, iov := range iovecs {
+		if iov.Length == 0 {
+			continue
+		}
+		if iov.Length > limit {
+			return Reply{Errno: errno.Invalid}
+		}
+		buffer := make([]byte, iov.Length)
+		loaded, err := s.Descriptors.Read(ctx, call.Args[0], buffer)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			if total > 0 {
+				return Reply{Value: uint64(total)}
+			}
+			return Reply{Errno: errnoOf(err)}
+		}
+		if loaded < 0 || loaded > len(buffer) {
+			return Reply{Errno: errno.IO}
+		}
+		if loaded == 0 {
+			break
+		}
+		if err := s.Memory.Write(ctx, iov.Base, buffer[:loaded]); err != nil {
+			return Reply{Errno: errno.Fault}
+		}
+		total += loaded
+		if loaded < len(buffer) {
+			break
+		}
+	}
+	return Reply{Value: uint64(total)}
+}
+
+func (s Syscalls) writev(ctx context.Context, call Call) Reply {
+	if s.Memory == nil || s.Descriptors == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	iovecs, code := s.readIovecs(ctx, call.Args[1], call.Args[2])
+	if code != "" {
+		return Reply{Errno: code}
+	}
+	limit := s.scatterGatherLimit()
+	total := 0
+	for _, iov := range iovecs {
+		if iov.Length == 0 {
+			continue
+		}
+		if iov.Length > limit {
+			if total > 0 {
+				return Reply{Value: uint64(total)}
+			}
+			return Reply{Errno: errno.Invalid}
+		}
+		buffer := make([]byte, iov.Length)
+		if err := s.Memory.Read(ctx, iov.Base, buffer); err != nil {
+			return Reply{Errno: errno.Fault}
+		}
+		written, err := s.Descriptors.Write(ctx, call.Args[0], buffer)
+		if err != nil {
+			if total > 0 {
+				return Reply{Value: uint64(total)}
+			}
+			return Reply{Errno: errnoOf(err)}
+		}
+		total += written
+		if written < len(buffer) {
+			break
+		}
+	}
+	return Reply{Value: uint64(total)}
 }
 
 func (s Syscalls) mremap(ctx context.Context, call Call) Reply {

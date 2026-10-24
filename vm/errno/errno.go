@@ -26,6 +26,7 @@ const (
 	BadHandle    Code = "EBADF：描述符无效"
 	BrokenPipe   Code = "EPIPE：管道对端已关闭"
 	NameTooLong  Code = "ENAMETOOLONG：客体路径超长"
+	TooBig       Code = "E2BIG：参数或缓冲区列表过长"
 	ReadOnlyFS   Code = "EROFS：存储只读"
 	LinkLoop     Code = "ELOOP：符号链接解析过深"
 	NoDevice     Code = "ENXIO：设备不存在或没有控制终端"
@@ -54,7 +55,7 @@ var declared = []Code{
 	NotImplemented, NotSupported, NetworkUnreachable, Invalid, NoProcess, NoChild, Busy, Limit, NotFound,
 	Permission, Exist, NotDirectory, IsDirectory, NotEmpty, BadHandle, BrokenPipe, NameTooLong, ReadOnlyFS,
 	LinkLoop, NoDevice, NoSpace, NoMemory, CrossDevice, Cancelled, Interrupted, WouldBlock, Range, Overflow,
-	TimedOut, NoExec, Version, Fault, IO, Seek,
+	TimedOut, NoExec, Version, Fault, IO, Seek, TooBig,
 }
 
 func Codes() []Code { return slices.Clone(declared) }
@@ -96,6 +97,7 @@ var wasiNumbers = map[Code]uint16{
 	Overflow:    61,
 	TimedOut:    73,
 	NoExec:      45,
+	TooBig:      57,
 	Version:     71,
 }
 
@@ -130,6 +132,7 @@ var linuxNumbers = map[Code]int32{
 	Invalid:            22,
 	NoSpace:            28,
 	NoMemory:           12,
+	TooBig:             7,
 	ReadOnlyFS:         30,
 	BrokenPipe:         32,
 	Range:              34,

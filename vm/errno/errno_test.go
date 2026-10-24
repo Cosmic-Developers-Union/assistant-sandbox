@@ -25,7 +25,7 @@ func TestWASIMappingIsStable(t *testing.T) {
 		NotImplemented: 52, NotSupported: 58, NetworkUnreachable: 40, Permission: 2,
 		Exist: 20, NotDirectory: 54, IsDirectory: 31, NotEmpty: 55, BadHandle: 8,
 		NameTooLong: 37, ReadOnlyFS: 69, LinkLoop: 32, NoSpace: 51, Cancelled: 11,
-		Interrupted: 27, WouldBlock: 6, Range: 68, Overflow: 61, BrokenPipe: 64, NoExec: 45,
+		Interrupted: 27, WouldBlock: 6, Range: 68, Overflow: 61, BrokenPipe: 64, NoExec: 45, TooBig: 57,
 		Fault: 21, IO: 29,
 	}
 
@@ -56,7 +56,7 @@ func TestLinuxMappingIsStable(t *testing.T) {
 		Permission: 13, NotFound: 2, NoProcess: 3, Interrupted: 4, NoDevice: 6,
 		NoExec: 8, BadHandle: 9, NoChild: 10, Limit: 11, WouldBlock: 11, Busy: 16,
 		Exist: 17, CrossDevice: 18, NotDirectory: 20, IsDirectory: 21, Invalid: 22,
-		NoSpace: 28, NoMemory: 12, ReadOnlyFS: 30, BrokenPipe: 32, Range: 34, NameTooLong: 36,
+		NoSpace: 28, NoMemory: 12, TooBig: 7, ReadOnlyFS: 30, BrokenPipe: 32, Range: 34, NameTooLong: 36,
 		NotImplemented: 38, NotEmpty: 39, LinkLoop: 40, Version: 71, Overflow: 75,
 		NotSupported: 95, NetworkUnreachable: 101, TimedOut: 110, Cancelled: 125,
 		Fault: 14, IO: 5, Seek: 29,

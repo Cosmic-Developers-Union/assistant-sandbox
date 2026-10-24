@@ -51,6 +51,9 @@ const (
 	SysMremap
 	SysMprotect
 
+	SysReadv
+	SysWritev
+
 	SysUname
 
 	SysSysinfo
@@ -242,6 +245,10 @@ func (s Syscall) String() string {
 		return "mremap"
 	case SysMprotect:
 		return "mprotect"
+	case SysReadv:
+		return "readv"
+	case SysWritev:
+		return "writev"
 	case SysUname:
 		return "uname"
 	case SysSysinfo:

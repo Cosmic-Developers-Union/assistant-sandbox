@@ -39,6 +39,8 @@ const (
 	numberMunmap          = 215
 	numberMprotect        = 226
 	numberMremap          = 216
+	numberReadv           = 65
+	numberWritev          = 66
 	numberUname           = 160
 	numberClockNanosleep  = 115
 	numberGetcwd          = 17
@@ -265,6 +267,10 @@ func syscallOf(number uint64) common.Syscall {
 		return common.SysMprotect
 	case numberMremap:
 		return common.SysMremap
+	case numberReadv:
+		return common.SysReadv
+	case numberWritev:
+		return common.SysWritev
 	case numberMadvise:
 		return common.SysMadvise
 	case numberRead:

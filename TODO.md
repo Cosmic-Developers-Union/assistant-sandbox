@@ -147,8 +147,8 @@ Python 和 Node.js 的验收必须执行客体运行时，不能通过调用宿�
 - [ ] G01 建立系统调用登记与能力查询。验收：编号、名称、实现状态、测试一一对应，未知调用返回 ENOSYS。
 - [x] G02 审计参数寄存器和返回值编码。验收：六参数、64 位值、负 errno 与目标架构一致。 证据:abi/linux/riscv64/adapter.go 分派编码(六参数/负 errno)、adapter_test.go TestDispatchDecodesArguments、TestDispatchWritesHandlerValue、TestDispatchUnknownSyscallWritesENOSYS。测试:`go test ./abi/linux/riscv64/`。CI:Test 工作流。
 - [x] G03 实现有界用户指针复制。验收：无效、跨页和溢出指针返回 EFAULT，不触发宿主 panic。 证据:abi/linux/common/syscalls.go 有界内存复制(坏地址/超限返回 EFAULT)、errno.go Fault 身份,syscalls_test.go TestGuestAddressFaults、TestBufferLimitRejectsOversizedCount。测试:`go test ./abi/linux/common/`。CI:Test 工作流。
-- [ ] G04 实现有界字符串与向量读取。验收：路径、argv、envp 超长或缺少终止符时行为明确，不能无限分配。
-- [ ] G05 集中实现 ABI 结构体编码。验收：stat、timespec、iovec 等逐字段与目标 Linux C 头生成的布局比较。
+- [x] G04 实现有界字符串与向量读取。验收：路径、argv、envp 超长或缺少终止符时行为明确，不能无限分配。 证据:abi/linux/common/syscalls.go readStringVector(NULL 终止指针向量:条目上限 VectorLimit/4096、总字节 ≤ BufferLimit、超限 E2BIG、数组越界 EFAULT、空串合法)与 readVectorString、readIovecs(IOV_MAX=1024 校验、EFAULT);errno.go 新增 E2BIG(asm-generic 7 / WASI 57);syscalls_test.go TestReadStringVectorBoundsAndTermination、TestReadIovecsBounds。测试:`make docker-test TEST_ARGS=./abi/linux/common/`。CI:Test 工作流。备注:消费方为 H06/H07 execve,落地后以真实客体参数传递复核。
+- [x] G05 集中实现 ABI 结构体编码。验收：stat、timespec、iovec 等逐字段与目标 Linux C 头生成的布局比较。 证据:abi/linux/common/structs.go StatInput/encodeStat(asm-generic struct stat 128 字节逐字段:dev/ino/mode/nlink/uid/gid/rdev/size/blksize/blocks/atime/mtime/ctime 及_nsec,填充字段为零)与 encodeIovec;syscalls_test.go TestEncodeStatMatchesAsmGenericLayout 逐偏移对拍。测试:`make docker-test TEST_ARGS=./abi/linux/common/`。CI:Test 工作流。备注:stat 系统调用层接线随 I08 落地复核。
 - [ ] G06 完善 errno 映射。验收：常见文件、内存、进程和网络错误可区分，未知宿主错误不会伪装成功。
 - [ ] G07 定义可中断阻塞调用约定。验收：等待可被信号、关闭和超时唤醒，EINTR 与重启策略可测试。
 - [ ] G08 增加受限的系统调用追踪。验收：记录 PID/TID、调用、结果和耗时，默认不泄露缓冲区内容，日志大小有界。
@@ -184,7 +184,7 @@ Python 和 Node.js 的验收必须执行客体运行时，不能通过调用宿�
 - [ ] I04 统一打开文件描述与 fd 表。验收：dup/fork 共享文件偏移，分别 open 拥有独立偏移，引用计数正确。
 - [ ] I05 接入 dup、dup3 与 fcntl 描述符标志。验收：CLOEXEC、NONBLOCK、关闭和复制语义正确。
 - [ ] I06 完善 read/write 的短读短写。验收：部分完成、EOF、零长度及中断结果与 Linux 一致。
-- [ ] I07 实现 readv/writev 与位置读写。验收：跨多个缓冲区的部分完成、偏移和无效指针处理正确。
+- [x] I07 实现 readv/writev 与位置读写。验收：跨多个缓冲区的部分完成、偏移和无效指针处理正确。 证据:abi/linux/common/syscalls.go readv/writev(跨多 iovec 累计、EOF/短读结束、部分完成返回已完成量、单段 ≤ BufferLimit、零长度段跳过)、riscv64 登记号 65/66;syscalls_test.go TestReadvWritevScatterGather(分散写入/聚集写出/IOV_MAX/ENOSYS)。测试:`make docker-test TEST_ARGS=./abi/linux/common/`。CI:Test 工作流。
 - [ ] I08 接入 stat/fstat/fstatat 与 statx 必需子集。验收：inode、类型、链接数、权限、所有权、时间及设备号布局正确。
 - [ ] I09 接入 getdents64。验收：小缓冲区、多次读取、目录项类型和目录游标正确。
 - [ ] I10 接入 mkdirat/unlinkat/renameat 所需子集。验收：目录、文件、覆盖和跨挂载失败语义正确。
