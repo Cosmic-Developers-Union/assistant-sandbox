@@ -7,6 +7,7 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       GOFLAGS: -p=2
       GOMEMLIMIT: 768MiB
@@ -15,6 +16,35 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      # B09:发布门禁——标签提交必须先通过 Test 工作流的全部任务
+      # (light/integration/differential/posix/runtime);等待其完成,
+      # 结论非 success 即拒绝发布。
+      - name: Require Test workflow success for this tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          sha=$(git rev-parse HEAD)
+          deadline=$(( $(date +%s) + 1800 ))
+          while :; do
+            runs=$(gh api "repos/$GH_REPO/actions/workflows/test.yml/runs?head_sha=$sha" --jq '[.workflow_runs[] | select(.event != "pull_request")]')
+            conclusions=$(printf '%s' "$runs" | jq -r '[.[].conclusion] | join(",")')
+            statuses=$(printf '%s' "$runs" | jq -r '[.[].status] | join(",")')
+            if [ -n "$conclusions" ] && [ "$statuses" = "completed" ]; then
+              if [ "$conclusions" = "success" ]; then
+                echo "Test 工作流对该提交结论为 success,放行发布"
+                exit 0
+              fi
+              echo "Test 工作流对该提交结论为 $conclusions,未通过目标提交验收,拒绝发布" >&2
+              exit 1
+            fi
+            if [ "$(date +%s)" -gt "$deadline" ]; then
+              echo "等待 Test 工作流超时(30 分钟),拒绝发布" >&2
+              exit 1
+            fi
+            echo "等待 Test 工作流完成(当前: ${statuses:-尚未注册})…"
+            sleep 60
+          done
       - name: Build guest and CLI
         shell: bash
         run: |

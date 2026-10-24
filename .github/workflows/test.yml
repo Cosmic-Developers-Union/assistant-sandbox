@@ -9,8 +9,10 @@ concurrency:
   group: test-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  test:
+  # B08:轻量任务——源码边界、lint、构建器可重复性与勾选/许可纪律。
+  light:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
       GOFLAGS: -p=2
       GOMEMLIMIT: 768MiB
@@ -25,23 +27,88 @@ jobs:
           test -z "$(git ls-files -- assistant-bash.wasm assistant-bash.wasm.gz)"
           go mod tidy -diff
           go build ./...
-      - name: Build WASI guest
-        run: make guest
+      - name: Toolchain declaration check (B03)
+        run: make toolchain
+      - name: Isolated checkout resolves and builds (B01)
+        run: make isolated-check
+      - name: Track discipline and license inventory (A10/B10)
+        run: go test ./internal/metadata/ -count=1
+      - name: Reproducible guest build (B06)
+        run: go test ./internal/build/ -count=1
       - uses: golangci/golangci-lint-action@v9
         with:
           version: v2.14.0
           verify: true
           args: ./...
-      - name: Test
+
+  # B08:集成任务——内核、ABI、执行器全量测试与 ISA 回归门禁。
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      GOFLAGS: -p=2
+      GOMEMLIMIT: 768MiB
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build WASI guest
+        run: make guest
+      - name: Unit and integration tests
         shell: bash
         run: |
           ulimit -d 1048576
-          go test ./...
+          go test -count=1 ./abi/... ./filesystem/... ./loader/... ./vm/... ./executor/... ./model/... ./internal/guest/ ./deployment/... ./contract/... ./inspect/...
       - name: ISA regression gate (D13)
         shell: bash
         run: go test ./executor/cpu/... -count=1 -v 2>&1 | grep -E '^(=== RUN|--- FAIL|FAIL|ok)' | tail -120
+
+  # B08:差分任务——同一客体字节码在 qemu-riscv64 参考与本 VM 对拍(A09)。
+  differential:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install qemu-riscv64 user emulation
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq qemu-user-static
+      - name: Profile consistency and differential probes
+        run: |
+          go test ./abi/... -count=1
+          go test ./internal/diff/ -count=1 -v
+
+  # B08:POSIX 开发检查。
+  posix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GOFLAGS: -p=2
+      GOMEMLIMIT: 768MiB
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
       - name: POSIX development checks
         run: make -C test/posix gate
+
+  # B08:运行时入口任务——离线运行、CLI 与产物核验。
+  runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GOFLAGS: -p=2
+      GOMEMLIMIT: 768MiB
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Offline VM lifecycle (B05)
+        run: make offline-check
       - name: Build CLI
         run: go build -trimpath -o assistant-sandbox ./cmd/assistant-sandbox
       - name: Verify CLI
