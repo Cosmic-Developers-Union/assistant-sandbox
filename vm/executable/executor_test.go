@@ -3,6 +3,7 @@ package executable
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -296,4 +297,58 @@ func TestDeathInvalidSignalStaysFatal(t *testing.T) {
 		t.Fatalf("result=%+v want exited/125", result)
 	}
 	_ = inst.Close()
+}
+
+// TestStopContinueParkPureCPUTask 验证 STOP/CONT 驻停与恢复纯 CPU
+// 任务:驻停期间程序不再推进(在指令/循环边界的 ctx.Err() 检查处
+// 阻塞),CONT 恢复推进,KILL 强制终止为被信号终止。
+func TestStopContinueParkPureCPUTask(t *testing.T) {
+	b := NewBuiltin()
+	var progress atomic.Int64
+	program := Func(func(ctx context.Context, _ proc.Proc) (uint8, error) {
+		for ctx.Err() == nil {
+			progress.Add(1)
+		}
+		return 0, ctx.Err()
+	})
+	inst, err := b.Start(context.Background(), program, testProc())
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForProgress(t, &progress, 1000)
+
+	if err := inst.Interrupt(signal.STOP); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(30 * time.Millisecond)
+	frozen := progress.Load()
+	time.Sleep(60 * time.Millisecond)
+	if progress.Load() != frozen {
+		t.Fatalf("驻停期间仍在推进: %d → %d", frozen, progress.Load())
+	}
+
+	if err := inst.Interrupt(signal.CONT); err != nil {
+		t.Fatal(err)
+	}
+	waitForProgress(t, &progress, frozen+1000)
+
+	if err := inst.Interrupt(signal.KILL); err != nil {
+		t.Fatal(err)
+	}
+	result, err := inst.Wait(t.Context())
+	if err != nil || result.Reason != Signaled || result.Signal != signal.KILL {
+		t.Fatalf("result=%+v err=%v want signaled/SIGKILL", result, err)
+	}
+	_ = inst.Close()
+}
+
+func waitForProgress(t *testing.T, progress *atomic.Int64, target int64) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for progress.Load() < target {
+		if time.Now().After(deadline) {
+			t.Fatalf("任务未推进到 %d(当前 %d)", target, progress.Load())
+		}
+		time.Sleep(time.Millisecond)
+	}
 }

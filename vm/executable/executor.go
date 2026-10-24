@@ -81,6 +81,69 @@ type Builtin struct{}
 
 func NewBuiltin() *Builtin { return &Builtin{} }
 
+// pauseGate 驻停程序执行:程序上下文的 Err() 在驻停期间阻塞,
+// 解释器在指令边界的 ctx.Err() 检查处暂停推进;恢复或父上下文
+// 结束(如关闭强制终止)后放行。无需程序主动配合。
+type pauseGate struct {
+	mu     sync.Mutex
+	cond   *sync.Cond
+	parent context.Context
+	parked bool
+}
+
+func newPauseGate(parent context.Context, done <-chan struct{}) *pauseGate {
+	gate := &pauseGate{parent: parent}
+	gate.cond = sync.NewCond(&gate.mu)
+	// 父上下文取消(关闭/强制终止)或实例结束时唤醒所有驻停的 Err() 调用。
+	go func() {
+		select {
+		case <-parent.Done():
+		case <-done:
+		}
+		gate.cond.Broadcast()
+	}()
+	return gate
+}
+
+func (g *pauseGate) park() {
+	g.mu.Lock()
+	g.parked = true
+	g.mu.Unlock()
+	g.cond.Broadcast()
+}
+
+func (g *pauseGate) resume() {
+	g.mu.Lock()
+	g.parked = false
+	g.mu.Unlock()
+	g.cond.Broadcast()
+}
+
+func (g *pauseGate) Err() error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for g.parked {
+		// 父上下文取消(KILL/关闭等强制终止)优先于驻停:
+		// 唤醒等待者放行,程序经 ctx.Err() 观察取消。
+		if err := g.parent.Err(); err != nil {
+			return err
+		}
+		g.cond.Wait()
+	}
+	return g.parent.Err()
+}
+
+// gateContext 把 Err() 的驻停语义接入程序上下文;其余委托父上下文。
+type gateContext struct {
+	context.Context
+
+	gate *pauseGate
+}
+
+func (c gateContext) Err() error { return c.gate.Err() }
+
+var _ context.Context = gateContext{}
+
 func (Builtin) Start(ctx context.Context, program Program, p Proc) (Instance, error) {
 	if program == nil {
 		return nil, errno.Invalid
@@ -93,6 +156,8 @@ func (Builtin) Start(ctx context.Context, program Program, p Proc) (Instance, er
 		done:   make(chan struct{}),
 		cancel: cancel,
 	}
+	gate := newPauseGate(runCtx, inst.done)
+	inst.gate = gate
 	go func() {
 		defer close(inst.done)
 		var (
@@ -108,7 +173,7 @@ func (Builtin) Start(ctx context.Context, program Program, p Proc) (Instance, er
 					return
 				}
 			}()
-			code, runErr = program.Run(runCtx, p)
+			code, runErr = program.Run(gateContext{Context: runCtx, gate: gate}, p)
 		}()
 		result := Result{Code: code, Reason: Exited}
 		if cause := context.Cause(runCtx); cause != nil {
@@ -136,6 +201,7 @@ func (Builtin) Start(ctx context.Context, program Program, p Proc) (Instance, er
 type builtinInstance struct {
 	done   chan struct{}
 	cancel context.CancelCauseFunc
+	gate   *pauseGate
 
 	mu      sync.Mutex
 	result  Result
@@ -165,6 +231,15 @@ func (i *builtinInstance) Wait(ctx context.Context) (Result, error) {
 	}
 }
 
+// stopFamily 报告信号是否属于停止族(SIGSTOP/TSTP/TTIN/TTOU)。
+func stopFamily(n signal.Number) bool {
+	switch n {
+	case signal.STOP, signal.TSTP, signal.TTIN, signal.TTOU:
+		return true
+	}
+	return false
+}
+
 func (i *builtinInstance) Interrupt(n signal.Number) error {
 	if !n.Valid() {
 		return errno.Invalid
@@ -173,6 +248,15 @@ func (i *builtinInstance) Interrupt(n signal.Number) error {
 	case <-i.done:
 		return errno.NoProcess
 	default:
+	}
+	// 停止族驻停执行,CONT 恢复;其余信号按被信号终止取消。
+	switch {
+	case stopFamily(n):
+		i.gate.park()
+		return nil
+	case n == signal.CONT:
+		i.gate.resume()
+		return nil
 	}
 	i.cancel(interrupt{n: n})
 	return nil

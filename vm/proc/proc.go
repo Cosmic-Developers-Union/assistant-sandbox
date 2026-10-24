@@ -18,6 +18,10 @@ const (
 	Ready State = iota
 	Running
 
+	// Stopped 是收到 SIGSTOP 族后的驻停状态:任务暂停推进,
+	// SIGCONT 恢复,SIGKILL 可直接终止(J07)。
+	Stopped
+
 	Zombie
 )
 
@@ -27,6 +31,8 @@ func (s State) String() string {
 		return "ready"
 	case Running:
 		return "running"
+	case Stopped:
+		return "stopped"
 	case Zombie:
 		return "zombie"
 	default:
@@ -215,7 +221,8 @@ func (t *Table) Exit(id PID, code uint8, signal uint8) error {
 	if !ok {
 		return errno.NoProcess
 	}
-	if p.State != Running {
+	// 驻停进程可被 SIGKILL 直接终止:Stopped → Zombie 合法。
+	if p.State != Running && p.State != Stopped {
 		return errno.Busy
 	}
 	p.State = Zombie
@@ -228,6 +235,33 @@ func (t *Table) Exit(id PID, code uint8, signal uint8) error {
 		}
 	}
 	t.entries[id] = p
+	return nil
+}
+
+// Stop 把运行中的进程转入驻停状态;僵尸与已驻停进程报错。
+func (t *Table) Stop(id PID) error {
+	p, ok := t.entries[id]
+	if !ok {
+		return errno.NoProcess
+	}
+	if p.State != Running {
+		return errno.Busy
+	}
+	p.State = Stopped
+	t.entries[id] = p
+	return nil
+}
+
+// Continue 把驻停进程恢复为运行;非驻停进程按 Linux 语义视为无操作成功。
+func (t *Table) Continue(id PID) error {
+	p, ok := t.entries[id]
+	if !ok {
+		return errno.NoProcess
+	}
+	if p.State == Stopped {
+		p.State = Running
+		t.entries[id] = p
+	}
 	return nil
 }
 

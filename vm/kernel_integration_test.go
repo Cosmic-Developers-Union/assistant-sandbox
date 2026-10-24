@@ -8,6 +8,7 @@ import (
 	stdfs "io/fs"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -144,9 +145,6 @@ func TestKernelSignalTerminatesRunningProgram(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := kernel.Signal(child.ID, signal.STOP); !errors.Is(err, errno.NotSupported) {
-		t.Fatal(err)
-	}
 	type outcome struct {
 		status ExitStatus
 		err    error
@@ -158,6 +156,25 @@ func TestKernelSignalTerminatesRunningProgram(t *testing.T) {
 		results <- outcome{status, err}
 	}()
 	time.Sleep(20 * time.Millisecond)
+
+	// J07:SIGSTOP 驻停运行中的任务,状态可观察(此前报告 ENOTSUP)。
+	if err := kernel.Signal(child.ID, signal.STOP); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range kernel.Processes() {
+		if p.ID == child.ID && p.State != proc.Stopped {
+			t.Fatalf("驻停后状态=%v want stopped", p.State)
+		}
+	}
+	// SIGCONT 恢复:进程回到运行状态且仍可被终止。
+	if err := kernel.Signal(child.ID, signal.CONT); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range kernel.Processes() {
+		if p.ID == child.ID && p.State != proc.Running {
+			t.Fatalf("继续后状态=%v want running", p.State)
+		}
+	}
 	if err := kernel.Signal(child.ID, signal.TERM); err != nil {
 		t.Fatal(err)
 	}
@@ -1200,5 +1217,101 @@ func TestKillSignalDispatchSemantics(t *testing.T) {
 	}
 	if err := kernel.Close(t.Context()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestKernelStopContinueKillPureCPUTask 验证 J07:纯 CPU 任务可被
+// SIGSTOP 驻停(推进冻结)、SIGCONT 恢复、SIGKILL 终止——包括驻停
+// 状态下被 KILL(Stopped → Zombie),父进程 waitid 观察到信号终止。
+func TestKernelStopContinueKillPureCPUTask(t *testing.T) {
+	var progress atomic.Int64
+	registry, err := executable.New(map[string]executable.Program{
+		"spin": executable.Func(func(ctx context.Context, _ proc.Proc) (uint8, error) {
+			for ctx.Err() == nil {
+				progress.Add(1)
+			}
+			return 0, ctx.Err()
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kernel, _ := New(Services{Set: capability.Set{FD: fd.New()}, Programs: registry}, 4)
+	child, err := kernel.Begin(0, "spin", nil, "/", nil, fd.Streams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	results := make(chan ExitStatus, 1)
+	runErr := make(chan error, 1)
+	go func() {
+		status, err := kernel.RunRegistered(t.Context(), child)
+		results <- status
+		runErr <- err
+	}()
+	waitForProgress(t, &progress, 1000)
+
+	// SIGSTOP:推进冻结,状态可观察。
+	if err := kernel.Signal(child.ID, signal.STOP); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(30 * time.Millisecond)
+	frozen := progress.Load()
+	time.Sleep(60 * time.Millisecond)
+	if progress.Load() != frozen {
+		t.Fatalf("驻停期间仍在推进: %d → %d", frozen, progress.Load())
+	}
+	for _, p := range kernel.Processes() {
+		if p.ID == child.ID && p.State != proc.Stopped {
+			t.Fatalf("驻停后状态=%v want stopped", p.State)
+		}
+	}
+
+	// SIGCONT:恢复推进,状态回运行。
+	if err := kernel.Signal(child.ID, signal.CONT); err != nil {
+		t.Fatal(err)
+	}
+	waitForProgress(t, &progress, frozen+1000)
+	for _, p := range kernel.Processes() {
+		if p.ID == child.ID && p.State != proc.Running {
+			t.Fatalf("继续后状态=%v want running", p.State)
+		}
+	}
+
+	// 再驻停后 SIGKILL:驻停进程被直接终止(Stopped → Zombie)。
+	if err := kernel.Signal(child.ID, signal.STOP); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	if err := kernel.Signal(child.ID, signal.KILL); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case status := <-results:
+		if status.Signal != signal.KILL || status.Code != 128+uint8(signal.KILL) {
+			t.Fatalf("status=%+v want SIGKILL/137", status)
+		}
+		if err := <-runErr; err != nil {
+			t.Fatalf("被信号终止不应报错: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("SIGKILL 未终止驻停任务")
+	}
+	state, found, err := kernel.WaitChild(t.Context(), 0, child.ID, true)
+	if err != nil || !found || state.ExitSignal != uint8(signal.KILL) {
+		t.Fatalf("waitid: state=%+v found=%v err=%v", state, found, err)
+	}
+	if err := kernel.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func waitForProgress(t *testing.T, progress *atomic.Int64, target int64) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for progress.Load() < target {
+		if time.Now().After(deadline) {
+			t.Fatalf("任务未推进到 %d(当前 %d)", target, progress.Load())
+		}
+		time.Sleep(time.Millisecond)
 	}
 }

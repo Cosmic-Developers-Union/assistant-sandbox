@@ -693,7 +693,7 @@ func (k *Kernel) Signal(target proc.PID, n signal.Number) error {
 	}
 
 	ignored := k.signals.Ignored(uint64(target), n)
-	if !ignored {
+	if !ignored && !signal.Unmaskable(n) {
 		if config, err := k.signals.Action(uint64(target), n); err == nil && config.Handler == signal.SigIgnore {
 			ignored = true
 		}
@@ -715,14 +715,34 @@ func (k *Kernel) Signal(target proc.PID, n signal.Number) error {
 	}
 	// 登记了客户态处理器的信号保持挂起,由执行器在指令边界
 	// 经信号帧投递(J03/J04);默认处置仍走终止/忽略路径。
-	if config, err := k.signals.Action(uint64(target), n); err == nil && config.Handler > signal.SigIgnore {
+	if config, err := k.signals.Action(uint64(target), n); err == nil && config.Handler > signal.SigIgnore && !signal.Unmaskable(n) {
 		return nil
 	}
-	switch action {
-	case signal.Terminate, signal.Core:
+	switch {
+	case n == signal.CONT:
+		// 恢复运行(CONT 的默认处置即继续;运行中进程视为无操作);
+		// 丢弃挂起的停止族信号。
+		if err := k.table.Continue(target); err != nil {
+			return err
+		}
+		for _, stopped := range []signal.Number{signal.STOP, signal.TSTP, signal.TTIN, signal.TTOU} {
+			k.signals.Consume(uint64(target), stopped)
+		}
 		k.signals.Interrupt(uint64(target), n)
 		return nil
-	case signal.Ignore:
+	case action == signal.Terminate, action == signal.Core:
+		k.signals.Interrupt(uint64(target), n)
+		return nil
+	case action == signal.Stop:
+		// 驻停执行(运行器在指令边界暂停)并记录进程状态;
+		// 丢弃挂起的继续信号(Linux 语义)。
+		if err := k.table.Stop(target); err != nil {
+			return err
+		}
+		k.signals.Consume(uint64(target), signal.CONT)
+		k.signals.Interrupt(uint64(target), n)
+		return nil
+	case action == signal.Ignore:
 		return nil
 	default:
 		return errno.NotSupported
