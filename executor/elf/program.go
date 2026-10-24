@@ -165,9 +165,22 @@ func addressSpace(ctx context.Context, plan *loaderelf.Plan) (*memory.Table, err
 	return space, nil
 }
 
-// populateSpace 把映像段与栈装入既有地址空间;execve 原地替换
-// 复用同一装载逻辑(H07)。
+// stackGuardBytes 是栈低端的保护页大小:栈溢出触达保护页时报
+// 保护错误(SEGV/ACCERR),不会写入相邻映射(E13)。
+const stackGuardBytes = memory.PageSize
+
+// populateSpace 把映像段、栈与栈保护页装入既有地址空间;execve
+// 原地替换复用同一装载逻辑(H07)。
 func populateSpace(ctx context.Context, space *memory.Table, plan *loaderelf.Plan) error {
+	guard := memory.Region{
+		Start: plan.Stack.Region.Start - stackGuardBytes,
+		End:   plan.Stack.Region.Start,
+		Prot:  memory.Prot(0), // 无任何访问权限:任何访问都报保护错误
+		Name:  "stack-guard",
+	}
+	if err := space.Map(ctx, guard); err != nil {
+		return err
+	}
 	for _, segment := range plan.Segments {
 		populate := segment.Region
 		populate.Prot = memory.ProtRead | memory.ProtWrite
@@ -330,7 +343,8 @@ func newHeap(table *memory.Table, process proc.Proc, plan *loaderelf.Plan) *heap
 	if start == 0 {
 		return nil
 	}
-	limit := plan.Stack.Region.Start
+	// 堆增长止于栈保护页低端,不得与保护页重叠(E13)。
+	limit := plan.Stack.Region.Start - stackGuardBytes
 	if limit <= start {
 		limit = start + heapMaximum
 	}
@@ -587,7 +601,7 @@ func (d *signalDeliverer) synchronous(ctx context.Context, trap cpu.Trap) error 
 	switch action {
 	case signal.Terminate, signal.Core:
 		return executable.Death{Signal: number,
-			Detail: fmt.Sprintf("%v si_addr=%#x", trap, info.Addr)}
+			Detail: fmt.Sprintf("%v si_code=%d si_addr=%#x", trap, info.Code, info.Addr)}
 	case signal.Ignore:
 		return nil
 	default:

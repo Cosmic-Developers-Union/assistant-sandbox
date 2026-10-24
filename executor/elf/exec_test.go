@@ -3,8 +3,13 @@ package elf
 import (
 	"context"
 	"encoding/binary"
+	"errors"
+	"strconv"
+	"strings"
 	"testing"
 
+	loaderelf "github.com/Cosmic-Developers-Union/assistant-sandbox/loader/elf"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/executable"
 	vmfs "github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fs"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/signal"
 )
@@ -233,4 +238,63 @@ func TestRealELFExecveFailureKeepsOldProgram(t *testing.T) {
 	if code != 254 {
 		t.Fatalf("退出码=%d want 254(ENOENT 且旧程序继续)", code)
 	}
+}
+
+// TestRealELFStackOverflowHitsGuardPage 验证 E13:向栈底方向持续
+// 写入最终触达保护页——进程以 SIGSEGV 终止且故障地址落在保护页内
+// (SEGV/ACCERR,与未映射的 MAPERR 可区分),不会写入相邻映射。
+func TestRealELFStackOverflowHitsGuardPage(t *testing.T) {
+	// 循环:sp -= 24;*(sp) = x0;jal 回循环首。
+	overflow := []uint32{
+		0xFE810113, // addi sp, sp, -24
+		0x00013023, // sd x0, 0(sp)
+		0xff9ff06f, // jal x0, -8(回到 addi)
+	}
+	harness := newHarness(t, buildImageWith(t, overflow, ""), nil)
+	// 信号控制端口存在时,J06 把保护错误转换为 SIGSEGV 投递。
+	stub := &sigControlStub{actions: map[signal.Number]signal.ActionConfig{}}
+	harness.process.Control = stub
+	guest, _, err := Factory{}.New("/program")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, runErr := guest.Run(context.Background(), harness.process)
+	var death executable.Death
+	if !errors.As(runErr, &death) {
+		t.Fatalf("err=%v want executable.Death", runErr)
+	}
+	if death.Signal != signal.SEGV {
+		t.Fatalf("signal=%v want SIGSEGV", death.Signal)
+	}
+	// 保护页区间:栈区低端之下的一页(默认栈参数见 loader/elf)。
+	regionStart := loaderelf.DefaultStackTop - uint64(loaderelf.DefaultStackSize)
+	address := parseSiAddr(t, death.Detail)
+	if address < regionStart-stackGuardBytes || address >= regionStart {
+		t.Fatalf("故障地址=%#x 应落在保护页 [%#x,%#x): %q",
+			address, regionStart-stackGuardBytes, regionStart, death.Detail)
+	}
+	// 保护错误(映射存在但无权限,SEGV_ACCERR=2),而非未映射(MAPERR=1)。
+	if !strings.Contains(death.Detail, "si_code=2") {
+		t.Fatalf("Detail=%q want ACCERR(si_code=2)", death.Detail)
+	}
+}
+
+// parseSiAddr 从 Death.Detail 提取 si_addr=0x… 十六进制地址。
+func parseSiAddr(t *testing.T, detail string) uint64 {
+	t.Helper()
+	const marker = "si_addr=0x"
+	index := strings.Index(detail, marker)
+	if index < 0 {
+		t.Fatalf("Detail=%q 缺少 si_addr", detail)
+	}
+	raw := detail[index+len(marker):]
+	end := strings.IndexFunc(raw, func(r rune) bool { return r < '0' || r > 'f' || (r > '9' && r < 'a') })
+	if end > 0 {
+		raw = raw[:end]
+	}
+	address, err := strconv.ParseUint(raw, 16, 64)
+	if err != nil {
+		t.Fatalf("si_addr 解析失败: %v", err)
+	}
+	return address
 }
