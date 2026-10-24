@@ -48,6 +48,7 @@ const (
 
 	SysMmap
 	SysMunmap
+	SysMremap
 	SysMprotect
 
 	SysUname
@@ -237,6 +238,8 @@ func (s Syscall) String() string {
 		return "mmap"
 	case SysMunmap:
 		return "munmap"
+	case SysMremap:
+		return "mremap"
 	case SysMprotect:
 		return "mprotect"
 	case SysUname:

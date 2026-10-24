@@ -566,3 +566,132 @@ func TestExecutableDistinguishesProt(t *testing.T) {
 		t.Fatalf("未映射取指应报 ERANGE: %v", err)
 	}
 }
+
+func TestResizeShrinksAndDropsTail(t *testing.T) {
+	ctx := context.Background()
+	table := New(0)
+	if err := table.Map(ctx, Region{Start: page(1), End: page(4), Prot: ProtRead | ProtWrite}); err != nil {
+		t.Fatal(err)
+	}
+	if err := table.Write(ctx, page(1), []byte("HEAD")); err != nil {
+		t.Fatal(err)
+	}
+	if err := table.Write(ctx, page(3), []byte("TAIL")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := table.Resize(ctx, page(1), page(4), page(2)); err != nil {
+		t.Fatalf("收缩应成功: %v", err)
+	}
+	regions, _ := table.Regions(ctx)
+	if len(regions) != 1 || regions[0].Start != page(1) || regions[0].End != page(2) {
+		t.Fatalf("收缩后区间不符: %+v", regions)
+	}
+	got := make([]byte, 4)
+	if err := table.Read(ctx, page(1), got); err != nil || string(got) != "HEAD" {
+		t.Fatalf("头部数据应保留: %q err=%v", got, err)
+	}
+	if err := table.Check(ctx, page(3), 1, ProtRead); !errors.Is(err, errno.Range) {
+		t.Fatalf("被丢弃的尾部应未映射: %v", err)
+	}
+	if account, _ := table.Account(ctx); account.Mapped != PageSize {
+		t.Fatalf("收缩后账目应只含一页: %+v", account)
+	}
+
+	if err := table.Resize(ctx, page(1), page(4), page(2)); !errors.Is(err, errno.Range) {
+		t.Fatalf("旧范围不再恰好匹配应失败: %v", err)
+	}
+}
+
+func TestResizeGrowsInPlaceOnlyWhenFree(t *testing.T) {
+	ctx := context.Background()
+	table := New(4 * PageSize)
+	if err := table.Map(ctx, Region{Start: page(1), End: page(2), Prot: ProtRead | ProtWrite}); err != nil {
+		t.Fatal(err)
+	}
+	if err := table.Resize(ctx, page(1), page(2), page(3)); err != nil {
+		t.Fatalf("尾部空闲应可扩张: %v", err)
+	}
+	if err := table.Map(ctx, Region{Start: page(3), End: page(4), Prot: ProtRead}); err != nil {
+		t.Fatal(err)
+	}
+	if err := table.Resize(ctx, page(1), page(3), page(4)); !errors.Is(err, errno.Exist) {
+		t.Fatalf("尾部被占用应报 EEXIST: %v", err)
+	}
+	regions, _ := table.Regions(ctx)
+	if len(regions) != 2 {
+		t.Fatalf("失败时不得改动: %+v", regions)
+	}
+	table2 := New(PageSize)
+	if err := table2.Map(ctx, Region{Start: page(1), End: page(2), Prot: ProtRead}); err != nil {
+		t.Fatal(err)
+	}
+	if err := table2.Resize(ctx, page(1), page(2), page(3)); !errors.Is(err, errno.NoSpace) {
+		t.Fatalf("超预算扩张应报 ENOSPC: %v", err)
+	}
+}
+
+func TestMoveRelocatesRegionAndPages(t *testing.T) {
+	ctx := context.Background()
+	table := New(0)
+	if err := table.Map(ctx, Region{Start: page(1), End: page(3), Prot: ProtRead | ProtWrite}); err != nil {
+		t.Fatal(err)
+	}
+	if err := table.Write(ctx, page(1), []byte("PAGED")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := table.Move(ctx, page(1), page(3), page(9)); err != nil {
+		t.Fatalf("移动应成功: %v", err)
+	}
+	regions, _ := table.Regions(ctx)
+	if len(regions) != 1 || regions[0].Start != page(9) || regions[0].End != page(11) {
+		t.Fatalf("移动后区间不符: %+v", regions)
+	}
+	got := make([]byte, 5)
+	if err := table.Read(ctx, page(9), got); err != nil || string(got) != "PAGED" {
+		t.Fatalf("页数据应随映射迁移: %q err=%v", got, err)
+	}
+	if err := table.Check(ctx, page(1), 1, ProtRead); !errors.Is(err, errno.Range) {
+		t.Fatalf("旧位置应未映射: %v", err)
+	}
+
+	if err := table.Move(ctx, page(9), page(11), page(1)); err != nil {
+		t.Fatalf("移回应成功: %v", err)
+	}
+	if err := table.Move(ctx, page(1), page(3), page(2)); !errors.Is(err, errno.Invalid) {
+		t.Fatalf("目标与源重叠应报 EINVAL: %v", err)
+	}
+	if err := table.Move(ctx, page(1), page(3), page(10)); err != nil {
+		t.Fatalf("合法移动应成功: %v", err)
+	}
+}
+
+func TestDropPagesKeepsMappingButDropsContent(t *testing.T) {
+	ctx := context.Background()
+	table := New(0)
+	if err := table.Map(ctx, Region{Start: page(1), End: page(3), Prot: ProtRead | ProtWrite}); err != nil {
+		t.Fatal(err)
+	}
+	if err := table.Write(ctx, page(1), []byte("SECRET")); err != nil {
+		t.Fatal(err)
+	}
+	if err := table.DropPages(ctx, page(1), page(3)); err != nil {
+		t.Fatalf("丢弃应成功: %v", err)
+	}
+	if err := table.Check(ctx, page(1), 1, ProtWrite); err != nil {
+		t.Fatalf("映射应保留: %v", err)
+	}
+	got := make([]byte, 6)
+	if err := table.Read(ctx, page(1), got); err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range got {
+		if b != 0 {
+			t.Fatalf("丢弃后内容应回到零填充: %x", got)
+		}
+	}
+	if err := table.DropPages(ctx, page(5), page(6)); !errors.Is(err, errno.Range) {
+		t.Fatalf("未映射范围应失败: %v", err)
+	}
+}

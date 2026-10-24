@@ -815,3 +815,76 @@ func TestMapperValidatesProtAndBounds(t *testing.T) {
 		t.Fatalf("重复解除应报未映射: %v", err)
 	}
 }
+
+func TestMapperMremapShrinksAndGrows(t *testing.T) {
+	ctx := context.Background()
+	space := memory.New(0)
+	m := &mapper{table: space, ceiling: 1 << 40}
+	start, err := m.Anonymous(ctx, common.MapRequest{Length: 4 * memory.PageSize, Prot: common.ProtRead | common.ProtWrite})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := space.Write(ctx, start, []byte("DATA")); err != nil {
+		t.Fatal(err)
+	}
+
+	// 原地扩张:尾部空闲时收缩前先验证扩张。
+	grown, err := m.Mremap(ctx, start, start+4*memory.PageSize, start+5*memory.PageSize, false, false, 0)
+	if err != nil || grown != start {
+		t.Fatalf("原地扩张: addr=%#x err=%v", grown, err)
+	}
+
+	// 收缩:返回原地址,尾部释放。
+	got, err := m.Mremap(ctx, start, start+5*memory.PageSize, start+2*memory.PageSize, false, false, 0)
+	if err != nil || got != start {
+		t.Fatalf("收缩: addr=%#x err=%v", got, err)
+	}
+	if err := space.Check(ctx, start, 4, common.ProtWrite); err != nil {
+		t.Fatalf("收缩后头部应可写: %v", err)
+	}
+	if err := space.Check(ctx, start+3*memory.PageSize, 1, common.ProtRead); !errors.Is(err, errno.Range) {
+		t.Fatalf("收缩的尾部应未映射: %v", err)
+	}
+
+	// 尾部被新映射占用后,扩张必须迁移。
+	if _, err := m.Anonymous(ctx, common.MapRequest{Length: memory.PageSize, Prot: common.ProtRead, Hint: start + 3*memory.PageSize}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Mremap(ctx, start, start+2*memory.PageSize, start+4*memory.PageSize, false, false, 0); !errors.Is(err, errno.NoMemory) {
+		t.Fatalf("尾部被占用且无 MAYMOVE 应报 ENOMEM: %v", err)
+	}
+}
+
+func TestMapperMadviseDropsContents(t *testing.T) {
+	ctx := context.Background()
+	space := memory.New(0)
+	m := &mapper{table: space, ceiling: 1 << 40}
+	start, err := m.Anonymous(ctx, common.MapRequest{Length: 2 * memory.PageSize, Prot: common.ProtRead | common.ProtWrite})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := space.Write(ctx, start, []byte("SECRET")); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Madvise(ctx, start, start+2*memory.PageSize, common.MadvDontneed); err != nil {
+		t.Fatalf("DONTNEED 应成功: %v", err)
+	}
+	if err := space.Check(ctx, start, 1, common.ProtWrite); err != nil {
+		t.Fatalf("映射应保留: %v", err)
+	}
+	got := make([]byte, 6)
+	if err := space.Read(ctx, start, got); err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range got {
+		if b != 0 {
+			t.Fatalf("丢弃后应零填充: %x", got)
+		}
+	}
+	if err := m.Madvise(ctx, start, start+2*memory.PageSize, 0x40); !errors.Is(err, errno.Invalid) {
+		t.Fatalf("未知 advice 应报 EINVAL: %v", err)
+	}
+	if err := m.Madvise(ctx, 9*memory.PageSize, 10*memory.PageSize, common.MadvDontneed); !errors.Is(err, errno.Range) {
+		t.Fatalf("未映射范围应报 ENOMEM: %v", err)
+	}
+}

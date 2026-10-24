@@ -358,6 +358,131 @@ func (t *Table) insertLocked(region Region) {
 	t.regions[index] = region
 }
 
+// Resize 原地缩放一个恰好匹配的映射:收缩丢弃尾部页,扩张要求
+// [oldEnd,newEnd) 空闲;失败不改动任何映射。
+func (t *Table) Resize(ctx context.Context, oldStart, oldEnd, newEnd uint64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := validateRange(oldStart, oldEnd); err != nil {
+		return err
+	}
+	if newEnd <= oldStart || newEnd%PageSize != 0 {
+		return errno.Wrap(errno.Invalid, "新终点必须页对齐且大于起点")
+	}
+	if newEnd > maxAddress {
+		return faultError(FaultOverflow, oldStart, "新终点超出客体地址空间")
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	index := -1
+	for i, region := range t.regions {
+		if region.Start == oldStart && region.End == oldEnd {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		return faultError(FaultUnmapped, oldStart, "缩放目标必须恰好是一个映射")
+	}
+	if newEnd == oldEnd {
+		return nil
+	}
+	if newEnd < oldEnd {
+		t.dropPagesLocked(newEnd, oldEnd)
+		t.regions[index].End = newEnd
+		return nil
+	}
+	tail := Region{Start: oldEnd, End: newEnd}
+	for _, region := range t.regions {
+		if region.Overlaps(tail) {
+			return errno.Wrap(errno.Exist, "扩张区间与既有映射重叠: "+utoa(region.Start)+"-"+utoa(region.End))
+		}
+	}
+	kept := make([]Region, 0, len(t.regions))
+	kept = append(kept, t.regions...)
+	kept[index].End = newEnd
+	if err := t.checkBudgetAfterLocked(kept, 0); err != nil {
+		return err
+	}
+	t.regions = kept
+	return nil
+}
+
+// Move 把一个恰好匹配的映射连同页内容移动到 newStart;
+// 目标范围必须空闲,保护位与数据保持不变。
+func (t *Table) Move(ctx context.Context, oldStart, oldEnd, newStart uint64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := validateRange(oldStart, oldEnd); err != nil {
+		return err
+	}
+	size := oldEnd - oldStart
+	if newStart%PageSize != 0 || newStart+size <= newStart {
+		return errno.Wrap(errno.Invalid, "新起点必须页对齐")
+	}
+	if err := validateRange(newStart, newStart+size); err != nil {
+		return err
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	index := -1
+	for i, region := range t.regions {
+		if region.Start == oldStart && region.End == oldEnd {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		return faultError(FaultUnmapped, oldStart, "移动目标必须恰好是一个映射")
+	}
+	if newStart < oldEnd && newStart+size > oldStart {
+		return errno.Wrap(errno.Invalid, "目标区间与源映射重叠")
+	}
+	target := t.regions[index]
+	target.Start, target.End = newStart, newStart+size
+	for _, region := range t.regions {
+		if region.Start != oldStart && region.Overlaps(target) {
+			return errno.Wrap(errno.Exist, "目标区间与既有映射重叠: "+utoa(region.Start)+"-"+utoa(region.End))
+		}
+	}
+	base := oldStart / PageSize
+	offset := newStart / PageSize
+	if t.pages != nil {
+		for page := base; page < oldEnd/PageSize; page++ {
+			if stored, ok := t.pages[page]; ok {
+				t.pages[offset+page-base] = stored
+			}
+		}
+	}
+	t.dropPagesLocked(oldStart, oldEnd)
+	kept := make([]Region, 0, len(t.regions))
+	kept = append(kept, t.regions[:index]...)
+	kept = append(kept, t.regions[index+1:]...)
+	t.regions = kept
+	t.insertLocked(target)
+	return nil
+}
+
+// DropPages 丢弃覆盖范围内的页内容(映射保留,匿名页回到零填充),
+// 对应 MADV_DONTNEED;范围必须被完整映射。
+func (t *Table) DropPages(ctx context.Context, start, end uint64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := validateRange(start, end); err != nil {
+		return err
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.coversLocked(start, end) {
+		return faultError(FaultUnmapped, start, "丢弃范围未被完整映射")
+	}
+	t.dropPagesLocked(start, end)
+	return nil
+}
+
 // Replace 映射 region 并替换与其重叠的既有映射,对应 Linux MAP_FIXED;
 // noReplace 时遇到重叠返回 EEXIST 且不产生任何改动,失败不留半成品。
 func (t *Table) Replace(ctx context.Context, region Region, noReplace bool) error {

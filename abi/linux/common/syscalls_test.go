@@ -817,6 +817,8 @@ type fakeMapper struct {
 	mapped    []MapRequest
 	unmapped  [][2]uint64
 	protected [][3]uint64
+	remapped  [][5]uint64
+	advised   [][3]uint64
 	reply     uint64
 	err       error
 }
@@ -837,6 +839,26 @@ func (m *fakeMapper) Unmap(_ context.Context, start, end uint64) error {
 func (m *fakeMapper) Protect(_ context.Context, start, end uint64, prot uint64) error {
 	m.protected = append(m.protected, [3]uint64{start, end, prot})
 	return m.err
+}
+
+func (m *fakeMapper) Mremap(_ context.Context, oldStart, oldEnd, newEnd uint64, mayMove, fixed bool, fixedStart uint64) (uint64, error) {
+	m.remapped = append(m.remapped, [5]uint64{oldStart, oldEnd, newEnd, boolToU64(mayMove), boolToU64(fixed)})
+	if m.err != nil {
+		return 0, m.err
+	}
+	return fixedStart, nil
+}
+
+func (m *fakeMapper) Madvise(_ context.Context, start, end uint64, advice uint64) error {
+	m.advised = append(m.advised, [3]uint64{start, end, advice})
+	return m.err
+}
+
+func boolToU64(v bool) uint64 {
+	if v {
+		return 1
+	}
+	return 0
 }
 
 func TestMmapValidatesAndDelegates(t *testing.T) {
@@ -1422,5 +1444,74 @@ func TestUnlinkatDistinguishesFilesAndDirectories(t *testing.T) {
 	}
 	if len(files.removeCalls) != 2 || files.removeCalls[0] != "/tmp" {
 		t.Fatalf("Remove 应收到解析后的路径: %+v", files.removeCalls)
+	}
+}
+
+func TestMremapValidatesAndDelegates(t *testing.T) {
+	ctx := context.Background()
+	mapper := &fakeMapper{}
+	handler := Syscalls{Mapper: mapper}
+
+	for _, tc := range []struct {
+		label string
+		args  [6]uint64
+		want  errno.Code
+	}{
+		{"旧地址未对齐", [6]uint64{4097, 4096, 8192, mremapMayMove}, errno.Invalid},
+		{"旧大小为零", [6]uint64{4096, 0, 8192, mremapMayMove}, errno.Invalid},
+		{"新大小为零", [6]uint64{4096, 4096, 0, mremapMayMove}, errno.Invalid},
+		{"未知标志", [6]uint64{4096, 4096, 8192, 0x8}, errno.Invalid},
+		{"FIXED 缺 MAYMOVE", [6]uint64{4096, 4096, 8192, mremapFixed}, errno.Invalid},
+		{"FIXED 地址未对齐", [6]uint64{4096, 4096, 8192, mremapMayMove | mremapFixed, 4097}, errno.Invalid},
+	} {
+		if reply := handler.Handle(ctx, Call{Syscall: SysMremap, Args: tc.args}); reply.Errno != tc.want {
+			t.Errorf("%s: err=%v want %v", tc.label, reply.Errno, tc.want)
+		}
+		if len(mapper.remapped) != 0 {
+			t.Errorf("%s: 被拒绝的调用不得触达地址空间", tc.label)
+		}
+	}
+
+	if reply := handler.Handle(ctx, Call{Syscall: SysMremap, Args: [6]uint64{4096, 4097, 8193, mremapMayMove | mremapFixed, 8192}}); reply.Errno != "" {
+		t.Fatalf("正常重映射: %v", reply.Errno)
+	}
+	call := mapper.remapped[0]
+	if call[0] != 4096 || call[1] != 12288 || call[2] != 16384 || call[3] != 1 || call[4] != 1 {
+		t.Fatalf("范围与标志应对齐到页并透传: %+v", call)
+	}
+
+	if reply := (Syscalls{}).Handle(ctx, Call{Syscall: SysMremap}); reply.Errno != errno.NotImplemented {
+		t.Fatalf("未装配 Mapper 应报 ENOSYS: %v", reply.Errno)
+	}
+}
+
+func TestMadviseValidatesAndDelegates(t *testing.T) {
+	ctx := context.Background()
+	mapper := &fakeMapper{}
+	handler := Syscalls{Mapper: mapper}
+
+	if reply := handler.Handle(ctx, Call{Syscall: SysMadvise, Args: [6]uint64{4097, 4096, MadvDontneed}}); reply.Errno != errno.Invalid {
+		t.Fatalf("起始未对齐应报 EINVAL: %v", reply.Errno)
+	}
+	if reply := handler.Handle(ctx, Call{Syscall: SysMadvise, Args: [6]uint64{4096, 4096, 0x30}}); reply.Errno != errno.Invalid {
+		t.Fatalf("未知 advice 应报 EINVAL: %v", reply.Errno)
+	}
+	if reply := handler.Handle(ctx, Call{Syscall: SysMadvise, Args: [6]uint64{4096, 0, MadvDontneed}}); reply.Errno != "" || reply.Value != 0 {
+		t.Fatalf("零长度应直接成功: %+v", reply)
+	}
+	if len(mapper.advised) != 0 {
+		t.Fatalf("零长度不得触达地址空间")
+	}
+
+	if reply := handler.Handle(ctx, Call{Syscall: SysMadvise, Args: [6]uint64{4096, 4097, MadvDontneed}}); reply.Errno != "" {
+		t.Fatalf("正常 advice: %v", reply.Errno)
+	}
+	if mapper.advised[0] != [3]uint64{4096, 12288, MadvDontneed} {
+		t.Fatalf("范围应向上取整并透传 advice: %+v", mapper.advised[0])
+	}
+
+	mapper.err = errno.NoMemory
+	if reply := handler.Handle(ctx, Call{Syscall: SysMadvise, Args: [6]uint64{4096, 4096, MadvDontneed}}); reply.Errno != errno.NoMemory {
+		t.Fatalf("实现层错误应透传: %v", reply.Errno)
 	}
 }

@@ -182,6 +182,10 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 		return s.munmap(ctx, call)
 	case SysMprotect:
 		return s.mprotect(ctx, call)
+	case SysMremap:
+		return s.mremap(ctx, call)
+	case SysMadvise:
+		return s.madvise(ctx, call)
 	case SysUname:
 		return s.uname(ctx, call)
 	case SysGetrandom:
@@ -217,7 +221,7 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 		return Reply{Value: 0}
 	case SysGetpriority, SysSetpriority:
 		return Reply{Value: 0}
-	case SysMlock, SysMunlock, SysMlockall, SysMunlockall, SysMadvise:
+	case SysMlock, SysMunlock, SysMlockall, SysMunlockall:
 		return Reply{Value: 0}
 	case SysMincore:
 		return Reply{Value: 0}
@@ -643,6 +647,15 @@ type Mappable interface {
 	// Protect 将页对齐范围内所有映射改为 prot(原始 Linux PROT_* 位),
 	// 允许跨区间;存在空洞或 W^X 违例时报错且不改动。
 	Protect(ctx context.Context, start, end uint64, prot uint64) error
+
+	// Mremap 重映射 [oldStart,oldEnd) 到 newEnd 大小:允许收缩;
+	// 扩张时若尾部被占用则需 mayMove 迁移;fixed 时必须落在 fixedStart。
+	// 返回映射(可能已迁移)的起始地址。
+	Mremap(ctx context.Context, oldStart, oldEnd, newEnd uint64, mayMove, fixed bool, fixedStart uint64) (uint64, error)
+
+	// Madvise 对页对齐范围施加建议;只支持有明确语义的子集,
+	// 未支持的 advice 返回 ENOTSUP,范围未映射返回 ENOMEM。
+	Madvise(ctx context.Context, start, end uint64, advice uint64) error
 }
 
 type MapRequest struct {
@@ -665,6 +678,19 @@ const (
 	efdNonBlock  = 0o4000
 	efdCloexec   = 0o2000000
 	efdFlagMask  = efdSemaphore | efdNonBlock | efdCloexec
+
+	// asm-generic 的 mremap 标志。
+	mremapMayMove  = 0x1
+	mremapFixed    = 0x2
+	mremapFlagMask = mremapMayMove | mremapFixed
+
+	// asm-generic 的 madvise advice 子集。
+	MadvNormal     = 0
+	MadvRandom     = 1
+	MadvSequential = 2
+	MadvWillneed   = 3
+	MadvDontneed   = 4
+	madvSupported  = MadvNormal | MadvRandom | MadvSequential | MadvWillneed | MadvDontneed
 
 	mapPrivate        = 0x02
 	mapFixed          = 0x10
@@ -727,6 +753,67 @@ func (s Syscalls) munmap(ctx context.Context, call Call) Reply {
 		return Reply{Errno: errno.Overflow}
 	}
 	if err := s.Mapper.Unmap(ctx, start, start+length); err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	return Reply{}
+}
+
+func (s Syscalls) mremap(ctx context.Context, call Call) Reply {
+	if s.Mapper == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	oldStart := call.Args[0]
+	if oldStart%memory.PageSize != 0 {
+		return Reply{Errno: errno.Invalid}
+	}
+	oldSize := alignPageUp(call.Args[1])
+	newSize := alignPageUp(call.Args[2])
+	if oldSize == 0 || newSize == 0 {
+		return Reply{Errno: errno.Invalid}
+	}
+	flags := call.Args[3]
+	if flags&^uint64(mremapFlagMask) != 0 {
+		return Reply{Errno: errno.Invalid}
+	}
+	fixed := flags&mremapFixed != 0
+	mayMove := flags&mremapMayMove != 0
+	if fixed && !mayMove {
+		return Reply{Errno: errno.Invalid}
+	}
+	fixedStart := call.Args[4]
+	if fixed && fixedStart%memory.PageSize != 0 {
+		return Reply{Errno: errno.Invalid}
+	}
+	if oldStart+oldSize <= oldStart || oldStart+newSize <= oldStart {
+		return Reply{Errno: errno.Overflow}
+	}
+	start, err := s.Mapper.Mremap(ctx, oldStart, oldStart+oldSize, oldStart+newSize, mayMove, fixed, fixedStart)
+	if err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	return Reply{Value: start}
+}
+
+func (s Syscalls) madvise(ctx context.Context, call Call) Reply {
+	if s.Mapper == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	start := call.Args[0]
+	if start%memory.PageSize != 0 {
+		return Reply{Errno: errno.Invalid}
+	}
+	advice := call.Args[2]
+	if advice&^uint64(madvSupported) != 0 {
+		return Reply{Errno: errno.Invalid}
+	}
+	length := alignPageUp(call.Args[1])
+	if length == 0 {
+		return Reply{Value: 0}
+	}
+	if start+length <= start {
+		return Reply{Errno: errno.Overflow}
+	}
+	if err := s.Mapper.Madvise(ctx, start, start+length, advice); err != nil {
 		return Reply{Errno: errnoOf(err)}
 	}
 	return Reply{}

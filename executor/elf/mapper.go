@@ -220,3 +220,84 @@ func (l *limiter) SetDescriptorLimit(ctx context.Context, value uint64) error {
 }
 
 var _ common.Limiter = (*limiter)(nil)
+
+// Mremap 实现 mremap(2):收缩原地、扩张尽量原地、尾部被占用时按 MAYMOVE 迁移。
+// 旧范围必须恰好是一个映射(与真实分配器的整段重映射用法一致)。
+func (m *mapper) Mremap(ctx context.Context, oldStart, oldEnd, newEnd uint64, mayMove, fixed bool, fixedStart uint64) (uint64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	regions, err := m.table.Regions(ctx)
+	if err != nil {
+		return 0, err
+	}
+	var region *memory.Region
+	for i := range regions {
+		if regions[i].Start == oldStart && regions[i].End == oldEnd {
+			region = &regions[i]
+			break
+		}
+	}
+	if region == nil {
+		return 0, errno.NoMemory
+	}
+
+	if newEnd <= oldEnd {
+		if err := m.table.Resize(ctx, oldStart, oldEnd, newEnd); err != nil {
+			return 0, err
+		}
+		m.release(ctx, oldEnd-newEnd)
+		return oldStart, nil
+	}
+	grow := newEnd - oldEnd
+	if newEnd <= m.ceiling && !overlapsAny(regions, oldEnd, newEnd) {
+		if err := m.table.Resize(ctx, oldStart, oldEnd, newEnd); err != nil {
+			return 0, err
+		}
+		m.charge(ctx, grow)
+		return oldStart, nil
+	}
+	if !mayMove {
+		return 0, errno.NoMemory
+	}
+	grown := newEnd - oldStart
+	var newStart uint64
+	if fixed {
+		if overlapsAny(regions, fixedStart, fixedStart+grown) {
+			return 0, errno.Exist
+		}
+		if fixedStart+grown > m.ceiling {
+			return 0, errno.NoMemory
+		}
+		newStart = fixedStart
+	} else {
+		if newStart, err = m.place(ctx, grown, 0); err != nil {
+			return 0, err
+		}
+	}
+	if err := m.table.Move(ctx, oldStart, oldEnd, newStart); err != nil {
+		return 0, err
+	}
+	// 迁移到 grown 大小的空隙后,在新位置原地扩张到目标大小。
+	if err := m.table.Resize(ctx, newStart, newStart+oldEnd-oldStart, newStart+grown); err != nil {
+		return 0, err
+	}
+	m.charge(ctx, grow)
+	return newStart, nil
+}
+
+// Madvise 实现有明确语义的 advice 子集:DONTNEED 丢弃页内容,
+// NORMAL/RANDOM/SEQUENTIAL/WILLNEED 在本模型中无可观察差异,如实返回成功。
+func (m *mapper) Madvise(ctx context.Context, start, end uint64, advice uint64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	switch advice {
+	case common.MadvNormal, common.MadvRandom, common.MadvSequential, common.MadvWillneed:
+		return nil
+	case common.MadvDontneed:
+		return m.table.DropPages(ctx, start, end)
+	default:
+		return errno.Invalid
+	}
+}

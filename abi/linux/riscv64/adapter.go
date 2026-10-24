@@ -38,6 +38,7 @@ const (
 	numberMmap            = 222
 	numberMunmap          = 215
 	numberMprotect        = 226
+	numberMremap          = 216
 	numberUname           = 160
 	numberClockNanosleep  = 115
 	numberGetcwd          = 17
@@ -262,6 +263,10 @@ func syscallOf(number uint64) common.Syscall {
 		return common.SysMunmap
 	case numberMprotect:
 		return common.SysMprotect
+	case numberMremap:
+		return common.SysMremap
+	case numberMadvise:
+		return common.SysMadvise
 	case numberRead:
 		return common.SysRead
 	case numberWrite:
@@ -312,8 +317,6 @@ func syscallOf(number uint64) common.Syscall {
 		return common.SysMunlockall
 	case numberMincore:
 		return common.SysMincore
-	case numberMadvise:
-		return common.SysMadvise
 	case numberFaccessat:
 		return common.SysFaccessat
 	case numberMkdirat:
