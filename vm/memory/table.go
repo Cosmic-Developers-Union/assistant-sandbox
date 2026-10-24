@@ -47,14 +47,52 @@ func (t *Table) Unmap(ctx context.Context, start, end uint64) error {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	index := t.findExactLocked(start, end)
-	if index < 0 {
-		return faultError(FaultUnmapped, start, "解除映射的区间未被完整映射")
+	if !t.coversLocked(start, end) {
+		return faultError(FaultUnmapped, start, "解除映射的范围未被完整映射")
 	}
-	t.regions = append(t.regions[:index], t.regions[index+1:]...)
+	updated := make([]Region, 0, len(t.regions)+2)
+	for _, region := range t.regions {
+		if region.End <= start || region.Start >= end {
+			updated = append(updated, region)
+			continue
+		}
+		if region.Start < start {
+			left := region
+			left.End = start
+			updated = append(updated, left)
+		}
+		if end < region.End {
+			right := region
+			right.Start = end
+			updated = append(updated, right)
+		}
+	}
+	t.regions = updated
 
 	t.dropPagesLocked(start, end)
 	return nil
+}
+
+// coversLocked 要求 [start,end) 被既有映射无缝覆盖;存在空洞时整体失败,
+// 与 Linux munmap 返回 ENOMEM 且不改动任何映射的语义一致。
+func (t *Table) coversLocked(start, end uint64) bool {
+	cursor := start
+	for _, region := range t.regions {
+		if region.End <= cursor {
+			continue
+		}
+		if region.Start >= end {
+			break
+		}
+		if region.Start > cursor {
+			return false
+		}
+		cursor = min(region.End, end)
+		if cursor >= end {
+			return true
+		}
+	}
+	return cursor >= end
 }
 
 func (t *Table) Protect(ctx context.Context, start, end uint64, prot Prot) error {
@@ -302,15 +340,6 @@ func (t *Table) insertLocked(region Region) {
 	t.regions = append(t.regions, Region{})
 	copy(t.regions[index+1:], t.regions[index:])
 	t.regions[index] = region
-}
-
-func (t *Table) findExactLocked(start, end uint64) int {
-	for index, region := range t.regions {
-		if region.Start == start && region.End == end {
-			return index
-		}
-	}
-	return -1
 }
 
 func (t *Table) findCoveringLocked(start, end uint64) int {

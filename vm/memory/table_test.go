@@ -147,24 +147,100 @@ func TestCheckDistinguishesUnmappedAndProtection(t *testing.T) {
 	}
 }
 
-func TestUnmapRequiresExactRegion(t *testing.T) {
+func TestUnmapSplitsRegionAndKeepsNeighbors(t *testing.T) {
 	ctx := context.Background()
 	table := New(0)
-	if err := table.Map(ctx, Region{Start: page(1), End: page(4), Prot: ProtRead}); err != nil {
+	if err := table.Map(ctx, Region{Start: page(1), End: page(4), Prot: ProtRead | ProtWrite}); err != nil {
 		t.Fatal(err)
 	}
-	if err := table.Unmap(ctx, page(1), page(2)); !errors.Is(err, errno.Range) {
-		t.Fatalf("部分解除应报 ERANGE: %v", err)
+	left := []byte("LEFT-DATA")
+	right := []byte("RIGHT-DATA")
+	if err := table.Write(ctx, page(1), left); err != nil {
+		t.Fatal(err)
 	}
-	if err := table.Unmap(ctx, page(5), page(6)); !errors.Is(err, errno.Range) {
-		t.Fatalf("未映射区间应报 ERANGE: %v", err)
+	if err := table.Write(ctx, page(3), right); err != nil {
+		t.Fatal(err)
 	}
-	if err := table.Unmap(ctx, page(1), page(4)); err != nil {
+
+	if err := table.Unmap(ctx, page(2), page(3)); err != nil {
+		t.Fatalf("中间页解除应成功: %v", err)
+	}
+	regions, err := table.Regions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(regions) != 2 || regions[0].Start != page(1) || regions[0].End != page(2) ||
+		regions[1].Start != page(3) || regions[1].End != page(4) {
+		t.Fatalf("应拆分为左右两段: %+v", regions)
+	}
+
+	got := make([]byte, len(left))
+	if err := table.Read(ctx, page(1), got); err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(left) {
+		t.Fatalf("左段数据被破坏: %q", got)
+	}
+	got = make([]byte, len(right))
+	if err := table.Read(ctx, page(3), got); err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(right) {
+		t.Fatalf("右段数据被破坏: %q", got)
+	}
+	if err := table.Check(ctx, page(2), 1, ProtRead); !errors.Is(err, errno.Range) {
+		t.Fatalf("解除的中间页应未映射: %v", err)
+	}
+	if account, _ := table.Account(ctx); account.Mapped != 2*PageSize || account.Regions != 2 {
+		t.Fatalf("解除后应只剩左右两页: %+v", account)
+	}
+
+	if err := table.Map(ctx, Region{Start: page(2), End: page(3), Prot: ProtRead}); err != nil {
+		t.Fatalf("解除后应可重新映射: %v", err)
+	}
+	got = make([]byte, PageSize)
+	if err := table.Read(ctx, page(2), got); err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range got {
+		if b != 0 {
+			t.Fatalf("重新映射的页应零填充: %x", got)
+		}
+	}
+}
+
+func TestUnmapFailsOnPartiallyCoveredRange(t *testing.T) {
+	ctx := context.Background()
+	table := New(0)
+	if err := table.Map(ctx, Region{Start: page(1), End: page(2), Prot: ProtRead}); err != nil {
+		t.Fatal(err)
+	}
+	if err := table.Map(ctx, Region{Start: page(3), End: page(4), Prot: ProtRead}); err != nil {
 		t.Fatal(err)
 	}
 
 	if err := table.Unmap(ctx, page(1), page(4)); !errors.Is(err, errno.Range) {
-		t.Fatalf("重复解除应报 ERANGE: %v", err)
+		t.Fatalf("范围含空洞应整体失败: %v", err)
+	}
+	if err := table.Unmap(ctx, page(2), page(3)); !errors.Is(err, errno.Range) {
+		t.Fatalf("完全未映射范围应失败: %v", err)
+	}
+	if err := table.Unmap(ctx, page(1)+1, page(2)); !errors.Is(err, errno.Invalid) {
+		t.Fatalf("未对齐范围应报 EINVAL: %v", err)
+	}
+	regions, err := table.Regions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(regions) != 2 {
+		t.Fatalf("失败时不得改动任何映射: %+v", regions)
+	}
+
+	if err := table.Map(ctx, Region{Start: page(2), End: page(3), Prot: ProtRead}); err != nil {
+		t.Fatalf("补齐空洞后可整体解除: %v", err)
+	}
+	if err := table.Unmap(ctx, page(1), page(4)); err != nil {
+		t.Fatalf("范围被完整覆盖后应可解除: %v", err)
 	}
 	if account, _ := table.Account(ctx); account.Mapped != 0 || account.Regions != 0 {
 		t.Fatalf("释放后账户应清零: %+v", account)
