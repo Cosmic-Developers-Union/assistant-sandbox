@@ -10,6 +10,7 @@ import (
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/clock"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/eventfd"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fd"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fs"
 )
@@ -132,6 +133,29 @@ func (p ProcessDescriptors) Pipe(ctx context.Context) (uint64, uint64, error) {
 		return 0, 0, err
 	}
 	return uint64(r), uint64(w), nil
+}
+
+func (p ProcessDescriptors) EventFD(ctx context.Context, initialValue, flags uint64) (uint64, error) {
+	if p.Table == nil {
+		return 0, errno.Wrap(errno.NotImplemented, "描述符端口未装配")
+	}
+	table, ok := p.Table.(*fd.Table)
+	if !ok {
+		return 0, errno.Wrap(errno.NotSupported, "描述符表不支持 eventfd")
+	}
+	descriptor, err := table.EventFD(p.PID, initialValue, eventfd.Options{
+		Semaphore: flags&efdSemaphore != 0,
+		NonBlock:  flags&efdNonBlock != 0,
+	})
+	if err != nil {
+		return 0, err
+	}
+	if flags&efdCloexec != 0 {
+		if err := table.SetCloexec(p.PID, descriptor, true); err != nil {
+			return uint64(descriptor), err
+		}
+	}
+	return uint64(descriptor), nil
 }
 
 func (p ProcessDescriptors) Dup2(ctx context.Context, oldfd, newfd uint64, cloexec bool) error {

@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/eventfd"
 )
 
 type Streams struct {
@@ -199,6 +200,27 @@ func (t *Table) Pipe(pid uint64) (uint32, uint32, error) {
 		return 0, 0, errno.Limit
 	}
 	return readID, writeID, nil
+}
+
+// EventFD 创建并安装一个 eventfd,语义与 eventfd(2) 一致。
+func (t *Table) EventFD(pid uint64, initialValue uint64, options eventfd.Options) (uint32, error) {
+	handle, err := eventfd.New(initialValue, options)
+	if err != nil {
+		return 0, err
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	table := t.entries[pid]
+	if table == nil {
+		return 0, errno.NoProcess
+	}
+	for id := uint32(3); id < ^uint32(0); id++ {
+		if _, taken := table[id]; !taken {
+			table[id] = newEntry(handle, true)
+			return id, nil
+		}
+	}
+	return 0, errno.Limit
 }
 
 func (t *Table) Close(ctx context.Context, pid uint64, id uint32) error {

@@ -47,15 +47,17 @@ func (m *fakeMemory) Write(_ context.Context, address uint64, buffer []byte) err
 }
 
 type fakeDescriptors struct {
-	written  []byte
-	input    []byte
-	writeErr error
-	readErr  error
-	closeErr error
-	closed   bool
-	offset   int64
-	seeks    int
-	seekErr  error
+	written    []byte
+	input      []byte
+	writeErr   error
+	readErr    error
+	closeErr   error
+	closed     bool
+	offset     int64
+	seeks      int
+	seekErr    error
+	eventfd    [][2]uint64
+	eventfdErr error
 }
 
 func (d *fakeDescriptors) Write(_ context.Context, _ uint64, buffer []byte) (int, error) {
@@ -68,6 +70,11 @@ func (d *fakeDescriptors) Write(_ context.Context, _ uint64, buffer []byte) (int
 
 func (d *fakeDescriptors) Dup2(_ context.Context, oldfd, newfd uint64, cloexec bool) error {
 	return d.seekErr
+}
+
+func (d *fakeDescriptors) EventFD(ctx context.Context, initialValue, flags uint64) (uint64, error) {
+	d.eventfd = append(d.eventfd, [2]uint64{initialValue, flags})
+	return 33, d.eventfdErr
 }
 
 func (d *fakeDescriptors) Pipe(_ context.Context) (uint64, uint64, error) {
@@ -1058,5 +1065,43 @@ func TestClockNanosleepAbsoluteDeadline(t *testing.T) {
 	}
 	if len(sleeper.durations) != 1 {
 		t.Fatalf("到期后不得继续等待: %+v", sleeper.durations)
+	}
+}
+
+func TestEventfd2ValidatesAndDelegates(t *testing.T) {
+	ctx := context.Background()
+	descriptors := &fakeDescriptors{}
+	handler := Syscalls{Descriptors: descriptors}
+
+	for _, tc := range []struct {
+		label string
+		args  [6]uint64
+		want  errno.Code
+	}{
+		{"未知标志", [6]uint64{5, efdFlagMask + 1}, errno.Invalid},
+	} {
+		if reply := handler.Handle(ctx, Call{Syscall: SysEventfd2, Args: tc.args}); reply.Errno != tc.want {
+			t.Errorf("%s: err=%v want %v", tc.label, reply.Errno, tc.want)
+		}
+		if len(descriptors.eventfd) != 0 {
+			t.Errorf("%s: 被拒绝的调用不得触达描述符表", tc.label)
+		}
+	}
+
+	reply := handler.Handle(ctx, Call{Syscall: SysEventfd2, Args: [6]uint64{5, efdSemaphore | efdNonBlock | efdCloexec}})
+	if reply.Errno != "" || reply.Value != 33 {
+		t.Fatalf("正常创建: %+v", reply)
+	}
+	if len(descriptors.eventfd) != 1 || descriptors.eventfd[0] != [2]uint64{5, efdSemaphore | efdNonBlock | efdCloexec} {
+		t.Fatalf("初值与标志应透传: %+v", descriptors.eventfd)
+	}
+
+	if reply := (Syscalls{}).Handle(ctx, Call{Syscall: SysEventfd2}); reply.Errno != errno.NotImplemented {
+		t.Fatalf("未装配描述符应报 ENOSYS: %v", reply.Errno)
+	}
+
+	descriptors.eventfdErr = errno.Limit
+	if reply := handler.Handle(ctx, Call{Syscall: SysEventfd2, Args: [6]uint64{5}}); reply.Errno != errno.Limit {
+		t.Fatalf("实现层错误应透传: %v", reply.Errno)
 	}
 }

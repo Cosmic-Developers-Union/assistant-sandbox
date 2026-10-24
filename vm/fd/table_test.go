@@ -3,13 +3,16 @@ package fd
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"io"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/eventfd"
 )
 
 func TestDescriptorLifecycleAndOwnership(t *testing.T) {
@@ -280,3 +283,28 @@ func (b *blockingReader) ReadContext(_ context.Context, p []byte) (int, error) {
 	return 2, nil
 }
 func (b *blockingReader) Read(p []byte) (int, error) { return 0, io.EOF }
+
+func TestEventFDDescriptorLifecycle(t *testing.T) {
+	ctx := context.Background()
+	table := New()
+	table.Attach(7, Streams{Input: strings.NewReader(""), Output: io.Discard, Error: io.Discard})
+
+	descriptor, err := table.EventFD(7, 5, eventfd.Options{Semaphore: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := table.Get(ctx, 7, descriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw [8]byte
+	if n, err := stream.Read(raw[:]); err != nil || n != 8 {
+		t.Fatalf("读初值: n=%d err=%v", n, err)
+	}
+	if got := binary.LittleEndian.Uint64(raw[:]); got != 1 {
+		t.Fatalf("信号量模式应返回 1, got %d", got)
+	}
+	if _, err := table.EventFD(99, 0, eventfd.Options{}); !errors.Is(err, errno.NoProcess) {
+		t.Fatalf("未知进程应报 ESRCH: %v", err)
+	}
+}

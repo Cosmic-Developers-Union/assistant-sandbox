@@ -35,6 +35,8 @@ type Descriptors interface {
 
 	Pipe(ctx context.Context) (uint64, uint64, error)
 
+	EventFD(ctx context.Context, initialValue, flags uint64) (uint64, error)
+
 	Dup2(ctx context.Context, oldfd, newfd uint64, cloexec bool) error
 }
 
@@ -225,6 +227,8 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 		return s.pipe(ctx, call, false)
 	case SysPipe2:
 		return s.pipe(ctx, call, true)
+	case SysEventfd2:
+		return s.eventfd2(ctx, call)
 	case SysDup3:
 		return s.dup3(ctx, call)
 	case SysGetdents64:
@@ -641,6 +645,12 @@ const (
 	ProtRead  = 0x1
 	ProtWrite = 0x2
 	ProtExec  = 0x4
+
+	// asm-generic 的 eventfd2 标志位。
+	efdSemaphore = 0x1
+	efdNonBlock  = 0o4000
+	efdCloexec   = 0o2000000
+	efdFlagMask  = efdSemaphore | efdNonBlock | efdCloexec
 
 	mapPrivate        = 0x02
 	mapFixed          = 0x10
@@ -1249,6 +1259,20 @@ func (s Syscalls) pipe(ctx context.Context, call Call, pipe2 bool) Reply {
 		return Reply{Errno: errno.Fault}
 	}
 	return Reply{Value: 0}
+}
+
+func (s Syscalls) eventfd2(ctx context.Context, call Call) Reply {
+	if s.Descriptors == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	if call.Args[1]&^efdFlagMask != 0 {
+		return Reply{Errno: errno.Invalid}
+	}
+	descriptor, err := s.Descriptors.EventFD(ctx, call.Args[0], call.Args[1])
+	if err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	return Reply{Value: descriptor}
 }
 
 func (s Syscalls) dup3(ctx context.Context, call Call) Reply {
