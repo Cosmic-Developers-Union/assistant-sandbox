@@ -1297,7 +1297,7 @@ func TestAmoRejectsMisalignedAndReservedEncodings(t *testing.T) {
 	}{
 		{"word 未对齐", encodeAmo(0x00, 0x2, 10, 11, 5), 0x802, cpu.TrapMemoryFault},
 		{"double 未对齐", encodeAmo(0x00, 0x3, 10, 11, 5), 0x804, cpu.TrapMemoryFault},
-		{"保留 funct5", encodeAmo(0x02, 0x2, 10, 11, 5), 0x800, cpu.TrapIllegalInstruction},
+		{"保留 funct5", encodeAmo(0x05, 0x2, 10, 11, 5), 0x800, cpu.TrapIllegalInstruction},
 		{"保留 funct3", encodeAmo(0x00, 0x0, 10, 11, 5), 0x800, cpu.TrapIllegalInstruction},
 	} {
 		t.Run(tc.label, func(t *testing.T) {
@@ -1349,5 +1349,301 @@ func TestAmoWritesMemoryWithZeroDestination(t *testing.T) {
 	}
 	if got := binary.LittleEndian.Uint32(raw[:]); got != 16 {
 		t.Fatalf("memory=%d want 16(rd=x0 仍需完成 7+9 访存)", got)
+	}
+}
+
+func encodeLr(word bool, rs1, rd int) uint32 {
+	funct5, funct3 := uint32(0x12), uint32(0x3)
+	if word {
+		funct5, funct3 = 0x02, 0x2
+	}
+	return funct5<<27 | uint32(rs1)<<15 | funct3<<12 | uint32(rd)<<7 | 0x2F
+}
+
+func encodeSc(word bool, rs2, rs1, rd int) uint32 {
+	funct5, funct3 := uint32(0x13), uint32(0x3)
+	if word {
+		funct5, funct3 = 0x03, 0x2
+	}
+	return funct5<<27 | uint32(rs2)<<20 | uint32(rs1)<<15 | funct3<<12 | uint32(rd)<<7 | 0x2F
+}
+
+func encodeStoreWord(rs2, rs1 int) uint32 {
+	return uint32(rs2)<<20 | uint32(rs1)<<15 | 0x2<<12 | 0x23
+}
+
+func setupReservation(t *testing.T, address uint64, initial uint64, word bool) (*sparse, *Core) {
+	t.Helper()
+	memory := newSparse()
+	width := 8
+	if word {
+		width = 4
+	}
+	raw := make([]byte, width)
+	if word {
+		binary.LittleEndian.PutUint32(raw, uint32(initial))
+	} else {
+		binary.LittleEndian.PutUint64(raw, initial)
+	}
+	if err := memory.Write(context.Background(), address, raw); err != nil {
+		t.Fatal(err)
+	}
+	port := newPort(t, memory, 0)
+	if err := port.WriteRegister(10, address); err != nil {
+		t.Fatal(err)
+	}
+	return memory, port
+}
+
+func registerValue(t *testing.T, port *Core, index int) uint64 {
+	t.Helper()
+	got, err := port.ReadRegister(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return got
+}
+
+func TestLoadReservedThenStoreConditional(t *testing.T) {
+	ctx := context.Background()
+	memory, port := setupReservation(t, 0x800, 0x12345678, true)
+	memory.load(t, 0, encodeLr(true, 10, 5), encodeSc(true, 11, 10, 6))
+	if err := port.WriteRegister(11, 0xCAFEBABE); err != nil {
+		t.Fatal(err)
+	}
+
+	outcomes := run(t, port, 2)
+	if len(outcomes) != 2 || outcomes[1] != cpu.Continued {
+		t.Fatalf("outcomes=%v", outcomes)
+	}
+	if got := registerValue(t, port, 5); got != 0x12345678 {
+		t.Fatalf("lr rd=%#x want 0x12345678", got)
+	}
+	if got := registerValue(t, port, 6); got != 0 {
+		t.Fatalf("sc 成功时 rd=%d want 0", got)
+	}
+	var raw [4]byte
+	if err := memory.Read(ctx, 0x800, raw[:]); err != nil {
+		t.Fatal(err)
+	}
+	if got := binary.LittleEndian.Uint32(raw[:]); got != 0xCAFEBABE {
+		t.Fatalf("memory=%#x want 0xCAFEBABE", got)
+	}
+}
+
+func TestStoreConditionalFailsWithoutMatchingReservation(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		label        string
+		instructions []uint32
+		setupAddr    uint64
+		scAddr       uint64
+	}{
+		{"无 LR", []uint32{encodeSc(true, 11, 10, 6)}, 0x800, 0x800},
+		{"地址不同", []uint32{encodeLr(true, 10, 5), encodeSc(true, 11, 12, 6)}, 0x800, 0x900},
+		{"字长不同", []uint32{encodeLr(true, 10, 5), encodeSc(false, 11, 10, 6)}, 0x800, 0x800},
+	} {
+		t.Run(tc.label, func(t *testing.T) {
+			memory := newSparse()
+			for _, address := range []uint64{0x800, 0x900} {
+				if err := memory.Write(ctx, address, []byte{1, 2, 3, 4, 5, 6, 7, 8}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			port := newPort(t, memory, 0)
+			if err := port.WriteRegister(10, tc.setupAddr); err != nil {
+				t.Fatal(err)
+			}
+			if err := port.WriteRegister(11, 99); err != nil {
+				t.Fatal(err)
+			}
+			if err := port.WriteRegister(12, tc.scAddr); err != nil {
+				t.Fatal(err)
+			}
+			memory.load(t, 0, tc.instructions...)
+			outcomes := run(t, port, len(tc.instructions))
+			if len(outcomes) != len(tc.instructions) {
+				t.Fatalf("提前陷入: outcomes=%v", outcomes)
+			}
+			if got := registerValue(t, port, 6); got != 1 {
+				t.Fatalf("%s: sc rd=%d want 1", tc.label, got)
+			}
+			var raw [8]byte
+			if err := memory.Read(ctx, tc.scAddr, raw[:]); err != nil {
+				t.Fatal(err)
+			}
+			if raw[0] != 1 {
+				t.Fatalf("%s: SC 失败不得写内存 memory[0]=%d", tc.label, raw[0])
+			}
+		})
+	}
+}
+
+func TestOverlappingStoreInvalidatesReservation(t *testing.T) {
+	ctx := context.Background()
+	memory, port := setupReservation(t, 0x800, 0x11111111, true)
+	memory.load(t, 0, encodeLr(true, 10, 5), encodeStoreWord(11, 13), encodeSc(true, 12, 10, 6))
+	if err := port.WriteRegister(11, 0x22222222); err != nil {
+		t.Fatal(err)
+	}
+	if err := port.WriteRegister(12, 0x33333333); err != nil {
+		t.Fatal(err)
+	}
+	if err := port.WriteRegister(13, 0x800); err != nil {
+		t.Fatal(err)
+	}
+	outcomes := run(t, port, 3)
+	if len(outcomes) != 3 || outcomes[2] != cpu.Continued {
+		t.Fatalf("outcomes=%v", outcomes)
+	}
+	if got := registerValue(t, port, 6); got != 1 {
+		t.Fatalf("重叠写入后 sc rd=%d want 1", got)
+	}
+	var raw [4]byte
+	if err := memory.Read(ctx, 0x800, raw[:]); err != nil {
+		t.Fatal(err)
+	}
+	if got := binary.LittleEndian.Uint32(raw[:]); got != 0x22222222 {
+		t.Fatalf("memory=%#x want 0x22222222", got)
+	}
+}
+
+func TestNonOverlappingStoreKeepsReservation(t *testing.T) {
+	memory, port := setupReservation(t, 0x800, 0x11111111, true)
+	memory.load(t, 0, encodeLr(true, 10, 5), encodeStoreWord(11, 13), encodeSc(true, 12, 10, 6))
+	if err := port.WriteRegister(11, 0x22222222); err != nil {
+		t.Fatal(err)
+	}
+	if err := port.WriteRegister(12, 0x44444444); err != nil {
+		t.Fatal(err)
+	}
+	if err := port.WriteRegister(13, 0x900); err != nil {
+		t.Fatal(err)
+	}
+	outcomes := run(t, port, 3)
+	if len(outcomes) != 3 || outcomes[2] != cpu.Continued {
+		t.Fatalf("outcomes=%v", outcomes)
+	}
+	if got := registerValue(t, port, 6); got != 0 {
+		t.Fatalf("不重叠写入后 sc rd=%d want 0", got)
+	}
+	var raw [4]byte
+	if err := memory.Read(context.Background(), 0x800, raw[:]); err != nil {
+		t.Fatal(err)
+	}
+	if got := binary.LittleEndian.Uint32(raw[:]); got != 0x44444444 {
+		t.Fatalf("memory=%#x want 0x44444444", got)
+	}
+}
+
+func TestAmoAndFreshLRInvalidateReservation(t *testing.T) {
+	ctx := context.Background()
+	memory, port := setupReservation(t, 0x800, 7, true)
+	if err := port.WriteRegister(11, 1); err != nil {
+		t.Fatal(err)
+	}
+	memory.load(t, 0, encodeLr(true, 10, 5), encodeAmo(0x00, 0x2, 10, 11, 0), encodeSc(true, 11, 10, 6))
+	outcomes := run(t, port, 3)
+	if len(outcomes) != 3 || outcomes[2] != cpu.Continued {
+		t.Fatalf("outcomes=%v", outcomes)
+	}
+	if got := registerValue(t, port, 6); got != 1 {
+		t.Fatalf("AMO 写入后 sc rd=%d want 1", got)
+	}
+	var raw [4]byte
+	if err := memory.Read(ctx, 0x800, raw[:]); err != nil {
+		t.Fatal(err)
+	}
+	if got := binary.LittleEndian.Uint32(raw[:]); got != 8 {
+		t.Fatalf("memory=%d want 8", got)
+	}
+
+	memory2, port2 := setupReservation(t, 0x800, 7, true)
+	if err := port2.WriteRegister(12, 0x900); err != nil {
+		t.Fatal(err)
+	}
+	memory2.load(t, 0, encodeLr(true, 10, 5), encodeLr(true, 12, 5), encodeSc(true, 11, 10, 6), encodeSc(true, 11, 12, 7))
+	outcomes2 := run(t, port2, 4)
+	if len(outcomes2) != 4 || outcomes2[3] != cpu.Continued {
+		t.Fatalf("outcomes=%v", outcomes2)
+	}
+	if got := registerValue(t, port2, 6); got != 1 {
+		t.Fatalf("被新 LR 取代后旧 sc rd=%d want 1", got)
+	}
+	if got := registerValue(t, port2, 7); got != 0 {
+		t.Fatalf("最新 LR 的 sc rd=%d want 0", got)
+	}
+}
+
+func TestStoreConditionalConsumesReservation(t *testing.T) {
+	memory, port := setupReservation(t, 0x800, 7, true)
+	memory.load(t, 0, encodeLr(true, 10, 5), encodeSc(true, 11, 10, 6), encodeSc(true, 11, 10, 7))
+	if err := port.WriteRegister(11, 9); err != nil {
+		t.Fatal(err)
+	}
+	outcomes := run(t, port, 3)
+	if len(outcomes) != 3 || outcomes[2] != cpu.Continued {
+		t.Fatalf("outcomes=%v", outcomes)
+	}
+	if got := registerValue(t, port, 6); got != 0 {
+		t.Fatalf("首次 sc rd=%d want 0", got)
+	}
+	if got := registerValue(t, port, 7); got != 1 {
+		t.Fatalf("重复 sc rd=%d want 1", got)
+	}
+}
+
+func TestResetClearsReservation(t *testing.T) {
+	memory, port := setupReservation(t, 0x800, 7, true)
+	memory.load(t, 0, encodeLr(true, 10, 5), encodeSc(true, 11, 10, 6))
+	if err := port.WriteRegister(11, 9); err != nil {
+		t.Fatal(err)
+	}
+	run(t, port, 1)
+	state, err := port.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := port.Reset(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+	if outcome, err := port.Step(context.Background()); err != nil || outcome != cpu.Continued {
+		t.Fatalf("Step: outcome=%v err=%v", outcome, err)
+	}
+	if got := registerValue(t, port, 6); got != 1 {
+		t.Fatalf("任务切换保留失效后 sc rd=%d want 1", got)
+	}
+}
+
+func TestReservedAccessRejectsMisalignedAndMismatchedEncodings(t *testing.T) {
+	ctx := context.Background()
+	memory := newSparse()
+	memory.load(t, 0, encodeLr(true, 10, 5))
+	port := newPort(t, memory, 0)
+	if err := port.WriteRegister(10, 0x802); err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := port.Step(ctx)
+	if outcome != cpu.Trapped {
+		t.Fatalf("outcome=%v err=%v want Trapped", outcome, err)
+	}
+	var trap cpu.Trap
+	if !errors.As(err, &trap) || trap.Kind != cpu.TrapMemoryFault {
+		t.Fatalf("未对齐 LR 应产生访存故障: %v", err)
+	}
+
+	memory2 := newSparse()
+	memory2.load(t, 0, 0x02<<27|uint32(10)<<15|0x3<<12|uint32(5)<<7|0x2F)
+	port2 := newPort(t, memory2, 0)
+	if err := port2.WriteRegister(10, 0x800); err != nil {
+		t.Fatal(err)
+	}
+	outcome2, err2 := port2.Step(ctx)
+	if outcome2 != cpu.Trapped {
+		t.Fatalf("outcome=%v err=%v want Trapped", outcome2, err2)
+	}
+	var trap2 cpu.Trap
+	if !errors.As(err2, &trap2) || trap2.Kind != cpu.TrapIllegalInstruction {
+		t.Fatalf("funct3 与字长不匹配应产生非法指令: %v", err2)
 	}
 }

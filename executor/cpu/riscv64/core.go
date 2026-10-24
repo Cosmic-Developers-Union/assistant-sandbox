@@ -14,6 +14,14 @@ type Core struct {
 	memory  cpu.Memory
 	meter   cpu.Meter
 	cancel  cpu.Canceller
+	lr      reservation
+}
+
+// reservation 记录最近一次 LR 的保留集;同一 hart 对重叠字节的写入使其失效。
+type reservation struct {
+	active  bool
+	address uint64
+	width   int
 }
 
 const (
@@ -55,6 +63,7 @@ func (c *Core) Reset(ctx context.Context, machine cpu.Machine) error {
 	}
 	registers[regZero] = 0
 	c.machine = cpu.Machine{PC: machine.PC, Registers: registers}
+	c.lr = reservation{}
 	return nil
 }
 
@@ -176,7 +185,7 @@ func (c *Core) execute(ctx context.Context, pc uint64, instruction uint32) (cpu.
 	case 0x73:
 		return c.system(pc, instruction, funct3, rd, rs1)
 	case 0x2F:
-		return c.amo(ctx, pc, instruction, rd, rs1, rs2)
+		return c.atomic(ctx, pc, instruction, rd, rs1, rs2)
 	case 0x07, 0x27, 0x43, 0x47, 0x4B, 0x4F, 0x53:
 
 		return cpu.Trapped, notImplemented(pc, instruction), nil
@@ -304,6 +313,7 @@ func (c *Core) store(ctx context.Context, pc uint64, instruction uint32, funct3 
 	if err := c.memory.Write(ctx, address, raw[:width]); err != nil {
 		return cpu.Trapped, &cpu.Trap{Kind: cpu.TrapMemoryFault, Address: pc, Instruction: instruction, Detail: address, Cause: err}, nil
 	}
+	c.invalidateReservation(address, width)
 	return cpu.Continued, nil, nil
 }
 
@@ -506,6 +516,79 @@ func (c *Core) system(pc uint64, instruction uint32, funct3 uint32, rd, rs1 int)
 	}
 }
 
+// funct5 0x02/0x12 是 LR.W/D,0x03/0x13 是 SC.W/D,其余为 AMO 操作码。
+func (c *Core) atomic(ctx context.Context, pc uint64, instruction uint32, rd, rs1, rs2 int) (cpu.Outcome, *cpu.Trap, error) {
+	switch instruction >> 27 {
+	case 0x02, 0x03, 0x12, 0x13:
+		return c.reservedAccess(ctx, pc, instruction, rd, rs1, rs2)
+	default:
+		return c.amo(ctx, pc, instruction, rd, rs1, rs2)
+	}
+}
+
+func (c *Core) reservedAccess(ctx context.Context, pc uint64, instruction uint32, rd, rs1, rs2 int) (cpu.Outcome, *cpu.Trap, error) {
+	funct5 := instruction >> 27
+	word := funct5 == 0x02 || funct5 == 0x03
+	width := 8
+	if word {
+		width = 4
+	}
+	funct3 := (instruction >> 12) & 0x7
+	wantFunct3 := uint32(0x3)
+	if word {
+		wantFunct3 = 0x2
+	}
+	if funct3 != wantFunct3 {
+		return 0, illegal(pc, instruction), nil
+	}
+	address := c.read(rs1)
+	if address%uint64(width) != 0 {
+		return cpu.Trapped, &cpu.Trap{
+			Kind: cpu.TrapMemoryFault, Address: pc, Instruction: instruction, Detail: address,
+			Cause: errno.Wrap(errno.Invalid, "原子访存地址未对齐"),
+		}, nil
+	}
+	if funct5 == 0x02 || funct5 == 0x12 {
+		return c.loadReserved(ctx, pc, instruction, rd, address, width, word)
+	}
+	return c.storeConditional(ctx, pc, instruction, rd, rs2, address, width, word)
+}
+
+func (c *Core) loadReserved(ctx context.Context, pc uint64, instruction uint32, rd int, address uint64, width int, word bool) (cpu.Outcome, *cpu.Trap, error) {
+	var raw [8]byte
+	if err := c.memory.Read(ctx, address, raw[:width]); err != nil {
+		return cpu.Trapped, &cpu.Trap{Kind: cpu.TrapMemoryFault, Address: pc, Instruction: instruction, Detail: address, Cause: err}, nil
+	}
+	c.lr = reservation{active: true, address: address, width: width}
+	value := loadValue(raw[:width], false)
+	if word {
+		c.write(rd, signExtend(uint64(uint32(value)), 32))
+	} else {
+		c.write(rd, value)
+	}
+	return cpu.Continued, nil, nil
+}
+
+func (c *Core) storeConditional(ctx context.Context, pc uint64, instruction uint32, rd, rs2 int, address uint64, width int, word bool) (cpu.Outcome, *cpu.Trap, error) {
+	if !c.lr.active || c.lr.address != address || c.lr.width != width {
+		c.write(rd, 1)
+		return cpu.Continued, nil, nil
+	}
+	value := c.read(rs2)
+	var raw [8]byte
+	if word {
+		binary.LittleEndian.PutUint32(raw[:4], uint32(value))
+	} else {
+		binary.LittleEndian.PutUint64(raw[:8], value)
+	}
+	if err := c.memory.Write(ctx, address, raw[:width]); err != nil {
+		return cpu.Trapped, &cpu.Trap{Kind: cpu.TrapMemoryFault, Address: pc, Instruction: instruction, Detail: address, Cause: err}, nil
+	}
+	c.lr.active = false
+	c.write(rd, 0)
+	return cpu.Continued, nil, nil
+}
+
 func (c *Core) amo(ctx context.Context, pc uint64, instruction uint32, rd, rs1, rs2 int) (cpu.Outcome, *cpu.Trap, error) {
 	operation, ok := amoOperation(instruction >> 27)
 	if !ok {
@@ -538,6 +621,7 @@ func (c *Core) amo(ctx context.Context, pc uint64, instruction uint32, rd, rs1, 
 	if err := c.memory.Write(ctx, address, raw[:width]); err != nil {
 		return cpu.Trapped, &cpu.Trap{Kind: cpu.TrapMemoryFault, Address: pc, Instruction: instruction, Detail: address, Cause: err}, nil
 	}
+	c.invalidateReservation(address, width)
 	return cpu.Continued, nil, nil
 }
 
@@ -549,6 +633,17 @@ func amoWidth(funct3 uint32) (int, bool, bool) {
 		return 8, false, true
 	default:
 		return 0, false, false
+	}
+}
+
+func (c *Core) invalidateReservation(address uint64, width int) {
+	if !c.lr.active {
+		return
+	}
+	reservedEnd := c.lr.address + uint64(c.lr.width)
+	writeEnd := address + uint64(width)
+	if address < reservedEnd && c.lr.address < writeEnd {
+		c.lr.active = false
 	}
 }
 
