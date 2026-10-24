@@ -695,3 +695,60 @@ func TestDropPagesKeepsMappingButDropsContent(t *testing.T) {
 		t.Fatalf("未映射范围应失败: %v", err)
 	}
 }
+
+func TestRangeValidationIsUniformAcrossOperations(t *testing.T) {
+	ctx := context.Background()
+	// 零长度、倒序、未对齐与溢出在所有区间操作上得到一致的错误分类;
+	// 页区间运算的守卫集中在 validateRange,这里验证每个入口都经过它。
+	cases := []struct {
+		label string
+		start uint64
+		end   uint64
+		want  error
+	}{
+		{"空区间", page(2), page(2), errno.Invalid},
+		{"倒序区间", page(3), page(2), errno.Invalid},
+		{"未对齐起点", page(2) + 1, page(3), errno.Invalid},
+		{"未对齐终点", page(2), page(3) + 1, errno.Invalid},
+		{"溢出地址空间", page(1), maxAddress + page(1), errno.Invalid},
+	}
+	for _, tc := range cases {
+		table := New(0)
+		if err := table.Map(ctx, Region{Start: page(1), End: page(2), Prot: ProtRead | ProtWrite}); err != nil {
+			t.Fatal(err)
+		}
+		if err := table.Unmap(ctx, tc.start, tc.end); !errors.Is(err, tc.want) {
+			t.Errorf("Unmap %s: err=%v want %v", tc.label, err, tc.want)
+		}
+		table = New(0)
+		if err := table.Map(ctx, Region{Start: page(1), End: page(2), Prot: ProtRead | ProtWrite}); err != nil {
+			t.Fatal(err)
+		}
+		if err := table.Protect(ctx, tc.start, tc.end, ProtRead); !errors.Is(err, tc.want) {
+			t.Errorf("Protect %s: err=%v want %v", tc.label, err, tc.want)
+		}
+		table = New(0)
+		if err := table.Map(ctx, Region{Start: page(1), End: page(2), Prot: ProtRead | ProtWrite}); err != nil {
+			t.Fatal(err)
+		}
+		if err := table.DropPages(ctx, tc.start, tc.end); !errors.Is(err, tc.want) {
+			t.Errorf("DropPages %s: err=%v want %v", tc.label, err, tc.want)
+		}
+	}
+	// 部分重叠的三个方向:起点落入区间、终点落入区间、完全包含。
+	table := New(0)
+	if err := table.Map(ctx, Region{Start: page(1), End: page(4), Prot: ProtRead}); err != nil {
+		t.Fatal(err)
+	}
+	for _, region := range []Region{
+		{Start: page(2), End: page(4)},
+		{Start: page(1), End: page(3)},
+		{Start: page(0), End: page(4)},
+	} {
+		overlap := region
+		overlap.Prot = ProtRead
+		if err := table.Map(ctx, overlap); !errors.Is(err, errno.Exist) {
+			t.Errorf("部分重叠 %d-%d: err=%v want EEXIST", overlap.Start, overlap.End, err)
+		}
+	}
+}

@@ -107,7 +107,7 @@ Python 和 Node.js 的验收必须执行客体运行时，不能通过调用宿�
 
 依赖：C02、D01；涉及 CPU 执行的验收依赖 D02。
 
-- [ ] E01 审计页区间与地址运算。验收：零长度、溢出、跨页和部分重叠处理一致。
+- [x] E01 审计页区间与地址运算。验收：零长度、溢出、跨页和部分重叠处理一致。 证据:审计结论——区间守卫集中在 vm/memory/table.go validateRange(空/倒序 EINVAL、未对齐 FaultMisaligned→EINVAL、超地址空间 FaultOverflow→EINVAL),Map/Unmap/Protect/Resize/Move/DropPages 全部经过同一入口;部分重叠三方向(起点落入/终点落入/完全包含)由 checkOverlapLocked 统一 EEXIST;跨页读写按页循环(table.go Read/Write 的 page 循环)由 paged_test.go TestReadWriteRoundTrip 跨页往返覆盖;新增 table_test.go TestRangeValidationIsUniformAcrossOperations 验证空/倒序/未对齐/溢出在 Unmap/Protect/DropPages 上错误分类一致,及部分重叠三方向 EEXIST。测试:`make docker-test TEST_ARGS=./vm/memory/`。CI:Test 工作流。
 - [x] E02 分离取指、读取和写入权限检查。验收：不可执行页不能取指，只读页不能写入，故障携带访问类型。 证据:executor/cpu/contract.go ExecutableChecker 可选接口、core.go checkExecutable(2/4 字节分段校验,故障携带取指地址与指令编码)、vm/memory/table.go Executable;table_test.go TestExecutableDistinguishesProt、compressed_test.go TestFetchRequiresExecutablePage。测试:`make docker-test TEST_ARGS=./vm/memory/`。CI:Test 工作流。
 - [x] E03 实现匿名私有 mmap。验收：零填充、地址提示、页对齐及失败 errno 与 Linux 一致。 证据:abi/linux/common/syscalls.go mmap handler(对齐/标志/长度校验+Mappable 端口)、executor/elf/mapper.go(自 4GiB 自底向上选址+内存计量)、common syscalls_test.go TestMmapValidatesAndDelegates、program_test.go TestMapperPlacesAndReplacesAnonymous、TestMapperValidatesProtAndBounds。测试:`make docker-test TEST_ARGS=./abi/linux/common/`。CI:Test 工作流。备注:仅匿名私有映射;文件映射按当前兼容配置明确 ENOTSUP,待 E09。
 - [x] E04 实现安全的固定地址映射语义。验收：替换映射与 NOREPLACE 冲突分别处理，失败不留下半成品。 证据:vm/memory/table.go Replace(原子替换、NOREPLACE、净额预算、页丢弃)、table_test.go TestReplaceOverwritesOverlap、TestReplaceNoReplaceFailsAtomically、TestReplaceRespectsBudget;program_test.go TestMapperFixedAndNoReplace。测试:`make docker-test TEST_ARGS=./vm/memory/`。CI:Test 工作流。
