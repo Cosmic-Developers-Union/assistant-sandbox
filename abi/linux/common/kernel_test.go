@@ -3,6 +3,7 @@ package common
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	stdfs "io/fs"
 	"math"
@@ -288,5 +289,117 @@ func TestProcessDescriptorsRejectsOversizedAndUnknown(t *testing.T) {
 	}
 	if err := (ProcessDescriptors{PID: pid}).Close(ctx, 0); !errors.Is(err, errno.NotImplemented) {
 		t.Fatalf("空表关闭=%v want ENOSYS", err)
+	}
+}
+
+func TestGetdents64WalksDirectoryHandleWithCursor(t *testing.T) {
+	ctx := context.Background()
+	system, err := memfs.New(&clock.Virtual{}, memfs.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := system.Mkdir(ctx, "/walk", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"one.txt", "two.txt"} {
+		file, err := system.Open(ctx, "/walk/"+name, vmfs.Create|1, 0o644)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := file.Write([]byte("x")); err != nil {
+			t.Fatal(err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := system.Mkdir(ctx, "/walk/nested", 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	const pid = 21
+	table := fd.New()
+	table.Attach(pid, fd.Streams{})
+	files := ProcessFiles{System: system, Store: table, PID: pid, Dir: "/"}
+	descriptors := ProcessDescriptors{Table: table, PID: pid}
+	syscalls := Syscalls{Memory: newFakeMemory(), Descriptors: descriptors, Files: files}
+
+	dirfd, err := files.Open(ctx, OpenRequest{Path: "/walk", Flags: OpenFlags{Mode: OpenRead}})
+	if err != nil {
+		t.Fatalf("打开目录: %v", err)
+	}
+
+	// 小缓冲区只装一条记录,游标随调用推进且不重复。
+	seen := map[string]bool{}
+	type record struct {
+		ino, off uint64
+		dt       byte
+		name     string
+	}
+	var records []record
+	for round := 0; round < 3; round++ {
+		reply := syscalls.Handle(ctx, Call{Syscall: SysGetdents64, Args: [6]uint64{dirfd, 0x2000, 32}})
+		if reply.Errno != "" {
+			t.Fatalf("第 %d 轮: %+v", round, reply.Errno)
+		}
+		if reply.Value == 0 {
+			break
+		}
+		raw := make([]byte, reply.Value)
+		if err := syscalls.Memory.Read(ctx, 0x2000, raw); err != nil {
+			t.Fatal(err)
+		}
+		for cursor := 0; cursor < len(raw); {
+			reclen := int(binary.LittleEndian.Uint16(raw[cursor+16:]))
+			records = append(records, record{
+				ino:  binary.LittleEndian.Uint64(raw[cursor:]),
+				off:  binary.LittleEndian.Uint64(raw[cursor+8:]),
+				dt:   raw[cursor+18],
+				name: cstring(raw[cursor+19 : cursor+reclen]),
+			})
+			cursor += reclen
+		}
+	}
+	if len(records) != 3 {
+		t.Fatalf("应读到 3 条目录项: %+v", records)
+	}
+	for _, want := range []record{{dt: 4, name: "nested"}, {dt: 8, name: "one.txt"}, {dt: 8, name: "two.txt"}} {
+		found := false
+		for _, got := range records {
+			if got.name == want.name {
+				found = true
+				if got.dt != want.dt {
+					t.Fatalf("%s d_type=%d want %d", want.name, got.dt, want.dt)
+				}
+				if got.ino == 0 || got.off != got.ino {
+					t.Fatalf("%s ino/off=%d/%d", want.name, got.ino, got.off)
+				}
+				if seen[want.name] {
+					t.Fatalf("%s 重复出现", want.name)
+				}
+				seen[want.name] = true
+			}
+		}
+		if !found {
+			t.Fatalf("缺少目录项 %s: %+v", want.name, records)
+		}
+	}
+
+	// lseek 到 0 回卷目录游标,再次读出全部条目。
+	if _, err := descriptors.Seek(ctx, dirfd, 0, SeekSet); err != nil {
+		t.Fatalf("回卷: %v", err)
+	}
+	reply := syscalls.Handle(ctx, Call{Syscall: SysGetdents64, Args: [6]uint64{dirfd, 0x2000, 256}})
+	if reply.Errno != "" || reply.Value == 0 {
+		t.Fatalf("回卷后应重新读到条目: %+v", reply)
+	}
+
+	// 普通文件句柄不是目录读取入口(Linux 语义 ENOTDIR)。
+	filefd, err := files.Open(ctx, OpenRequest{Path: "/walk/one.txt", Flags: OpenFlags{Mode: OpenRead}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysGetdents64, Args: [6]uint64{filefd, 0x2000, 256}}); reply.Errno != errno.NotDirectory {
+		t.Fatalf("非目录句柄: %+v want ENOTDIR", reply)
 	}
 }

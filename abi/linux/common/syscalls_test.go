@@ -381,22 +381,6 @@ type fakeFiles struct {
 	lstatErr    error
 }
 
-type fakeDirEntry struct {
-	name    string
-	dir     bool
-	infoErr error
-}
-
-func (e fakeDirEntry) Name() string { return e.name }
-func (e fakeDirEntry) IsDir() bool  { return e.dir }
-func (e fakeDirEntry) Type() stdfs.FileMode {
-	if e.dir {
-		return stdfs.ModeDir
-	}
-	return 0
-}
-func (e fakeDirEntry) Info() (stdfs.FileInfo, error) { return nil, e.infoErr }
-
 type fakeFileInfo struct{ dir bool }
 
 func (i fakeFileInfo) Name() string { return "stub" }
@@ -1365,67 +1349,126 @@ type namedHandle struct{ name string }
 
 func (n namedHandle) Name() string { return n.name }
 
-func TestGetdents64EncodesRecordsAndRespectsCapacity(t *testing.T) {
+// dirEntryInfo 是携带扩展元数据的目录项替身。
+type dirEntryInfo struct {
+	name     string
+	mode     stdfs.FileMode
+	metadata *vmfs.Metadata
+}
+
+func (e dirEntryInfo) Name() string { return e.name }
+func (e dirEntryInfo) IsDir() bool  { return e.mode&stdfs.ModeDir != 0 }
+func (e dirEntryInfo) Type() stdfs.FileMode {
+	return e.mode.Type()
+}
+func (e dirEntryInfo) Info() (stdfs.FileInfo, error) {
+	return statFileInfo{name: e.name, mode: e.mode, sys: e.metadata}, nil
+}
+
+// dirHandle 是实现 Readdir 的目录句柄替身:每次调用按序返回一批条目,
+// 模拟 memfs 游标推进。
+type dirHandle struct {
+	batches [][]stdfs.DirEntry
+	calls   []int
+}
+
+func (h *dirHandle) Readdir(limit int) ([]stdfs.DirEntry, error) {
+	if limit <= 0 {
+		return nil, errno.Invalid
+	}
+	h.calls = append(h.calls, limit)
+	if len(h.batches) == 0 {
+		return nil, nil
+	}
+	batch := h.batches[0]
+	h.batches = h.batches[1:]
+	return batch, nil
+}
+
+func TestGetdents64EncodesRecordsWithHandleCursor(t *testing.T) {
 	ctx := context.Background()
 	memory := newFakeMemory()
-	descriptors := &fakeDescriptors{get: namedHandle{name: "/tmp"}}
-	files := &fakeFiles{entries: []stdfs.DirEntry{
-		fakeDirEntry{name: "a.txt"},
-		fakeDirEntry{name: "sub", dir: true},
-	}}
-	handler := Syscalls{Memory: memory, Descriptors: descriptors, Files: files}
+	handle := &dirHandle{batches: [][]stdfs.DirEntry{{
+		dirEntryInfo{name: "a.txt", metadata: &vmfs.Metadata{Inode: 11}},
+		dirEntryInfo{name: "sub", metadata: &vmfs.Metadata{Inode: 22}, mode: stdfs.ModeDir | 0o755},
+		dirEntryInfo{name: "lnk", metadata: &vmfs.Metadata{Inode: 33}, mode: stdfs.ModeSymlink | 0o777},
+	}}}
+	descriptors := &fakeDescriptors{get: handle}
+	handler := Syscalls{Memory: memory, Descriptors: descriptors}
 
-	// 小缓冲区只装得下第一条记录(32 字节),返回值等于已写入字节。
-	if reply := handler.Handle(ctx, Call{Syscall: SysGetdents64, Args: [6]uint64{3, 0x2000, 32}}); reply.Errno != "" || reply.Value != 32 {
-		t.Fatalf("getdents64: %+v", reply)
+	// 全部三条记录一次写入:d_ino/d_off 取句柄声明的 inode 号,
+	// d_type 按模式区分,记录按 8 字节对齐且填充为零。
+	if reply := handler.Handle(ctx, Call{Syscall: SysGetdents64, Args: [6]uint64{3, 0x2000, 256}}); reply.Errno != "" || reply.Value != 80 {
+		t.Fatalf("getdents64: %+v want 80 字节", reply)
 	}
-	var record [32]byte
-	if err := memory.Read(ctx, 0x2000, record[:]); err != nil {
+	var raw [80]byte
+	if err := memory.Read(ctx, 0x2000, raw[:]); err != nil {
 		t.Fatal(err)
 	}
-	if ino := binary.LittleEndian.Uint64(record[0:]); ino != 1 {
-		t.Fatalf("d_ino=%d want 1", ino)
+	expected := []struct {
+		ino, off, reclen uint64
+		dt               byte
+		name             string
+	}{
+		{11, 11, 32, 8, "a.txt"},
+		{22, 22, 24, 4, "sub"},
+		{33, 33, 24, 10, "lnk"},
 	}
-	reclen := binary.LittleEndian.Uint16(record[16:])
-	if reclen != 32 {
-		t.Fatalf("d_reclen=%d want 32", reclen)
+	for index, cursor := 0, 0; index < len(expected); index++ {
+		reclen := binary.LittleEndian.Uint16(raw[cursor+16:])
+		record := raw[cursor : cursor+int(reclen)]
+		cursor += int(reclen)
+		want := expected[index]
+		if ino := binary.LittleEndian.Uint64(record[0:]); ino != want.ino {
+			t.Fatalf("第 %d 项 d_ino=%d want %d", index, ino, want.ino)
+		}
+		if off := binary.LittleEndian.Uint64(record[8:]); off != want.off {
+			t.Fatalf("第 %d 项 d_off=%d want %d", index, off, want.off)
+		}
+		if reclen != uint16(want.reclen) {
+			t.Fatalf("第 %d 项 d_reclen=%d want %d", index, reclen, want.reclen)
+		}
+		if record[18] != want.dt {
+			t.Fatalf("第 %d 项 d_type=%d want %d", index, record[18], want.dt)
+		}
+		if got := cstring(record[19:]); got != want.name {
+			t.Fatalf("第 %d 项名字=%q want %q", index, got, want.name)
+		}
 	}
-	if record[18] != 8 {
-		t.Fatalf("d_type=%d want DT_REG", record[18])
+	// 游标已读完:下一次调用返回 0。
+	if reply := handler.Handle(ctx, Call{Syscall: SysGetdents64, Args: [6]uint64{3, 0x2000, 256}}); reply.Errno != "" || reply.Value != 0 {
+		t.Fatalf("目录读完应返回 0: %+v", reply)
 	}
-	if string(record[19:25]) != "a.txt\x00" {
-		t.Fatalf("名字未按 NUL 结尾: %q", record[19:25])
-	}
+}
 
-	// 大缓冲区两条记录一次读完(32+24=56),d_off 递增且按 8 对齐。
-	if reply := handler.Handle(ctx, Call{Syscall: SysGetdents64, Args: [6]uint64{3, 0x3000, 256}}); reply.Errno != "" || reply.Value != 56 {
-		t.Fatalf("两条记录应共 56 字节: %+v", reply)
-	}
-	var both [56]byte
-	if err := memory.Read(ctx, 0x3000, both[:]); err != nil {
-		t.Fatal(err)
-	}
-	if dOff := binary.LittleEndian.Uint64(both[32+8:]); dOff != 56 {
-		t.Fatalf("第二条 d_off=%d want 56", dOff)
-	}
-	if both[32+18] != 4 {
-		t.Fatalf("目录项 d_type=%d want DT_DIR", both[32+18])
-	}
-	if padding := both[25:32]; !bytes.Equal(padding, []byte{0, 0, 0, 0, 0, 0, 0}) {
-		t.Fatalf("记录尾部填充必须为零: %v", padding)
-	}
+func TestGetdents64RejectsTinyBuffersAndBadHandles(t *testing.T) {
+	ctx := context.Background()
+	memory := newFakeMemory()
+	handle := &dirHandle{batches: [][]stdfs.DirEntry{{
+		dirEntryInfo{name: "a.txt", metadata: &vmfs.Metadata{Inode: 11}},
+	}}}
+	handler := Syscalls{Memory: memory, Descriptors: &fakeDescriptors{get: handle}}
 
-	// 缓冲区容不下任何记录时返回 0(目录读取结束)。
-	if reply := handler.Handle(ctx, Call{Syscall: SysGetdents64, Args: [6]uint64{3, 0x2000, 24}}); reply.Errno != "" || reply.Value != 0 {
-		t.Fatalf("过小缓冲区应返回 0: %+v", reply)
+	// 缓冲区容不下一条记录报 EINVAL。
+	if reply := handler.Handle(ctx, Call{Syscall: SysGetdents64, Args: [6]uint64{3, 0x2000, 23}}); reply.Errno != errno.Invalid {
+		t.Fatalf("过小缓冲区: %+v want EINVAL", reply)
 	}
-
+	// 零长度缓冲区报 EINVAL。
+	if reply := handler.Handle(ctx, Call{Syscall: SysGetdents64, Args: [6]uint64{3, 0x2000, 0}}); reply.Errno != errno.Invalid {
+		t.Fatalf("零长度: %+v want EINVAL", reply)
+	}
+	// 非目录句柄明确 ENOTSUP。
+	notDir := Syscalls{Memory: memory, Descriptors: &fakeDescriptors{get: namedHandle{name: "/tmp"}}}
+	if reply := notDir.Handle(ctx, Call{Syscall: SysGetdents64, Args: [6]uint64{3, 0x2000, 256}}); reply.Errno != errno.NotSupported {
+		t.Fatalf("非目录句柄: %+v want ENOTSUP", reply)
+	}
+	// 未装配端口报 ENOSYS。
 	if reply := (Syscalls{}).Handle(ctx, Call{Syscall: SysGetdents64}); reply.Errno != errno.NotImplemented {
 		t.Fatalf("未装配应报 ENOSYS: %v", reply.Errno)
 	}
-	descriptors.get = namedHandle{name: "/x"}
-	descriptors.seekErr = errno.BadHandle
-	if reply := handler.Handle(ctx, Call{Syscall: SysGetdents64, Args: [6]uint64{9, 0x2000, 256}}); reply.Errno != errno.BadHandle {
+	// 坏描述符透传 EBADF。
+	badFD := Syscalls{Memory: memory, Descriptors: &fakeDescriptors{seekErr: errno.BadHandle}}
+	if reply := badFD.Handle(ctx, Call{Syscall: SysGetdents64, Args: [6]uint64{9, 0x2000, 256}}); reply.Errno != errno.BadHandle {
 		t.Fatalf("描述符错误应透传: %v", reply.Errno)
 	}
 }

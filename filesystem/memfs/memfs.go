@@ -332,7 +332,16 @@ func (f *FS) Open(ctx context.Context, p string, flags uint32, mode stdfs.FileMo
 	if !created {
 		switch node.kind {
 		case kindDir:
-			return nil, errno.IsDirectory
+			// Linux 语义:O_RDONLY 允许打开目录(getdents64 入口),
+			// 写访问与截断/追加报 EISDIR。
+			if access != 0 || truncate || append {
+				return nil, errno.IsDirectory
+			}
+			if node.mode.Perm()&0o400 == 0 {
+				return nil, errno.Permission
+			}
+			node.opened++
+			return &handle{fs: f, node: node}, nil
 		case kindSymlink:
 			return nil, errno.NotFound
 		case kindFifo:

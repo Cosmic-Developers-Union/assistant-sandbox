@@ -94,7 +94,16 @@ func TestOpenFlagSemantics(t *testing.T) {
 	if err := f.Mkdir(ctx, "/d", 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.Open(ctx, "/d", vmfs.ReadOnly, 0); !errors.Is(err, errno.IsDirectory) {
+	// O_RDONLY 允许打开目录(目录句柄是 getdents64 的入口),
+	// 写访问仍报 EISDIR。
+	dir, err := f.Open(ctx, "/d", vmfs.ReadOnly, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := dir.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Open(ctx, "/d", vmfs.ReadWrite, 0); !errors.Is(err, errno.IsDirectory) {
 		t.Fatal(err)
 	}
 
@@ -764,7 +773,11 @@ func TestOpenFlagAndTraversalErrors(t *testing.T) {
 	if err := f.Mkdir(ctx, "/d", 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.Open(ctx, "/d", vmfs.ReadOnly, 0); !errors.Is(err, errno.IsDirectory) {
+	// 只读打开目录合法,写访问报 EISDIR。
+	if _, err := f.Open(ctx, "/d", vmfs.ReadOnly, 0); err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if _, err := f.Open(ctx, "/d", vmfs.WriteOnly, 0); !errors.Is(err, errno.IsDirectory) {
 		t.Fatalf("err=%v", err)
 	}
 }
@@ -1105,4 +1118,105 @@ func TestAccessTimeFollowsSetTimes(t *testing.T) {
 	if _, err := f.AccessTime(cancelled, "/data"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("取消: %v", err)
 	}
+}
+
+func TestDirectoryHandleCursorAndSeek(t *testing.T) {
+	f, _ := newFS(t)
+	ctx := context.Background()
+	for _, name := range []string{"/alpha", "/beta", "/gamma"} {
+		file, err := f.Open(ctx, name, vmfs.Create|vmfs.ReadWrite, 0o644)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := file.Write([]byte("x")); err != nil {
+			t.Fatal(err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := f.Mkdir(ctx, "/sub", 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	dir, err := f.Open(ctx, "/", vmfs.ReadOnly, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = dir.Close() }()
+
+	// 非目录读取路径:Read 报 EISDIR,Write 报 EBADF。
+	if _, err := dir.Read(make([]byte, 4)); !errors.Is(err, errno.IsDirectory) {
+		t.Fatalf("read=%v want EISDIR", err)
+	}
+	if _, err := dir.Write([]byte("x")); !errors.Is(err, errno.BadHandle) {
+		t.Fatalf("write=%v want EBADF", err)
+	}
+
+	reader, ok := dir.(interface {
+		Readdir(limit int) ([]fs.DirEntry, error)
+	})
+	if !ok {
+		t.Fatal("目录句柄应实现 Readdir")
+	}
+
+	// limit 截断游标推进:每次返回至多 limit 条,按名称排序。
+	first, err := reader.Readdir(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 2 || first[0].Name() != "alpha" || first[1].Name() != "beta" {
+		t.Fatalf("第一批=%v", names(first))
+	}
+	second, err := reader.Readdir(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second) != 2 || second[0].Name() != "gamma" || second[1].Name() != "sub" {
+		t.Fatalf("第二批=%v", names(second))
+	}
+	if rest, err := reader.Readdir(2); err != nil || len(rest) != 0 {
+		t.Fatalf("读完应返回 0 条: %v %v", names(rest), err)
+	}
+
+	// Seek(0) 回卷后再次读到全部条目。
+	if _, err := dir.(io.Seeker).Seek(0, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
+	rewound, err := reader.Readdir(8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(names(rewound), ",") != "alpha,beta,gamma,sub" {
+		t.Fatalf("回卷后=%v", names(rewound))
+	}
+
+	// seekdir 语义:Seek(c) 后从 cookie 为 c 的条目继续(含自身),
+	// 已删除的条目消失,仍存在的条目不遗漏。
+	info, err := rewound[0].Info()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookie := info.Sys().(*vmfs.Metadata).Inode
+	if _, err := dir.(io.Seeker).Seek(int64(cookie), io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Remove(ctx, "/beta"); err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := reader.Readdir(8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(names(resumed), ",") != "alpha,gamma,sub" {
+		t.Fatalf("从 cookie=%d 恢复=%v", cookie, names(resumed))
+	}
+}
+
+func names(entries []fs.DirEntry) []string {
+	out := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		out = append(out, entry.Name())
+	}
+	return out
 }

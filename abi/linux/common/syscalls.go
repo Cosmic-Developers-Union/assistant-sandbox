@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	stdfs "io/fs"
+	"math"
 	"strings"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
@@ -1508,51 +1509,135 @@ func (s Syscalls) gettimeofday(ctx context.Context, call Call) Reply {
 	return Reply{Value: 0}
 }
 
+// dirReader 是目录句柄的可选能力:按游标返回目录项。
+// 实现约定见 filesystem/memfs 的 handle.Readdir:条目 Info().Sys() 携带
+// vm/fs.Metadata 时,其 Inode 充当 d_off cookie 并可经 lseek 恢复游标。
+type dirReader interface {
+	Readdir(limit int) ([]stdfs.DirEntry, error)
+}
+
+// asm-generic 的目录项类型值。
+const (
+	dtFifo     = 1
+	dtCharDev  = 2
+	dtDir      = 4
+	dtBlockDev = 3
+	dtRegular  = 8
+	dtSymlink  = 10
+	dtSocket   = 12
+
+	// 最小目录项记录长度:d_ino(8)+d_off(8)+d_reclen(2)+d_type(1)。
+	direntMinRecord = 19
+)
+
+func direntType(mode stdfs.FileMode) byte {
+	switch {
+	case mode&stdfs.ModeDir != 0:
+		return dtDir
+	case mode&stdfs.ModeSymlink != 0:
+		return dtSymlink
+	case mode&stdfs.ModeDevice != 0 && mode&stdfs.ModeCharDevice != 0:
+		return dtCharDev
+	case mode&stdfs.ModeDevice != 0:
+		return dtBlockDev
+	case mode&stdfs.ModeNamedPipe != 0:
+		return dtFifo
+	case mode&stdfs.ModeSocket != 0:
+		return dtSocket
+	default:
+		return dtRegular
+	}
+}
+
 func (s Syscalls) getdents64(ctx context.Context, call Call) Reply {
-	if s.Descriptors == nil || s.Files == nil || s.Memory == nil {
+	if s.Descriptors == nil || s.Memory == nil {
 		return Reply{Errno: errno.NotImplemented}
 	}
 	handle, err := s.Descriptors.Get(ctx, call.Args[0])
 	if err != nil {
 		return Reply{Errno: errnoOf(err)}
 	}
-	namer, ok := handle.(interface{ Name() string })
+	reader, ok := handle.(dirReader)
 	if !ok {
 		return Reply{Errno: errno.NotSupported}
 	}
-	entries, err := s.Files.ReadDir(ctx, namer.Name())
+	if call.Args[2] == 0 || call.Args[2] > uint64(math.MaxInt) {
+		return Reply{Errno: errno.Invalid}
+	}
+	capacity := int(call.Args[2])
+	// 批量取回再打包;未写进缓冲区的条目必须把游标退回,
+	// 保证下一次调用仍能看到它们(与内核 filldir 行为一致)。
+	entries, err := reader.Readdir(direntBatchLimit)
 	if err != nil {
 		return Reply{Errno: errnoOf(err)}
 	}
-	capacity := int(call.Args[2])
+	if len(entries) == 0 {
+		return Reply{Value: 0}
+	}
 	out := make([]byte, 0, capacity)
-	offset := uint64(0)
+	emitted := 0
+	fallback := uint64(0)
 	for _, entry := range entries {
+		info, err := entry.Info()
+		if err != nil {
+			break
+		}
 		nameBytes := append([]byte(entry.Name()), 0)
-		reclen := (19 + len(nameBytes) + 7) &^ 7
+		reclen := (direntMinRecord + len(nameBytes) + 7) &^ 7
 		if len(out)+reclen > capacity {
 			break
 		}
-		record := make([]byte, reclen)
-		const inodePlaceholder = 1
-		binary.LittleEndian.PutUint64(record[0:], inodePlaceholder)
-		offset += uint64(reclen)
-		binary.LittleEndian.PutUint64(record[8:], offset)
-		binary.LittleEndian.PutUint16(record[16:], uint16(reclen))
-		record[18] = 8 // DT_REG
-		if entry.IsDir() {
-			record[18] = 4 // DT_DIR
+		fallback++
+		// cookie 优先取文件系统声明的 inode 号,缺失时退化为批内序号。
+		cookie, ino := fallback, fallback
+		if metadata, ok := info.Sys().(*vmfs.Metadata); ok {
+			cookie, ino = metadata.Inode, metadata.Inode
 		}
+		record := make([]byte, reclen)
+		binary.LittleEndian.PutUint64(record[0:], ino)
+		binary.LittleEndian.PutUint64(record[8:], cookie)
+		binary.LittleEndian.PutUint16(record[16:], uint16(reclen))
+		record[18] = direntType(info.Mode())
 		copy(record[19:], nameBytes)
 		out = append(out, record...)
+		emitted++
 	}
-	if len(out) == 0 {
-		return Reply{Value: 0}
+	if emitted == 0 {
+		// 缓冲区容不下任何一条记录。
+		return Reply{Errno: errno.Invalid}
+	}
+	if emitted < len(entries) {
+		if err := s.rewindDirents(ctx, handle, entries[emitted:]); err != nil {
+			return Reply{Errno: errnoOf(err)}
+		}
 	}
 	if err := s.Memory.Write(ctx, call.Args[1], out); err != nil {
 		return Reply{Errno: errno.Fault}
 	}
 	return Reply{Value: uint64(len(out))}
+}
+
+// direntBatchLimit 是 getdents64 单次向目录句柄取回的条目上限。
+const direntBatchLimit = 1024
+
+// rewindDirents 把目录游标退回 leftover 的首条,使未写出的条目
+// 在下一次 getdents64 仍可见;目录句柄必须支持定位(vm/fs.File 契约)。
+func (s Syscalls) rewindDirents(ctx context.Context, handle any, leftover []stdfs.DirEntry) error {
+	first, err := leftover[0].Info()
+	if err != nil {
+		return err
+	}
+	metadata, ok := first.Sys().(*vmfs.Metadata)
+	if !ok {
+		// cookie 退化为批内序号的句柄无法可靠回退;仍按批首序号重试。
+		return errno.IO
+	}
+	seeker, ok := handle.(io.Seeker)
+	if !ok {
+		return errno.IO
+	}
+	_, err = seeker.Seek(int64(metadata.Inode), int(SeekSet))
+	return err
 }
 
 // statter 是持有文件元数据的描述符句柄的可选能力(文件与目录句柄)。
