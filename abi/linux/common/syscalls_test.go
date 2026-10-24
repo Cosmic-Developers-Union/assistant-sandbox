@@ -763,10 +763,11 @@ func TestBrkQueryGrowAndFailure(t *testing.T) {
 }
 
 type fakeMapper struct {
-	mapped   []MapRequest
-	unmapped [][2]uint64
-	reply    uint64
-	err      error
+	mapped    []MapRequest
+	unmapped  [][2]uint64
+	protected [][3]uint64
+	reply     uint64
+	err       error
 }
 
 func (m *fakeMapper) Anonymous(_ context.Context, request MapRequest) (uint64, error) {
@@ -779,6 +780,11 @@ func (m *fakeMapper) Anonymous(_ context.Context, request MapRequest) (uint64, e
 
 func (m *fakeMapper) Unmap(_ context.Context, start, end uint64) error {
 	m.unmapped = append(m.unmapped, [2]uint64{start, end})
+	return m.err
+}
+
+func (m *fakeMapper) Protect(_ context.Context, start, end uint64, prot uint64) error {
+	m.protected = append(m.protected, [3]uint64{start, end, prot})
 	return m.err
 }
 
@@ -858,5 +864,42 @@ func TestMunmapValidatesAndDelegates(t *testing.T) {
 	}
 	if len(mapper.unmapped) != 1 || mapper.unmapped[0] != [2]uint64{4096, 12288} {
 		t.Fatalf("解除范围应页对齐: %+v", mapper.unmapped)
+	}
+}
+
+func TestMprotectValidatesAndDelegates(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		label string
+		args  [6]uint64
+		want  errno.Code
+	}{
+		{"起始未对齐", [6]uint64{4097, 4096, ProtRead}, errno.Invalid},
+		{"零长度", [6]uint64{4096, 0, ProtRead}, errno.Invalid},
+		{"未知保护位", [6]uint64{4096, 4096, 0x8}, errno.Invalid},
+		{"范围溢出", [6]uint64{^uint64(0) - 4095, 1 << 63, ProtRead}, errno.Overflow},
+	} {
+		mapper := &fakeMapper{}
+		handler := Syscalls{Mapper: mapper}
+		if reply := handler.Handle(ctx, Call{Syscall: SysMprotect, Args: tc.args}); reply.Errno != tc.want {
+			t.Errorf("%s: err=%v want %v", tc.label, reply.Errno, tc.want)
+		}
+		if len(mapper.protected) != 0 {
+			t.Errorf("%s: 被拒绝的调用不得触达地址空间", tc.label)
+		}
+	}
+
+	mapper := &fakeMapper{}
+	handler := Syscalls{Mapper: mapper}
+	if reply := handler.Handle(ctx, Call{Syscall: SysMprotect, Args: [6]uint64{4096, 4097, ProtRead | ProtExec}}); reply.Errno != "" {
+		t.Fatalf("正常改权限: %v", reply.Errno)
+	}
+	if len(mapper.protected) != 1 || mapper.protected[0] != [3]uint64{4096, 12288, ProtRead | ProtExec} {
+		t.Fatalf("范围应向上取整到页且保护位透传: %+v", mapper.protected)
+	}
+
+	mapper.err = errno.Range
+	if reply := handler.Handle(ctx, Call{Syscall: SysMprotect, Args: [6]uint64{4096, 4096, ProtRead}}); reply.Errno != errno.Range {
+		t.Fatalf("实现层错误应透传: %v", reply.Errno)
 	}
 }

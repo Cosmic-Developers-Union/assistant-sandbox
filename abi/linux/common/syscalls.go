@@ -154,6 +154,8 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 		return s.mmap(ctx, call)
 	case SysMunmap:
 		return s.munmap(ctx, call)
+	case SysMprotect:
+		return s.mprotect(ctx, call)
 	case SysUname:
 		return s.uname(ctx, call)
 	case SysGetrandom:
@@ -457,7 +459,7 @@ type Heap interface {
 	Grow(ctx context.Context, target uint64) (uint64, error)
 }
 
-// Mappable 由内核地址空间实现,承接 mmap/munmap 的区域管理。
+// Mappable 由内核地址空间实现,承接 mmap 家族的区域管理。
 // start/end 与返回地址必须页对齐;length 由调用方先行对齐。
 type Mappable interface {
 	// Anonymous 映射零填充的匿名私有区间并返回映射起始地址。
@@ -467,6 +469,10 @@ type Mappable interface {
 
 	// Unmap 解除页对齐范围;范围未被完整映射时报 ENOMEM 且不改动。
 	Unmap(ctx context.Context, start, end uint64) error
+
+	// Protect 将页对齐范围内所有映射改为 prot(原始 Linux PROT_* 位),
+	// 允许跨区间;存在空洞或 W^X 违例时报错且不改动。
+	Protect(ctx context.Context, start, end uint64, prot uint64) error
 }
 
 type MapRequest struct {
@@ -545,6 +551,30 @@ func (s Syscalls) munmap(ctx context.Context, call Call) Reply {
 		return Reply{Errno: errno.Overflow}
 	}
 	if err := s.Mapper.Unmap(ctx, start, start+length); err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	return Reply{}
+}
+
+func (s Syscalls) mprotect(ctx context.Context, call Call) Reply {
+	if s.Mapper == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	start := call.Args[0]
+	if start%memory.PageSize != 0 {
+		return Reply{Errno: errno.Invalid}
+	}
+	if call.Args[2]&^(ProtRead|ProtWrite|ProtExec) != 0 {
+		return Reply{Errno: errno.Invalid}
+	}
+	length := alignPageUp(call.Args[1])
+	if length == 0 {
+		return Reply{Errno: errno.Invalid}
+	}
+	if start+length <= start {
+		return Reply{Errno: errno.Overflow}
+	}
+	if err := s.Mapper.Protect(ctx, start, start+length, call.Args[2]); err != nil {
 		return Reply{Errno: errnoOf(err)}
 	}
 	return Reply{}

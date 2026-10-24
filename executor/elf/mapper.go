@@ -79,6 +79,17 @@ func (m *mapper) Unmap(ctx context.Context, start, end uint64) error {
 	return nil
 }
 
+func (m *mapper) Protect(ctx context.Context, start, end uint64, bits uint64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	prot, err := protOf(bits)
+	if err != nil {
+		return err
+	}
+	return m.table.Protect(ctx, start, end, prot)
+}
+
 // place 优先采用非零 hint,被占用或越界时在 [mmapFloor, ceiling) 内
 // 自下而上寻找第一个足够大的空隙,与 Linux 旧式自底向上布局一致。
 func (m *mapper) place(ctx context.Context, length, hint uint64) (uint64, error) {

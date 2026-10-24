@@ -506,3 +506,38 @@ func TestReplaceRespectsBudget(t *testing.T) {
 		t.Fatalf("替换后净映射应不变: %+v", account)
 	}
 }
+
+func TestProtectSpansMultipleRegions(t *testing.T) {
+	ctx := context.Background()
+	table := New(0)
+	if err := table.Map(ctx, Region{Start: page(1), End: page(2), Prot: ProtRead | ProtWrite}); err != nil {
+		t.Fatal(err)
+	}
+	if err := table.Map(ctx, Region{Start: page(2), End: page(3), Prot: ProtRead | ProtWrite}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := table.Protect(ctx, page(1), page(3), ProtRead|ProtExec); err != nil {
+		t.Fatalf("跨相邻区间改权限应成功: %v", err)
+	}
+	regions, _ := table.Regions(ctx)
+	if len(regions) != 2 {
+		t.Fatalf("跨区间改权限不应合并或新增区间: %+v", regions)
+	}
+	for _, region := range regions {
+		if region.Prot != ProtRead|ProtExec {
+			t.Fatalf("两段都应变为 r-x: %+v", region)
+		}
+	}
+
+	if err := table.Unmap(ctx, page(2), page(3)); err != nil {
+		t.Fatal(err)
+	}
+	if err := table.Protect(ctx, page(1), page(3), ProtRead); !errors.Is(err, errno.Range) {
+		t.Fatalf("范围含空洞应整体失败: %v", err)
+	}
+	regions, _ = table.Regions(ctx)
+	if len(regions) != 1 || regions[0].Prot != ProtRead|ProtExec {
+		t.Fatalf("失败时不得改动映射: %+v", regions)
+	}
+}

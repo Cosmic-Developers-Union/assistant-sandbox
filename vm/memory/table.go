@@ -97,6 +97,8 @@ func (t *Table) coversLocked(start, end uint64) bool {
 	return cursor >= end
 }
 
+// Protect 将 [start,end) 内的所有映射改为 prot,允许跨越多个区间;
+// 范围存在空洞时报未映射且不改动,与 Linux mprotect 的 ENOMEM 语义一致。
 func (t *Table) Protect(ctx context.Context, start, end uint64, prot Prot) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -109,32 +111,31 @@ func (t *Table) Protect(ctx context.Context, start, end uint64, prot Prot) error
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	index := t.findCoveringLocked(start, end)
-	if index < 0 {
-		return faultError(FaultUnmapped, start, "修改保护位的区间未被完整映射")
-	}
-	original := t.regions[index]
-	replacement := make([]Region, 0, 3)
-
-	if original.Start < start {
-		left := original
-		left.End = start
-		replacement = append(replacement, left)
-	}
-
-	target := original
-	target.Start, target.End, target.Prot = start, end, prot
-	replacement = append(replacement, target)
-
-	if end < original.End {
-		right := original
-		right.Start = end
-		replacement = append(replacement, right)
+	if !t.coversLocked(start, end) {
+		return faultError(FaultUnmapped, start, "修改保护位的范围未被完整映射")
 	}
 	updated := make([]Region, 0, len(t.regions)+2)
-	updated = append(updated, t.regions[:index]...)
-	updated = append(updated, replacement...)
-	updated = append(updated, t.regions[index+1:]...)
+	for _, region := range t.regions {
+		if region.End <= start || region.Start >= end {
+			updated = append(updated, region)
+			continue
+		}
+		if region.Start < start {
+			left := region
+			left.End = start
+			updated = append(updated, left)
+		}
+		target := region
+		target.Start = max(region.Start, start)
+		target.End = min(region.End, end)
+		target.Prot = prot
+		updated = append(updated, target)
+		if end < region.End {
+			right := region
+			right.Start = end
+			updated = append(updated, right)
+		}
+	}
 	t.regions = updated
 	return nil
 }
@@ -397,15 +398,6 @@ func (t *Table) checkBudgetAfterLocked(kept []Region, size uint64) error {
 		return errno.Wrap(errno.NoSpace, "映射超出地址空间预算")
 	}
 	return nil
-}
-
-func (t *Table) findCoveringLocked(start, end uint64) int {
-	for index, region := range t.regions {
-		if region.Start <= start && end <= region.End {
-			return index
-		}
-	}
-	return -1
 }
 
 func (t *Table) findContainingLocked(address uint64) int {
