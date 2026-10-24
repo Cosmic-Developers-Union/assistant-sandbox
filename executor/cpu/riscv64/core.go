@@ -106,18 +106,43 @@ func (c *Core) Step(ctx context.Context) (cpu.Outcome, error) {
 	}
 	pc := c.machine.PC
 
+	var first [2]byte
+	if err := c.memory.Read(ctx, pc, first[:]); err != nil {
+		return cpu.Trapped, cpu.Trap{Kind: cpu.TrapMemoryFault, Address: pc, Cause: err}
+	}
+	if first[0]&0x3 != 0x3 {
+		// RV64C:取 16 位编码并展开为等价的 32 位指令执行。
+		raw := binary.LittleEndian.Uint16(first[:])
+		c.machine.PC = pc + 2
+		expanded, status := expandCompressed(raw)
+		switch status {
+		case compressedOK:
+			outcome, trap, err := c.execute(ctx, pc, expanded)
+			if err != nil {
+				return 0, err
+			}
+			if trap != nil {
+				trap.Instruction = uint32(raw)
+				return cpu.Trapped, *trap
+			}
+			return outcome, nil
+		case compressedFloat:
+			return cpu.Trapped, cpu.Trap{
+				Kind: cpu.TrapNotImplemented, Address: pc, Instruction: uint32(raw),
+				Detail: uint64(raw) | 1<<16,
+			}
+		default:
+			return cpu.Trapped, cpu.Trap{
+				Kind: cpu.TrapIllegalInstruction, Address: pc, Instruction: uint32(raw),
+			}
+		}
+	}
+
 	var encoded [4]byte
 	if err := c.memory.Read(ctx, pc, encoded[:]); err != nil {
 		return cpu.Trapped, cpu.Trap{Kind: cpu.TrapMemoryFault, Address: pc, Cause: err}
 	}
 	instruction := binary.LittleEndian.Uint32(encoded[:])
-
-	if instruction&0x3 != 0x3 {
-		return cpu.Trapped, cpu.Trap{
-			Kind: cpu.TrapNotImplemented, Address: pc, Instruction: instruction,
-			Detail: uint64(instruction & 0x3),
-		}
-	}
 
 	c.machine.PC = pc + 4
 	outcome, trap, err := c.execute(ctx, pc, instruction)

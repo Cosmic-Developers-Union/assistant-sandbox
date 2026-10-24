@@ -94,9 +94,6 @@ func parseHeader(r reader) (header, error) {
 	if head.machine != machineRISCV {
 		return header{}, notSupported(fmt.Sprintf("e_machine %d 不是 RISC-V(%d)", head.machine, machineRISCV))
 	}
-	if head.flags&riscvCompressed != 0 {
-		return header{}, notSupported("映像要求压缩指令（EF_RISCV_RVC），RV64IM 核心不覆盖 C 扩展")
-	}
 	if abi := head.flags & riscvFloatABIMask; abi != riscvFloatABISoft {
 		return header{}, notSupported(fmt.Sprintf("映像要求浮点 ABI %d，RV64IM 核心不覆盖 F/D", abi))
 	}

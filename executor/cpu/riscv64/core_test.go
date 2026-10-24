@@ -118,8 +118,6 @@ const (
 	insCSR = 0x00001073
 
 	insIllegalLoad = 0x00007283
-
-	insCompressed = 0x00000001
 )
 
 func newPort(t *testing.T, memory *sparse, base uint64) *Core {
@@ -357,6 +355,10 @@ func TestMemoryFaultIsTrapped(t *testing.T) {
 		t.Fatalf("trap 应保留底层错误身份: %v", err)
 	}
 
+	// 页尾放入 4 字节指令的低 16 位,两段取指跨页时必须报访存故障。
+	if err := memory.Write(ctx, 4094, []byte{0xFF, 0xFF}); err != nil {
+		t.Fatal(err)
+	}
 	port2 := newPort(t, memory, 4094)
 	if _, err := port2.Step(ctx); !errors.As(err, &trap) || trap.Kind != cpu.TrapMemoryFault {
 		t.Fatalf("取指跨页应产生访存 trap: %v", err)
@@ -881,14 +883,48 @@ func TestIllegalEncodingsAreRejected(t *testing.T) {
 	}
 }
 
-func TestCompressedInstructionIsNotImplemented(t *testing.T) {
-	_, err := executeOne(t, insCompressed, nil)
-	var trap cpu.Trap
-	if !errors.As(err, &trap) {
-		t.Fatalf("压缩指令应产生 trap: %v", err)
+func TestReservedCompressedEncodingsTrap(t *testing.T) {
+	for _, tc := range []struct {
+		label       string
+		instruction uint16
+		want        cpu.TrapKind
+	}{
+		{"全零编码", 0x0000, cpu.TrapIllegalInstruction},
+		{"C.ADDI4SPN 零偏移", 0x0008, cpu.TrapIllegalInstruction},
+		{"C.LUI rd=x0", 0x6001, cpu.TrapIllegalInstruction},
+		{"C.JR rs1=x0", 0x8002, cpu.TrapIllegalInstruction},
+	} {
+		memory := newSparse()
+		var encoded [2]byte
+		binary.LittleEndian.PutUint16(encoded[:], tc.instruction)
+		if err := memory.Write(context.Background(), 0, encoded[:]); err != nil {
+			t.Fatal(err)
+		}
+		port := newPort(t, memory, 0)
+		_, err := port.Step(context.Background())
+		var trap cpu.Trap
+		if !errors.As(err, &trap) {
+			t.Errorf("%s: 应产生 trap: %v", tc.label, err)
+			continue
+		}
+		if trap.Kind != tc.want {
+			t.Errorf("%s: 类别=%v want %v", tc.label, trap.Kind, tc.want)
+		}
+		if trap.Address != 0 {
+			t.Errorf("%s: trap PC=%#x want 0", tc.label, trap.Address)
+		}
 	}
-	if trap.Kind != cpu.TrapNotImplemented {
-		t.Fatalf("类别=%v want not-implemented", trap.Kind)
+
+	// C.FLD 依赖 F 扩展,应报未实现而非非法。
+	memory := newSparse()
+	if err := memory.Write(context.Background(), 0, []byte{0xc4, 0x20}); err != nil {
+		t.Fatal(err)
+	}
+	port := newPort(t, memory, 0)
+	_, err := port.Step(context.Background())
+	var trap cpu.Trap
+	if !errors.As(err, &trap) || trap.Kind != cpu.TrapNotImplemented {
+		t.Fatalf("C.FLD 应报 not-implemented: %v", err)
 	}
 }
 
