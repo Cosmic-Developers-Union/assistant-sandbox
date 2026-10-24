@@ -72,6 +72,12 @@ type Interruptor interface {
 	DeliverableSignal() (signal uint64, action SignalAction, deliverable bool)
 }
 
+// Execer 是 execve 的映像替换端口:成功时执行器已完成映像与执行
+// 状态的原子替换(调用不返回);失败时返回错误且旧程序继续(H07)。
+type Execer interface {
+	Exec(ctx context.Context, path string, argv, envp []string) error
+}
+
 // Limiter 暴露客体进程的真实资源限额,供 getrlimit/prlimit64 查询;
 // 上限只允许下调,尝试超过真实预算的设置返回 EPERM。
 type Limiter interface {
@@ -170,6 +176,10 @@ type Syscalls struct {
 	// Interrupts 报告登记了处理器的待投递信号(J09);未装配时
 	// 阻塞调用不被信号打断,等待自然到期或上下文取消。
 	Interrupts Interruptor
+
+	// Execs 是 execve 的映像替换端口(H06/H07):成功时当前执行流
+	// 已切换到新映像(本调用不返回);失败时旧程序继续。
+	Execs Execer
 
 	Limiter Limiter
 
@@ -382,6 +392,8 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 		return s.sigaltstack(ctx, call)
 	case SysClone:
 		return s.cloneProcess(ctx, call)
+	case SysExecve:
+		return s.execve(ctx, call)
 	case SysKill:
 		return s.kill(ctx, call)
 	case SysTgkill:
@@ -2520,6 +2532,30 @@ func (s Syscalls) rtSigprocmask(ctx context.Context, call Call) Reply {
 		if err := s.Memory.Write(ctx, call.Args[2], encoded[:]); err != nil {
 			return Reply{Errno: errno.Fault}
 		}
+	}
+	return Reply{}
+}
+
+// execve(path, argv, envp):路径与向量均来自客体内存;成功时映像
+// 已替换(不返回),装载失败返回错误且旧程序继续(H06/H07)。
+func (s Syscalls) execve(ctx context.Context, call Call) Reply {
+	if s.Memory == nil || s.Execs == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	path, code := s.readPath(ctx, call.Args[0])
+	if code != "" {
+		return Reply{Errno: code}
+	}
+	argv, code := s.readStringVector(ctx, call.Args[1])
+	if code != "" {
+		return Reply{Errno: code}
+	}
+	envp, code := s.readStringVector(ctx, call.Args[2])
+	if code != "" {
+		return Reply{Errno: code}
+	}
+	if err := s.Execs.Exec(ctx, path, argv, envp); err != nil {
+		return Reply{Errno: errnoOf(err)}
 	}
 	return Reply{}
 }

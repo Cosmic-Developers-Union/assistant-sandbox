@@ -95,6 +95,7 @@ const (
 	numberRtSigreturn      = 139
 	numberSigaltstack      = 132
 	numberClone            = 220
+	numberExecve           = 221
 	numberKill             = 129
 	numberTgkill           = 131
 	numberSocket           = 198
@@ -416,6 +417,8 @@ func syscallOf(number uint64) common.Syscall {
 		return common.SysSigaltstack
 	case numberClone:
 		return common.SysClone
+	case numberExecve:
+		return common.SysExecve
 	case numberKill:
 		return common.SysKill
 	case numberTgkill:

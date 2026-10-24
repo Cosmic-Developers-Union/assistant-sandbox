@@ -217,7 +217,7 @@ func TestSyscallNumberMapping(t *testing.T) {
 		numberAcct: common.SysAcct, numberPtrace: common.SysPtrace,
 		numberMmap: common.SysMmap, numberMunmap: common.SysMunmap, numberMprotect: common.SysMprotect,
 		numberNewfstatat: common.SysNewfstatat, numberFstat: common.SysFstat, numberStatx: common.SysStatx, numberUtimensat: common.SysUtimensat, numberStatfs: common.SysStatfs, numberFstatfs: common.SysFstatfs,
-		numberSchedGetAffinity: common.SysSchedGetAffinity, numberSchedSetAffinity: common.SysSchedSetAffinity, numberGetCPU: common.SysGetCPU, numberWaitid: common.SysWaitid, numberDup: common.SysDup, numberRtSigaction: common.SysRtSigaction, numberRtSigprocmask: common.SysRtSigprocmask, numberRtSigreturn: common.SysRtSigreturn, numberSigaltstack: common.SysSigaltstack, numberKill: common.SysKill, numberTgkill: common.SysTgkill,
+		numberSchedGetAffinity: common.SysSchedGetAffinity, numberSchedSetAffinity: common.SysSchedSetAffinity, numberGetCPU: common.SysGetCPU, numberWaitid: common.SysWaitid, numberDup: common.SysDup, numberRtSigaction: common.SysRtSigaction, numberRtSigprocmask: common.SysRtSigprocmask, numberRtSigreturn: common.SysRtSigreturn, numberSigaltstack: common.SysSigaltstack, numberExecve: common.SysExecve, numberKill: common.SysKill, numberTgkill: common.SysTgkill,
 		numberClockNanosleep: common.SysClockNanosleep,
 		999:                  common.SysUnknown,
 	} {

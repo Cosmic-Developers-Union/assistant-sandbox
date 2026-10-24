@@ -1555,6 +1555,38 @@ func (c procControl) KillSignal(pid int64, n signal.Number) error {
 	}
 }
 
+// ResetForExec 完成 execve 的内核侧状态复位(H07):进程表元数据
+// 随新映像更新并发出 KindExec 事件,CLOEXEC 描述符关闭,信号处置/
+// 屏蔽/挂起复位。执行器先完成映像替换再调用;失败即 fail-closed。
+func (c procControl) ResetForExec(path string, args []string, env map[string]string) error {
+	if c.self == 0 {
+		return errno.NoProcess
+	}
+	current, err := c.k.table.Get(c.self)
+	if err != nil {
+		return err
+	}
+	// execve 保留工作目录;程序名/参数/环境随新映像更新。
+	before, after, err := c.k.table.Replace(c.self, path, args, current.Dir, env)
+	if err != nil {
+		return err
+	}
+	c.k.mu.Lock()
+	c.k.emitLocked(scheduler.KindExec, c.self, scheduler.ExecDetail(after.Program, after.Generation))
+	c.k.mu.Unlock()
+	if c.k.fds != nil {
+		if _, err := c.k.fds.CloseCloexec(context.Background(), uint64(c.self)); err != nil {
+			if _, _, rollbackErr := c.k.table.Replace(c.self, before.Program, before.Args, before.Dir, before.Env); rollbackErr != nil {
+				c.k.mu.Lock()
+				c.k.failed = true
+				c.k.mu.Unlock()
+			}
+			return err
+		}
+	}
+	return c.k.signals.ResetForExec(uint64(c.self))
+}
+
 func (c procControl) PendingDeliverable() (signal.Number, signal.ActionConfig, bool) {
 	if c.self == 0 {
 		return 0, signal.ActionConfig{}, false

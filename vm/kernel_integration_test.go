@@ -1480,3 +1480,66 @@ func TestKernelWaitInterruptedByDeliverableSignal(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestKernelResetForExecResetsProcessState 验证 H07 的内核侧复位:
+// execve 成功后进程表元数据随新映像更新(保留工作目录,Generation
+// 递增),CLOEXEC 描述符关闭,信号处置与挂起集合全部复位。
+func TestKernelResetForExecResetsProcessState(t *testing.T) {
+	reg, _ := registryFor("long")
+	kernel, _ := New(Services{Set: capability.Set{FD: fd.New()}, Programs: reg}, 4)
+	parent, err := kernel.Begin(0, "long", []string{"old"}, "/", map[string]string{"OLD": "1"}, fd.Streams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// CLOEXEC 描述符:exec 成功后必须关闭。
+	handle := pipeCountingHandle{}
+	if err := kernel.fds.Install(uint64(parent.ID), 7, &handle); err != nil {
+		t.Fatal(err)
+	}
+	if err := kernel.fds.SetCloexec(uint64(parent.ID), 7, true); err != nil {
+		t.Fatal(err)
+	}
+	// 信号处置与挂起:exec 后必须复位。
+	if err := kernel.signals.SetAction(uint64(parent.ID), signal.USR1,
+		signal.ActionConfig{Handler: 0x4040}); err != nil {
+		t.Fatal(err)
+	}
+	if err := kernel.signals.Raise(uint64(parent.ID), signal.USR1); err != nil {
+		t.Fatal(err)
+	}
+	before, err := kernel.table.Get(parent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	control := parent.Control.(proc.ExecControl)
+	if err := control.ResetForExec("/new", []string{"new", "arg"}, map[string]string{"A": "1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	after, err := kernel.table.Get(parent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Program != "/new" || len(after.Args) != 2 || after.Args[1] != "arg" || after.Env["A"] != "1" {
+		t.Fatalf("进程表元数据=%+v", after)
+	}
+	if after.Dir != "/" {
+		t.Fatalf("工作目录应保留: %v", after.Dir)
+	}
+	if after.Generation != before.Generation+1 {
+		t.Fatalf("Generation=%d want %d", after.Generation, before.Generation+1)
+	}
+	if kernel.fds.IsOpen(uint64(parent.ID), 7) {
+		t.Fatal("CLOEXEC 描述符应已关闭")
+	}
+	if config, err := kernel.signals.Action(uint64(parent.ID), signal.USR1); err != nil || config.Handler != 0 {
+		t.Fatalf("信号处置应复位: %+v err=%v", config, err)
+	}
+	if pending, _ := kernel.signals.Pending(uint64(parent.ID)); len(pending) != 0 {
+		t.Fatalf("挂起集应清空: %v", pending)
+	}
+	if err := kernel.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}

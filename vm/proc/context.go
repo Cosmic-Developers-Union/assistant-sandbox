@@ -96,6 +96,15 @@ type SignalDeliveryControl interface {
 	SetAlternateStack(signal.AltStack) error
 }
 
+// ExecControl 是 execve 成功后进程状态的内核侧复位端口(H07):
+// 进程表元数据随新映像更新,CLOEXEC 描述符关闭,信号处置、
+// 屏蔽集与挂起集合全部复位。
+type ExecControl interface {
+	// ResetForExec 由执行器在映像替换完成后调用;path/args/env
+	// 为新映像的客体路径与参数环境。
+	ResetForExec(path string, args []string, env map[string]string) error
+}
+
 // SignalKillControl 是 kill/tgkill/进程组发送的投递端口。
 type SignalKillControl interface {
 	// KillSignal 按 kill(2) 的 pid 语义发送:pid>0 目标进程,

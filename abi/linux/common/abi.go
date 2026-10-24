@@ -212,6 +212,7 @@ const (
 	SysClone
 	SysKill
 	SysTgkill
+	SysExecve
 )
 
 func (s Syscall) String() string {
@@ -486,6 +487,8 @@ func (s Syscall) String() string {
 		return "kill"
 	case SysTgkill:
 		return "tgkill"
+	case SysExecve:
+		return "execve"
 	case SysReadlinkat:
 		return "readlinkat"
 	case SysUmask:

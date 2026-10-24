@@ -18,6 +18,7 @@ var handled = map[Syscall]bool{
 	SysDup:              true,
 	SysDup3:             true,
 	SysEventfd2:         true,
+	SysExecve:           true,
 	SysExit:             true,
 	SysExitGroup:        true,
 	SysFaccessat:        true,

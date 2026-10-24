@@ -1,11 +1,13 @@
 package elf
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"slices"
+	"strings"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/abi/linux/common"
 	linuxriscv64 "github.com/Cosmic-Developers-Union/assistant-sandbox/abi/linux/riscv64"
@@ -85,11 +87,14 @@ func (p *program) Run(ctx context.Context, process proc.Proc) (uint8, error) {
 	if dispositions, ok := process.Control.(proc.SignalDispositionControl); ok {
 		deliverer.disposition = dispositions
 	}
+	// execve 经同一 handler 原地替换映像(H06/H07):handler 以指针
+	// 共享,替换后 Heap/映像布局对运行中的分派器可见。
+	handler.Execs = &processExec{process: process, space: space, core: core, handler: &handler}
 	runner, err := common.NewRunner(common.Config{
 		Core: core,
 		// 同步 CPU 故障(非法指令/无效访问/保护错误)经 faultDispatching
 		// 转换为客体信号(J06);ecall 仍由适配器分派系统调用。
-		Dispatcher: faultDispatching{next: &linuxriscv64.Adapter{Handler: handler, Registers: core}, deliver: deliverer},
+		Dispatcher: faultDispatching{next: &linuxriscv64.Adapter{Handler: &handler, Registers: core}, deliver: deliverer},
 		Boundary:   deliverer.boundary,
 	})
 	if err != nil {
@@ -105,7 +110,11 @@ func (p *program) Run(ctx context.Context, process proc.Proc) (uint8, error) {
 	return uint8(status), nil
 }
 
-func (p *program) image(ctx context.Context, process proc.Proc) (content []byte, resultErr error) {
+func (p *program) image(ctx context.Context, process proc.Proc) ([]byte, error) {
+	return readImage(ctx, process, p.path)
+}
+
+func readImage(ctx context.Context, process proc.Proc, path string) (content []byte, resultErr error) {
 	if process.Resources == nil {
 
 		return nil, errno.Wrap(errno.NotImplemented, "进程没有绑定资源能力")
@@ -114,7 +123,7 @@ func (p *program) image(ctx context.Context, process proc.Proc) (content []byte,
 	if err != nil {
 		return nil, err
 	}
-	file, err := system.Open(ctx, p.path, 0, 0)
+	file, err := system.Open(ctx, path, 0, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -150,28 +159,37 @@ func chargeMemory(ctx context.Context, process proc.Proc, plan *loaderelf.Plan) 
 
 func addressSpace(ctx context.Context, plan *loaderelf.Plan) (*memory.Table, error) {
 	space := memory.New(0)
+	if err := populateSpace(ctx, space, plan); err != nil {
+		return nil, err
+	}
+	return space, nil
+}
+
+// populateSpace 把映像段与栈装入既有地址空间;execve 原地替换
+// 复用同一装载逻辑(H07)。
+func populateSpace(ctx context.Context, space *memory.Table, plan *loaderelf.Plan) error {
 	for _, segment := range plan.Segments {
 		populate := segment.Region
 		populate.Prot = memory.ProtRead | memory.ProtWrite
 		if err := space.Map(ctx, populate); err != nil {
-			return nil, err
+			return err
 		}
 		if err := space.Write(ctx, segment.Address, segment.Data); err != nil {
-			return nil, err
+			return err
 		}
 		if segment.Region.Prot != populate.Prot {
 			if err := space.Protect(ctx, segment.Region.Start, segment.Region.End, segment.Region.Prot); err != nil {
-				return nil, err
+				return err
 			}
 		}
 	}
 	if err := space.Map(ctx, plan.Stack.Region); err != nil {
-		return nil, err
+		return err
 	}
 	if err := space.Write(ctx, plan.Stack.ContentBase, plan.Stack.Content); err != nil {
-		return nil, err
+		return err
 	}
-	return space, nil
+	return nil
 }
 
 func syscalls(ctx context.Context, process proc.Proc, space *memory.Table, plan *loaderelf.Plan, core cpu.Port) common.Syscalls {
@@ -729,9 +747,10 @@ func (f processForker) Fork(ctx context.Context) (uint64, error) {
 		if dispositions, ok := child.Control.(proc.SignalDispositionControl); ok {
 			deliverer.disposition = dispositions
 		}
+		childHandler.Execs = &processExec{process: child, space: childSpace, core: childCore, handler: &childHandler}
 		runner, err := common.NewRunner(common.Config{
 			Core:       childCore,
-			Dispatcher: faultDispatching{next: &linuxriscv64.Adapter{Handler: childHandler, Registers: childCore}, deliver: deliverer},
+			Dispatcher: faultDispatching{next: &linuxriscv64.Adapter{Handler: &childHandler, Registers: childCore}, deliver: deliverer},
 			Boundary:   deliverer.boundary,
 		})
 		if err != nil {
@@ -745,6 +764,160 @@ func (f processForker) Fork(ctx context.Context) (uint64, error) {
 		_ = child.Control.Finish(f.parent.ID, child.ID, uint8(code))
 	}()
 	return uint64(child.ID), nil
+}
+
+// processExec 把 execve 适配为当前进程的原子映像替换(H06/H07):
+// 新映像(含 shebang 解析)完全装载成功后才释放旧地址空间并重置
+// 核心;装载失败不做任何修改,旧程序继续执行。成功后 PID 不变,
+// 信号处置/挂起/CLOEXEC 经内核控制端口复位。
+type processExec struct {
+	process proc.Proc
+	space   *memory.Table
+	core    cpu.Port
+	handler *common.Syscalls
+}
+
+// maxShebangDepth 与 Linux BINPRM_MAX_INTERP 一致:解释器链最深 4 层。
+const maxShebangDepth = 4
+
+func (p *processExec) Exec(ctx context.Context, path string, argv, envp []string) error {
+	plan, finalArgv, err := p.load(ctx, path, argv, envp, 0)
+	if err != nil {
+		return err
+	}
+	// 原子边界:装载已成功。先回吐旧映像的内存计量,再为新映像记账;
+	// 记账失败(配额耗尽)恢复旧计量,旧程序继续执行。此后释放旧空间、
+	// 装入新映像并重置执行流。
+	released := p.releaseOld(ctx)
+	if err := chargeMemory(ctx, p.process, plan); err != nil {
+		p.recharge(ctx, released)
+		return err
+	}
+	if err := p.clearSpace(ctx); err != nil {
+		return err
+	}
+	if err := populateSpace(ctx, p.space, plan); err != nil {
+		return err
+	}
+	// brk 随新映像布局重建,堆起始不得沿用旧布局。
+	p.handler.Heap = newHeap(p.space, p.process, plan)
+	initial := cpu.Machine{PC: plan.Entry, Registers: make([]uint64, 32), Floats: make([]uint64, 32)}
+	initial.Registers[regSp] = plan.Stack.SP
+	if err := p.core.Reset(ctx, initial); err != nil {
+		return err
+	}
+	if control, ok := p.process.Control.(proc.ExecControl); ok {
+		return control.ResetForExec(path, finalArgv, environmentFromList(envp))
+	}
+	return nil
+}
+
+// load 读取客体路径的映像并装载;非 ELF 的 "#!" 脚本按 Linux 语义
+// 解析解释器与可选参数,最终 argv 为 [解释器(,参数), 脚本路径,
+// 原 argv[1:]...],随后装载解释器映像(嵌套上限 4 层)。
+func (p *processExec) load(ctx context.Context, path string, argv, envp []string, depth int) (*loaderelf.Plan, []string, error) {
+	if depth > maxShebangDepth {
+		return nil, nil, errno.Wrap(errno.NoExec, "shebang 解释器嵌套过深")
+	}
+	content, err := readImage(ctx, p.process, path)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !bytes.HasPrefix(content, []byte("#!")) {
+		plan, err := loaderelf.Load(content, loaderelf.Options{
+			Argv:     argv,
+			Env:      envp,
+			ExecPath: path,
+			Random:   randomBytesFor(ctx, p.process),
+		})
+		return plan, argv, err
+	}
+	interp, arg, ok := parseShebang(content)
+	if !ok {
+		return nil, nil, errno.Wrap(errno.NoExec, "shebang 行格式无效")
+	}
+	final := make([]string, 0, len(argv)+3)
+	final = append(final, interp)
+	if arg != "" {
+		final = append(final, arg)
+	}
+	final = append(final, path)
+	if len(argv) > 1 {
+		final = append(final, argv[1:]...)
+	}
+	return p.load(ctx, interp, final, envp, depth+1)
+}
+
+// clearSpace 卸载旧映像的全部映射区(含预算释放)。
+func (p *processExec) clearSpace(ctx context.Context) error {
+	regions, err := p.space.Regions(ctx)
+	if err != nil {
+		return err
+	}
+	for _, region := range regions {
+		if err := p.space.Unmap(ctx, region.Start, region.End); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// releaseOld 按当前映射总量释放旧地址空间的内存计量并返回释放量;
+// 无计量端口时跳过。计量接口的失败保持尽力而为:地址空间自身仍会
+// 在随后被卸载,误差随进程退出回收。
+func (p *processExec) releaseOld(ctx context.Context) uint64 {
+	meters := metersOf(p.process)
+	if meters == nil {
+		return 0
+	}
+	account, err := p.space.Account(ctx)
+	if err != nil || account.Mapped == 0 {
+		return 0
+	}
+	_ = meters.ReleaseKind(ctx, uint64(p.process.ID), resources.KindMemory, account.Mapped)
+	return account.Mapped
+}
+
+// recharge 在替换中途失败时恢复此前回吐的内存计量。
+func (p *processExec) recharge(ctx context.Context, released uint64) {
+	if meters := metersOf(p.process); meters != nil && released > 0 {
+		_ = meters.ChargeKind(ctx, uint64(p.process.ID), resources.KindMemory, released)
+	}
+}
+
+// parseShebang 解析 "#!解释器 参数" 首行(上限 256 字节,与
+// BINPRM_BUF_SIZE 一致);空解释器、缺换行或多于一个参数均视为
+// 格式无效(ENOEXEC)。
+func parseShebang(content []byte) (interp, arg string, ok bool) {
+	header := content
+	if len(header) > 256 {
+		header = header[:256]
+	}
+	end := bytes.IndexByte(header, '\n')
+	if end < 0 {
+		return "", "", false
+	}
+	fields := strings.Fields(string(header[2:end]))
+	if len(fields) == 0 || len(fields) > 2 {
+		return "", "", false
+	}
+	interp = fields[0]
+	if len(fields) == 2 {
+		arg = fields[1]
+	}
+	return interp, arg, true
+}
+
+// environmentFromList 把 execve 的 "K=V" 环境列表转为进程环境表;
+// 不含 '=' 的条目按 Linux 惯例保留原样不可表达,跳过。
+func environmentFromList(envp []string) map[string]string {
+	env := make(map[string]string, len(envp))
+	for _, entry := range envp {
+		if index := strings.IndexByte(entry, '='); index > 0 {
+			env[entry[:index]] = entry[index+1:]
+		}
+	}
+	return env
 }
 
 // processKiller 把进程控制端口的信号发送能力适配为 kill/tgkill 端口。
