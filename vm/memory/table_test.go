@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -750,5 +751,72 @@ func TestRangeValidationIsUniformAcrossOperations(t *testing.T) {
 		if err := table.Map(ctx, overlap); !errors.Is(err, errno.Exist) {
 			t.Errorf("部分重叠 %d-%d: err=%v want EEXIST", overlap.Start, overlap.End, err)
 		}
+	}
+}
+
+func TestCloneCopiesRegionsAndPrivatesPages(t *testing.T) {
+	ctx := context.Background()
+	parent := New(1 << 20)
+	if err := parent.Map(ctx, Region{Start: page(1), End: page(3), Prot: ProtRead | ProtWrite, Name: "data"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := parent.Write(ctx, page(1), []byte("parent")); err != nil {
+		t.Fatal(err)
+	}
+
+	child, err := parent.Clone()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 克隆继承内容与区域布局。
+	inherited := make([]byte, 6)
+	if err := child.Read(ctx, page(1), inherited); err != nil || string(inherited) != "parent" {
+		t.Fatalf("克隆内容=%q err=%v", inherited, err)
+	}
+	regions, err := child.Regions(ctx)
+	if err != nil || len(regions) != 1 || regions[0].Start != page(1) || regions[0].Name != "data" {
+		t.Fatalf("克隆区域=%+v err=%v", regions, err)
+	}
+
+	// 私有页互不影响:子写不污染父,父写不污染子。
+	if err := child.Write(ctx, page(1), []byte("child!")); err != nil {
+		t.Fatal(err)
+	}
+	if err := parent.Write(ctx, page(2), []byte("extra")); err != nil {
+		t.Fatal(err)
+	}
+	seenParent := make([]byte, 6)
+	if err := parent.Read(ctx, page(1), seenParent); err != nil || string(seenParent) != "parent" {
+		t.Fatalf("父被克隆体污染: %q", seenParent)
+	}
+	seenChild := make([]byte, 6)
+	if err := child.Read(ctx, page(1), seenChild); err != nil || string(seenChild) != "child!" {
+		t.Fatalf("子未写入: %q", seenChild)
+	}
+	// 父后来写入的页数据不出现在子:子的该页仍是克隆时的零页。
+	extra := make([]byte, 5)
+	if err := child.Read(ctx, page(2), extra); err != nil || !bytes.Equal(extra, []byte{0, 0, 0, 0, 0}) {
+		t.Fatalf("父的新写入出现在子: %q err=%v", extra, err)
+	}
+
+	// 父解除映射不影响克隆。
+	if err := parent.Unmap(ctx, page(1), page(3)); err != nil {
+		t.Fatal(err)
+	}
+	if err := child.Read(ctx, page(1), seenChild); err != nil {
+		t.Fatalf("父 unmap 不应影响子: %v", err)
+	}
+
+	// 预算上限随克隆继承。
+	capped := New(page(2))
+	if err := capped.Map(ctx, Region{Start: page(1), End: page(2), Prot: ProtRead}); err != nil {
+		t.Fatal(err)
+	}
+	cappedChild, err := capped.Clone()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cappedChild.Map(ctx, Region{Start: page(4), End: page(6), Prot: ProtRead}); !errors.Is(err, errno.NoSpace) {
+		t.Fatalf("克隆预算: err=%v want ENOSPC", err)
 	}
 }

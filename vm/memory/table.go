@@ -21,6 +21,28 @@ type Table struct {
 
 func New(limitBytes uint64) *Table { return &Table{limit: limitBytes} }
 
+// Clone 复制整个地址空间(fork 语义):区域列表与全部私有页深拷贝,
+// 父子此后对同一虚拟地址的写入互不可见;预算上限一并继承。
+// 当前地址空间仅含私有映射(MAP_SHARED 未纳入兼容配置,见 E03/E09),
+// 因此全量复制即满足"私有页互不影响";共享映射落地后改为
+// 共享区域按引用共享、私有区域复制。
+func (t *Table) Clone() (*Table, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	clone := New(t.limit)
+	clone.regions = make([]Region, len(t.regions))
+	copy(clone.regions, t.regions)
+	if t.pages != nil {
+		clone.pages = make(map[uint64][]byte, len(t.pages))
+		for page, data := range t.pages {
+			copied := make([]byte, len(data))
+			copy(copied, data)
+			clone.pages[page] = copied
+		}
+	}
+	return clone, nil
+}
+
 func (t *Table) Map(ctx context.Context, region Region) error {
 	if err := ctx.Err(); err != nil {
 		return err
