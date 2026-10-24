@@ -1,6 +1,15 @@
 PREFIX ?= $(HOME)/.local
 
-.PHONY: guest build install clean lint test docker-test
+# 工具链声明:Go 版本以 go.mod 的 go 指令为唯一事实来源(CI 经 setup-go
+# 的 go-version-file 安装同一版本,docker-test 使用对应补丁版本的镜像);
+# golangci-lint 版本固定在 .github/workflows/test.yml 的 action 参数中;
+# 客体工具链 = 同一 Go 工具链(GOOS=wasip1 GOARCH=wasm)+ gzip,无外部交叉编译器。
+GOLANGCI_LINT_VERSION := v2.14.0
+
+.PHONY: guest build install clean lint test docker-test toolchain
+
+toolchain:
+	@expected=$$(sed -n 's/^go \([0-9.]*\)$$/\1/p' go.mod); actual=$$(go version | sed 's/^go version go//; s/ .*//'); if [ "$$actual" != "$$expected" ]; then echo "Go 版本与 go.mod 声明不一致: 本机 $$actual, 声明 $$expected" >&2; exit 1; fi; echo "Go $$actual(声明 $$expected)"; echo "golangci-lint $(GOLANGCI_LINT_VERSION)(CI action 参数)"; echo "客体工具链: 同一 Go 工具链 GOOS=wasip1 + gzip"
 
 guest:
 	go run ./cmd/assistant-sandbox-build
@@ -36,7 +45,7 @@ docker-test:
 		-e GOMEMLIMIT=320MiB \
 		-e GOGC=20 \
 		-e GOCACHE=/go-build \
-		golang:1.27 \
+		golang:1.27.0 \
 		sh -c 'make guest && go test -count=1 -timeout=20m $(if $(TEST_ARGS),$(TEST_ARGS),./...)'; \
 	status=$$?; \
 	chown --quiet "$$(id -u):$$(id -g)" assistant-bash.wasm assistant-bash.wasm.gz 2>/dev/null || true; \

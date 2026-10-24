@@ -59,7 +59,7 @@ Python 和 Node.js 的验收必须执行客体运行时，不能通过调用宿�
 
 - [ ] B01 检查对原项目和宿主绝对路径的依赖。验收：全新隔离检出中无原项目目录仍可解析依赖和构建。
 - [x] B02 修正 POSIX Makefile 的客体文件名。验收：构建产物、Make 目标和 TET 的 WASM_MODULE 一致，已有产物不会因名称错误重复构建。 证据:Makefile(guest 产物 assistant-bash.wasm.gz)、test/posix/Makefile(WASM 变量一致)、.github/workflows/test.yml Verify CLI。测试:`make guest && ./assistant-sandbox --module assistant-bash.wasm.gz -c 'printf sandbox-ok'`。CI:Test 工作流 Verify CLI 步骤。
-- [ ] B03 固定 Go 与客体工具链版本。验收：CI 从声明安装所需工具，开发者无需猜测版本。
+- [x] B03 固定 Go 与客体工具链版本。验收：CI 从声明安装所需工具，开发者无需猜测版本。 证据:go.mod 的 go 1.27.0 指令为唯一版本事实来源,CI setup-go 以 go-version-file: go.mod 安装同一版本;golangci-lint 版本固定为 action 参数 v2.14.0 并提取为 Makefile GOLANGCI_LINT_VERSION 变量同步声明;docker-test 镜像由浮动的 golang:1.27 钉为 golang:1.27.0 与 go.mod 补丁版本一致;客体工具链 = 同一 Go 工具链(GOOS=wasip1 GOARCH=wasm, internal/build/build.go)+ gzip,无外部交叉编译器;新增 Makefile toolchain 目标校验本机 go version 与 go.mod 声明一致并打印全部工具版本(`make toolchain` 输出 Go 1.27.0)。测试:`make toolchain`。CI:Test 工作流 setup-go/go-version-file。
 - [x] B04 将源代码编译与客体镜像生成分开验证。验收：无客体产物时 SDK 可编译；运行缺失镜像时报明确错误。 证据:wasm.go 缺 Config.ShellArchive 时返回明确错误、internal/build/build_test.go TestGuestBuildFailureKeepsExistingArtifact。测试:`go test ./internal/build/ -run TestGuestBuildFailure`。CI:Test 工作流 Verify source boundary(go build 先于 make guest)。
 - [ ] B05 建立最小离线运行检查。验收：依赖和镜像预置后，关闭下载通道仍能启动 VM、执行程序并关闭。
 - [ ] B06 建立构建可重复性检查。验收：相同源码和工具链两次构建的客体内容摘要一致，差异能定位。
