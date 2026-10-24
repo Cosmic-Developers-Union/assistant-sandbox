@@ -963,10 +963,6 @@ const (
 
 	insLuiSigned   = 0x800001B7
 	insAuipcSigned = 0xFFFFF197
-
-	insAmoadd = 0x0020A2AF
-	insFlw    = 0x0000A187
-	insFadd   = 0x00000053
 )
 
 const (
@@ -1167,8 +1163,6 @@ func TestUnimplementedExtensions(t *testing.T) {
 		label       string
 		instruction uint32
 	}{
-		{"flw（F）", insFlw},
-		{"fadd.s（F）", insFadd},
 		{"csrrw（Zicsr）", insCSR},
 		{"fence.i（Zifencei）", insFenceI},
 	} {

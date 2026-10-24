@@ -28,9 +28,11 @@ const (
 	flagWrite = 2
 	flagRead  = 4
 
-	riscvFloatABIMask = 0x6
-	riscvFloatABISoft = 0
-	riscvCompressed   = 0x1
+	riscvFloatABIMask   = 0x6
+	riscvFloatABISoft   = 0
+	riscvFloatABISingle = 0x2
+	riscvFloatABIDouble = 0x4
+	riscvCompressed     = 0x1
 )
 
 const (

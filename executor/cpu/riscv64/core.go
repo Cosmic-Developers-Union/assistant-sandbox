@@ -21,6 +21,9 @@ type Core struct {
 	retired uint64
 }
 
+// numFPRegs 是 RISC-V 浮点寄存器堆规模。
+const numFPRegs = 32
+
 // reservation 记录最近一次 LR 的保留集;同一 hart 对重叠字节的写入使其失效。
 type reservation struct {
 	active  bool
@@ -52,7 +55,7 @@ func New(config cpu.Config) (*Core, error) {
 		core.exec = checker
 	}
 
-	core.machine = cpu.Machine{PC: config.Entry, Registers: make([]uint64, numRegs)}
+	core.machine = cpu.Machine{PC: config.Entry, Registers: make([]uint64, numRegs), Floats: make([]uint64, numFPRegs)}
 	return core, nil
 }
 
@@ -69,7 +72,9 @@ func (c *Core) Reset(ctx context.Context, machine cpu.Machine) error {
 		registers[index] = machine.Registers[index]
 	}
 	registers[regZero] = 0
-	c.machine = cpu.Machine{PC: machine.PC, Registers: registers}
+	floats := make([]uint64, numRegs)
+	copy(floats, machine.Floats)
+	c.machine = cpu.Machine{PC: machine.PC, Registers: registers, Floats: floats, FCSR: machine.FCSR}
 	c.lr = reservation{}
 	return nil
 }
@@ -80,7 +85,9 @@ func (c *Core) State(ctx context.Context) (cpu.Machine, error) {
 	}
 	registers := make([]uint64, len(c.machine.Registers))
 	copy(registers, c.machine.Registers)
-	return cpu.Machine{PC: c.machine.PC, Registers: registers}, nil
+	floats := make([]uint64, len(c.machine.Floats))
+	copy(floats, c.machine.Floats)
+	return cpu.Machine{PC: c.machine.PC, Registers: registers, Floats: floats, FCSR: c.machine.FCSR}, nil
 }
 
 func (c *Core) ReadRegister(index int) (uint64, error) {
@@ -239,9 +246,15 @@ func (c *Core) execute(ctx context.Context, pc uint64, instruction uint32) (cpu.
 		return c.system(pc, instruction, funct3, rd, rs1)
 	case 0x2F:
 		return c.atomic(ctx, pc, instruction, rd, rs1, rs2)
-	case 0x07, 0x27, 0x43, 0x47, 0x4B, 0x4F, 0x53:
-
-		return cpu.Trapped, notImplemented(pc, instruction), nil
+	case 0x07:
+		return c.fpLoad(ctx, pc, instruction, funct3, rd, rs1)
+	case 0x27:
+		return c.fpStore(ctx, pc, instruction, funct3, rs1, rs2)
+	case 0x43, 0x47, 0x4B, 0x4F:
+		width, params := fpShape(instruction)
+		return c.fpFused(pc, instruction, width, params)
+	case 0x53:
+		return c.fpOp(ctx, pc, instruction)
 	default:
 		return 0, illegal(pc, instruction), nil
 	}
@@ -572,16 +585,22 @@ func (c *Core) system(pc uint64, instruction uint32, funct3 uint32, rd, rs1 int)
 }
 
 // 用户态计数器子集(Zicntr):cycle/instret 只读;time 需要时钟源,未纳入配置。
+// fflags/frm/fcsr 属 F 扩展,可读写。
 const (
 	csrCycle   = 0xC00
 	csrTime    = 0xC01
 	csrInstret = 0xC02
+	csrFFlags  = 0x001
+	csrFrm     = 0x002
+	csrFCSR    = 0x003
 )
 
 func (c *Core) csr(pc uint64, instruction uint32, funct3 uint32, rd, rs1 int) (cpu.Outcome, *cpu.Trap, error) {
 	address := instruction >> 20
 	switch address {
 	case csrCycle, csrInstret:
+	case csrFFlags, csrFrm, csrFCSR:
+		return c.csrFloat(pc, instruction, funct3, rd, rs1, uint64(address))
 	default:
 		// 其余 CSR(含依赖时钟源的 time)未纳入当前配置,明确报告未实现。
 		return cpu.Trapped, notImplemented(pc, instruction), nil

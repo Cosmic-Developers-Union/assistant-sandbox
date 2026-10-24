@@ -20,6 +20,12 @@ type Machine struct {
 	PC uint64
 
 	Registers []uint64
+
+	// Floats 保存 32 个浮点寄存器的原始位型;S 值按 RISC-V 约定高位填 1。
+	Floats []uint64
+
+	// FCSR 是浮点控制状态寄存器:bits[4:0] fflags,bits[7:5] frm。
+	FCSR uint32
 }
 
 type WordSize struct {
@@ -116,6 +122,17 @@ type Memory interface {
 
 type Canceller interface {
 	Cancelled() bool
+}
+
+// FloatRegisterFile 暴露浮点寄存器堆与 fcsr,供调试与任务切换使用。
+type FloatRegisterFile interface {
+	ReadFP(index int) (uint64, error)
+
+	WriteFP(index int, value uint64) error
+
+	ReadFCSR() (uint32, error)
+
+	WriteFCSR(value uint32) error
 }
 
 // ExecutableChecker 由带权限位的内存实现提供;不可执行页取指报错。

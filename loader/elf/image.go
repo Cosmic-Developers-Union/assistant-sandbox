@@ -94,8 +94,10 @@ func parseHeader(r reader) (header, error) {
 	if head.machine != machineRISCV {
 		return header{}, notSupported(fmt.Sprintf("e_machine %d 不是 RISC-V(%d)", head.machine, machineRISCV))
 	}
-	if abi := head.flags & riscvFloatABIMask; abi != riscvFloatABISoft {
-		return header{}, notSupported(fmt.Sprintf("映像要求浮点 ABI %d，RV64IM 核心不覆盖 F/D", abi))
+	switch abi := head.flags & riscvFloatABIMask; abi {
+	case riscvFloatABISoft, riscvFloatABISingle, riscvFloatABIDouble:
+	default:
+		return header{}, notSupported(fmt.Sprintf("映像要求浮点 ABI %d，仅支持 soft/single/double", abi))
 	}
 	if head.entrySize != programHeaderSize {
 		return header{}, malformed(fmt.Sprintf("e_phentsize %d 不是 %d", head.entrySize, programHeaderSize))

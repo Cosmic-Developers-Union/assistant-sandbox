@@ -379,13 +379,9 @@ func TestLoadRejections(t *testing.T) {
 			mutate: func(t *testing.T, raw []byte) { binary.LittleEndian.PutUint16(raw[offMachine:], 62) },
 		},
 		{
-			// RVC 标志已接受(D04);双精度浮点 ABI 仍被拒绝。
-			label: "双精度浮点 ABI", want: errno.NotSupported, detail: "浮点",
-			mutate: func(t *testing.T, raw []byte) { binary.LittleEndian.PutUint32(raw[offFlags:], 0x5) },
-		},
-		{
-			label: "浮点 ABI", want: errno.NotSupported, detail: "浮点",
-			mutate: func(t *testing.T, raw []byte) { binary.LittleEndian.PutUint32(raw[offFlags:], 4) },
+			// RVC 与 soft/single/double 浮点 ABI 已接受;保留 ABI 值仍被拒绝。
+			label: "保留浮点 ABI", want: errno.NotSupported, detail: "浮点",
+			mutate: func(t *testing.T, raw []byte) { binary.LittleEndian.PutUint32(raw[offFlags:], 0x6) },
 		},
 		{
 			label: "程序头项大小不对", want: errno.NoExec, detail: "e_phentsize",
