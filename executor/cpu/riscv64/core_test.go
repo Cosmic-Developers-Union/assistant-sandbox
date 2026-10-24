@@ -1683,3 +1683,72 @@ func TestReservedAccessRejectsMisalignedAndMismatchedEncodings(t *testing.T) {
 		t.Fatalf("funct3 与字长不匹配应产生非法指令: %v", err2)
 	}
 }
+
+func encodeCSR(funct3 uint32, rd, rs1, csr int) uint32 {
+	return uint32(csr)<<20 | uint32(rs1)<<15 | funct3<<12 | uint32(rd)<<7 | 0x73
+}
+
+func TestCSRCountersAreReadable(t *testing.T) {
+	ctx := context.Background()
+	memory := newSparse()
+	// 前置 2 条指令,使计数器非零;随后 csrrs a0, cycle, x0 与 csrrs a1, instret, x0。
+	memory.load(t, 0,
+		insAddi5, insAddi7,
+		encodeCSR(0x2, 10, 0, int(csrCycle)),
+		encodeCSR(0x2, 11, 0, int(csrInstret)),
+	)
+	port := newPort(t, memory, 0)
+	run(t, port, 4)
+	if got, err := port.ReadRegister(10); err != nil || got != 2 {
+		t.Fatalf("cycle=%d err=%v want 2", got, err)
+	}
+	// cycle 的 CSR 指令本身已退休,instret 读到 3。
+	if got, err := port.ReadRegister(11); err != nil || got != 3 {
+		t.Fatalf("instret=%d err=%v want 3", got, err)
+	}
+
+	// 立即数形式 csrrsi t2, cycle, 0 同样可读。
+	memory.load(t, 16, encodeCSR(0x6, 12, 0, int(csrCycle)))
+	if outcome, err := port.Step(ctx); err != nil || outcome != cpu.Continued {
+		t.Fatalf("csrrsi: outcome=%v err=%v", outcome, err)
+	}
+	if got, err := port.ReadRegister(12); err != nil || got != 4 {
+		t.Fatalf("第二次 cycle=%d err=%v want 4", got, err)
+	}
+}
+
+func TestCSRWritesAndUnknownAddressesAreRejected(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		label       string
+		instruction uint32
+		want        cpu.TrapKind
+		shouldPass  bool
+	}{
+		{"csrrw 写 cycle", encodeCSR(0x1, 10, 11, int(csrCycle)), cpu.TrapIllegalInstruction, false},
+		{"csrrs 置位写 cycle", encodeCSR(0x2, 10, 11, int(csrCycle)), cpu.TrapIllegalInstruction, false},
+		{"csrrc 清位写 cycle", encodeCSR(0x3, 10, 11, int(csrCycle)), cpu.TrapIllegalInstruction, false},
+		{"csrrwi 立即写 instret", encodeCSR(0x5, 10, 3, int(csrInstret)), cpu.TrapIllegalInstruction, false},
+		{"csrrs 零源读合法", encodeCSR(0x2, 10, 0, int(csrCycle)), 0, true},
+		{"time 未实现", encodeCSR(0x2, 10, 0, int(csrTime)), cpu.TrapNotImplemented, false},
+		{"mstatus 未实现", encodeCSR(0x2, 10, 0, 0x300), cpu.TrapNotImplemented, false},
+	} {
+		memory := newSparse()
+		memory.load(t, 0, tc.instruction)
+		port := newPort(t, memory, 0)
+		if err := port.WriteRegister(11, 0x1); err != nil {
+			t.Fatal(err)
+		}
+		outcome, err := port.Step(ctx)
+		if tc.shouldPass {
+			if err != nil || outcome != cpu.Continued {
+				t.Errorf("%s: 应成功: outcome=%v err=%v", tc.label, outcome, err)
+			}
+			continue
+		}
+		var trap cpu.Trap
+		if !errors.As(err, &trap) || trap.Kind != tc.want {
+			t.Errorf("%s: 类别=%v err=%v want %v", tc.label, trap.Kind, err, tc.want)
+		}
+	}
+}

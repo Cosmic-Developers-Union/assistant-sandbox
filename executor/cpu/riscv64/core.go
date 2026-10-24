@@ -16,6 +16,9 @@ type Core struct {
 	meter   cpu.Meter
 	cancel  cpu.Canceller
 	lr      reservation
+
+	// retired 是已成功退休的指令数,作为 cycle/instret 计数器的值源。
+	retired uint64
 }
 
 // reservation 记录最近一次 LR 的保留集;同一 hart 对重叠字节的写入使其失效。
@@ -132,6 +135,7 @@ func (c *Core) Step(ctx context.Context) (cpu.Outcome, error) {
 				trap.Instruction = uint32(raw)
 				return cpu.Trapped, *trap
 			}
+			c.retired++
 			return outcome, nil
 		case compressedFloat:
 			return cpu.Trapped, cpu.Trap{
@@ -162,6 +166,7 @@ func (c *Core) Step(ctx context.Context) (cpu.Outcome, error) {
 	if trap != nil {
 		return cpu.Trapped, *trap
 	}
+	c.retired++
 	return outcome, nil
 }
 
@@ -558,10 +563,43 @@ func (c *Core) system(pc uint64, instruction uint32, funct3 uint32, rd, rs1 int)
 			return cpu.Trapped, &cpu.Trap{Kind: cpu.TrapBreakpoint, Address: pc, Instruction: instruction}, nil
 		}
 		return 0, illegal(pc, instruction), nil
+	case funct3 >= 0x1 && funct3 <= 0x3, funct3 >= 0x5 && funct3 <= 0x7:
+		return c.csr(pc, instruction, funct3, rd, rs1)
 	default:
 
 		return cpu.Trapped, notImplemented(pc, instruction), nil
 	}
+}
+
+// 用户态计数器子集(Zicntr):cycle/instret 只读;time 需要时钟源,未纳入配置。
+const (
+	csrCycle   = 0xC00
+	csrTime    = 0xC01
+	csrInstret = 0xC02
+)
+
+func (c *Core) csr(pc uint64, instruction uint32, funct3 uint32, rd, rs1 int) (cpu.Outcome, *cpu.Trap, error) {
+	address := instruction >> 20
+	switch address {
+	case csrCycle, csrInstret:
+	default:
+		// 其余 CSR(含依赖时钟源的 time)未纳入当前配置,明确报告未实现。
+		return cpu.Trapped, notImplemented(pc, instruction), nil
+	}
+	var source uint64
+	if funct3 < 0x5 {
+		source = c.read(rs1)
+	} else {
+		source = uint64(rs1)
+	}
+	// 只读计数器:任何写意图都是非法指令;rs/zimm 为 0 的读不受影响。
+	writes := funct3 == 0x1 || funct3 == 0x5 ||
+		(source != 0 && (funct3 == 0x2 || funct3 == 0x3 || funct3 == 0x6 || funct3 == 0x7))
+	if writes {
+		return 0, illegal(pc, instruction), nil
+	}
+	c.write(rd, c.retired)
+	return cpu.Continued, nil, nil
 }
 
 // funct5 0x02/0x12 是 LR.W/D,0x03/0x13 是 SC.W/D,其余为 AMO 操作码。
