@@ -294,3 +294,99 @@ func TestIgnoredSignalCanBeRestored(t *testing.T) {
 		t.Fatalf("恢复后应可投递: n=%v ok=%v", n, ok)
 	}
 }
+
+func TestActionRegistrationLifecycle(t *testing.T) {
+	table := New()
+	table.Spawn(9)
+
+	// 未登记即 SIG_DFL。
+	if config, err := table.Action(9, USR1); err != nil || config.Handler != SigDefault {
+		t.Fatalf("缺省处置=%+v err=%v", config, err)
+	}
+	// 登记 SIG_IGN 与自定义处理器,互相覆盖。
+	if err := table.SetAction(9, USR1, ActionConfig{Handler: SigIgnore}); err != nil {
+		t.Fatal(err)
+	}
+	if config, _ := table.Action(9, USR1); config.Handler != SigIgnore {
+		t.Fatalf("IGN 未登记: %+v", config)
+	}
+	custom := ActionConfig{Handler: 0xCAFE, Flags: 4, Restorer: 0x9000, Mask: 1<<10 | 1<<12}
+	if err := table.SetAction(9, USR1, custom); err != nil {
+		t.Fatal(err)
+	}
+	if config, _ := table.Action(9, USR1); config != custom {
+		t.Fatalf("自定义处置=%+v want %+v", config, custom)
+	}
+	// 未登记的信号不受影响。
+	if config, _ := table.Action(9, TERM); config.Handler != SigDefault {
+		t.Fatalf("TERM 被波及: %+v", config)
+	}
+
+	// KILL/STOP 与非法号 EINVAL。
+	for _, n := range []Number{KILL, STOP, 0, Max + 1} {
+		if err := table.SetAction(9, n, ActionConfig{Handler: 1}); !errors.Is(err, errno.Invalid) {
+			t.Fatalf("%d: err=%v want EINVAL", n, err)
+		}
+	}
+
+	// exec 复位处置:全部回归 SIG_DFL。
+	if err := table.ResetForExec(9); err != nil {
+		t.Fatal(err)
+	}
+	if config, _ := table.Action(9, USR1); config.Handler != SigDefault {
+		t.Fatalf("exec 后处置未复位: %+v", config)
+	}
+	// 未知进程 ENOPROC。
+	if err := table.SetAction(99, USR1, ActionConfig{}); !errors.Is(err, errno.NoProcess) {
+		t.Fatalf("未知进程: err=%v", err)
+	}
+}
+
+func TestApplyMaskBulkSemantics(t *testing.T) {
+	table := New()
+	table.Spawn(3)
+
+	// SIG_BLOCK 叠加,返回旧值。
+	old, err := table.ApplyMask(3, MaskBlock, 1<<(USR1-1)|1<<(USR2-1))
+	if err != nil || old != 0 {
+		t.Fatalf("block: old=%d err=%v", old, err)
+	}
+	old, _ = table.ApplyMask(3, MaskBlock, 1<<(TERM-1))
+	if old != 1<<(USR1-1)|1<<(USR2-1) {
+		t.Fatalf("第二次 block 返回旧值=%d", old)
+	}
+	// SIG_UNBLOCK 清位。
+	old, _ = table.ApplyMask(3, MaskUnblock, 1<<(USR1-1))
+	if old&(1<<(USR1-1)) == 0 {
+		t.Fatalf("unblock 返回的旧值应含 USR1: %d", old)
+	}
+	// SIG_SETMASK 整体替换。
+	old, _ = table.ApplyMask(3, MaskSetMask, 1<<(TERM-1))
+	if old&(1<<(USR2-1)) == 0 {
+		t.Fatalf("setmask 返回的旧值应含 USR2: %d", old)
+	}
+	if current, _ := table.Mask(3); current != 1<<(TERM-1) {
+		t.Fatalf("当前屏蔽=%d", current)
+	}
+	// 越界位与未知 how EINVAL;屏蔽 KILL/STOP 不被 ApplyMask 拒绝之外,
+	// 范围内的合法位正常工作。
+	if _, err := table.ApplyMask(3, MaskBlock, 1<<31|1<<40); !errors.Is(err, errno.Invalid) {
+		t.Fatalf("越界位: err=%v want EINVAL", err)
+	}
+	if _, err := table.ApplyMask(3, MaskHow(9), 1); !errors.Is(err, errno.Invalid) {
+		t.Fatalf("未知 how: err=%v want EINVAL", err)
+	}
+	if _, err := table.ApplyMask(99, MaskBlock, 1); !errors.Is(err, errno.NoProcess) {
+		t.Fatalf("未知进程: err=%v", err)
+	}
+	// 批量屏蔽与单信号屏蔽一致:被屏蔽信号不可投递。
+	if _, err := table.ApplyMask(3, MaskBlock, 1<<(HUP-1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := table.Raise(3, HUP); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := table.Deliverable(3); ok {
+		t.Fatal("被屏蔽信号不应可投递")
+	}
+}

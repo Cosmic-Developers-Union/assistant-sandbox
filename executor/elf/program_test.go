@@ -22,6 +22,7 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/memory"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/proc"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/resources"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/signal"
 )
 
 const (
@@ -946,5 +947,128 @@ func TestHostileGuestProgramsStayContained(t *testing.T) {
 	healthy := newHarness(t, buildImage(t), nil)
 	if status, err := healthy.run(t); err != nil || status != 7 {
 		t.Fatalf("宿主状态受损: status=%d err=%v", status, err)
+	}
+}
+
+// sigControlStub 是登记 rt_sigaction/rt_sigprocmask 的进程控制替身,
+// 同时满足 proc.Control 与 proc.SignalDispositionControl。
+type sigControlStub struct {
+	actions map[signal.Number]signal.ActionConfig
+	mask    uint64
+}
+
+func (s *sigControlStub) Begin(proc.PID, string, []string, string, map[string]string, fd.Streams) (proc.Proc, error) {
+	return proc.Proc{}, errno.Invalid
+}
+func (s *sigControlStub) Finish(proc.PID, proc.PID, uint8) error { return errno.Invalid }
+func (s *sigControlStub) Run(context.Context, proc.RunSpec) (proc.Proc, error) {
+	return proc.Proc{}, errno.Invalid
+}
+
+func (s *sigControlStub) SetSignalAction(sig signal.Number, config signal.ActionConfig) error {
+	if sig == signal.KILL || sig == signal.STOP {
+		return errno.Invalid
+	}
+	s.actions[sig] = config
+	return nil
+}
+func (s *sigControlStub) SignalAction(sig signal.Number) (signal.ActionConfig, error) {
+	return s.actions[sig], nil
+}
+func (s *sigControlStub) SetSignalMask(how signal.MaskHow, set uint64) (uint64, error) {
+	old := s.mask
+	switch how {
+	case signal.MaskBlock:
+		s.mask |= set
+	case signal.MaskUnblock:
+		s.mask &^= set
+	case signal.MaskSetMask:
+		s.mask = set
+	default:
+		return 0, errno.Invalid
+	}
+	return old, nil
+}
+func (s *sigControlStub) SignalMask() (uint64, error) { return s.mask, nil }
+
+// buildSigactionImage 构造带 64 字节数据段的 ELF:数据区前 8 字节是
+// sigset,偏移 0x10 起是 struct sigaction。
+func buildSigactionImage(t *testing.T, program []uint32, set [8]byte, action [32]byte) []byte {
+	t.Helper()
+	raw := make([]byte, imageDataOffset+0x40)
+	copy(raw[0:4], "\x7fELF")
+	raw[4] = 2
+	raw[5] = 1
+	raw[6] = 1
+	binary.LittleEndian.PutUint16(raw[16:], 2)
+	binary.LittleEndian.PutUint16(raw[18:], 243)
+	binary.LittleEndian.PutUint32(raw[20:], 1)
+	binary.LittleEndian.PutUint64(raw[24:], imageEntry)
+	binary.LittleEndian.PutUint64(raw[32:], imagePhdrOffset)
+	binary.LittleEndian.PutUint16(raw[52:], imageHeaderSize)
+	binary.LittleEndian.PutUint16(raw[54:], imagePhdrSize)
+	binary.LittleEndian.PutUint16(raw[56:], 2)
+	putProgramHeader(raw[imagePhdrOffset:], 1, 5, 0, imageCodeBase, imageCodeSize, imageCodeSize, 0x1000)
+	putProgramHeader(raw[imagePhdrOffset+imagePhdrSize:], 1, 6, imageDataOffset, imageDataBase, 0x40, 0x40, 0x1000)
+	copy(raw[imageDataOffset:], set[:])
+	copy(raw[imageDataOffset+0x10:], action[:])
+	for index, instruction := range program {
+		binary.LittleEndian.PutUint32(raw[imageProgramAt+index*4:], instruction)
+	}
+	return raw
+}
+
+func TestRealELFRegistersSignalDisposition(t *testing.T) {
+	// 数据区:偏移 0 是 sigset(屏蔽 USR2=12),偏移 0x10 是 sigaction
+	// (handler 0xCAFE、SA_SIGINFO|SA_RESTORER、restorer 0x9000)。
+	var set [8]byte
+	binary.LittleEndian.PutUint64(set[0:], 1<<(12-1))
+	var action [32]byte
+	binary.LittleEndian.PutUint64(action[0:], 0xCAFE)
+	binary.LittleEndian.PutUint64(action[8:], 1<<(10-1))
+	binary.LittleEndian.PutUint32(action[16:], 0x04000004) // SA_RESTORER|SA_SIGINFO
+	binary.LittleEndian.PutUint64(action[24:], 0x9000)
+
+	guestProgram := []uint32{
+		0x00A00513, // li a0, 10 (SIGUSR1)
+		0x000125B7, // lui a1, 0x12
+		0x01058593, // addi a1, a1, 16 → act
+		0x00000613, // li a2, 0 (oldact=NULL)
+		0x00800693, // li a3, 8 (sigsetsize)
+		0x08600893, // li a7, 134 (rt_sigaction)
+		0x00000073, // ecall
+		0x00100513, // li a0, 1 (SIG_BLOCK)
+		0x000125B7, // lui a1, 0x12 → set
+		0x00000613, // li a2, 0
+		0x00800693, // li a3, 8
+		0x08700893, // li a7, 135 (rt_sigprocmask)
+		0x00000073, // ecall
+		0x00700513, // li a0, 7
+		0x05D00893, // li a7, 93 (exit)
+		0x00000073, // ecall
+	}
+	image := buildSigactionImage(t, guestProgram, set, action)
+	harness := newHarness(t, image, nil)
+	stub := &sigControlStub{actions: map[signal.Number]signal.ActionConfig{}}
+	harness.process.Control = stub
+
+	program, _, err := Factory{}.New("/program")
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, runErr := program.Run(context.Background(), harness.process)
+	if runErr != nil {
+		t.Fatal(runErr)
+	}
+	if code != 7 {
+		t.Fatalf("退出码=%d want 7", code)
+	}
+	// 真实 ELF 经完整栈(adaper→handler→端口)登记的处置与屏蔽。
+	registered := stub.actions[signal.USR1]
+	if registered.Handler != 0xCAFE || registered.Flags != 0x04000004 || registered.Restorer != 0x9000 || registered.Mask != 1<<9 {
+		t.Fatalf("ELF 登记的处置=%+v", registered)
+	}
+	if stub.mask != 1<<(12-1) {
+		t.Fatalf("ELF 登记的屏蔽=%x", stub.mask)
 	}
 }

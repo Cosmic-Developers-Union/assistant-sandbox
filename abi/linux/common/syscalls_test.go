@@ -2632,3 +2632,188 @@ func TestWaitidValidatesOptionsAndTargets(t *testing.T) {
 		t.Fatalf("未装配: %+v want ENOSYS", reply)
 	}
 }
+
+type fakeSignals struct {
+	set     []SignalAction
+	actions map[uint64]SignalAction
+	err     error
+	mask    uint64
+}
+
+func (f *fakeSignals) SetAction(sig uint64, action SignalAction) error {
+	if f.err != nil {
+		return f.err
+	}
+	// 镜像端口契约:KILL/STOP 不可改处置。
+	if sig == 9 || sig == 19 {
+		return errno.Invalid
+	}
+	f.set = append(f.set, action)
+	f.actions[sig] = action
+	return nil
+}
+
+func (f *fakeSignals) Action(sig uint64) (SignalAction, error) {
+	if f.err != nil {
+		return SignalAction{}, f.err
+	}
+	if action, ok := f.actions[sig]; ok {
+		return action, nil
+	}
+	return SignalAction{}, nil
+}
+
+func (f *fakeSignals) ApplyMask(how, set uint64) (uint64, error) {
+	if f.err != nil {
+		return 0, f.err
+	}
+	if set&^(1<<sigMaxNumbers-1) != 0 {
+		return 0, errno.Invalid
+	}
+	old := f.mask
+	switch how {
+	case 1:
+		f.mask |= set
+	case 2:
+		f.mask &^= set
+	case 3:
+		f.mask = set
+	default:
+		return 0, errno.Invalid
+	}
+	return old, nil
+}
+
+func (f *fakeSignals) Mask() (uint64, error) { return f.mask, nil }
+
+func TestRtSigactionRegistersAndWritesBackOld(t *testing.T) {
+	ctx := context.Background()
+	space := newFakeMemory()
+	signals := &fakeSignals{actions: map[uint64]SignalAction{}}
+	syscalls := Syscalls{Memory: space, Signals: signals}
+
+	// 登记:32 字节 struct sigaction 逐字段读取。
+	var action [32]byte
+	binary.LittleEndian.PutUint64(action[0:], 0x4040)
+	binary.LittleEndian.PutUint64(action[8:], 1<<10)
+	binary.LittleEndian.PutUint32(action[16:], 0x14000000)
+	binary.LittleEndian.PutUint64(action[24:], 0x9000)
+	if err := space.Write(ctx, 0x1000, action[:]); err != nil {
+		t.Fatal(err)
+	}
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysRtSigaction, Args: [6]uint64{10, 0x1000, 0, sigsetSize}}); reply.Errno != "" {
+		t.Fatalf("登记: %+v", reply)
+	}
+	registered := signals.actions[10]
+	if registered.Handler != 0x4040 || registered.Mask != 1<<10 || registered.Flags != 0x14000000 || registered.Restorer != 0x9000 {
+		t.Fatalf("登记项=%+v", registered)
+	}
+
+	// 回写旧值(此前已登记 0x4040)。
+	var oldact [32]byte
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysRtSigaction, Args: [6]uint64{10, 0, 0x2000, sigsetSize}}); reply.Errno != "" {
+		t.Fatalf("查询回写: %+v", reply)
+	}
+	if err := space.Read(ctx, 0x2000, oldact[:]); err != nil {
+		t.Fatal(err)
+	}
+	if handler := binary.LittleEndian.Uint64(oldact[0:]); handler != 0x4040 {
+		t.Fatalf("回写处理器=%#x want 0x4040", handler)
+	}
+	if flags := binary.LittleEndian.Uint32(oldact[16:]); flags != 0x14000000 {
+		t.Fatalf("回写标志=%#x", flags)
+	}
+	// act=NULL 仅查询:不改变登记项。
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysRtSigaction, Args: [6]uint64{10, 0, 0x2000, sigsetSize}}); reply.Errno != "" {
+		t.Fatalf("act=NULL: %+v", reply)
+	}
+
+	// 非法号与 sigsetsize EINVAL;KILL/STOP 不可改。
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysRtSigaction, Args: [6]uint64{0, 0x1000, 0, 8}}); reply.Errno != errno.Invalid {
+		t.Fatalf("sig=0: %+v want EINVAL", reply)
+	}
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysRtSigaction, Args: [6]uint64{9, 0x1000, 0, 4}}); reply.Errno != errno.Invalid {
+		t.Fatalf("sigsetsize: %+v want EINVAL", reply)
+	}
+	for _, sig := range []uint64{9, 19} {
+		if reply := syscalls.Handle(ctx, Call{Syscall: SysRtSigaction, Args: [6]uint64{sig, 0x1000, 0, 8}}); reply.Errno != errno.Invalid {
+			t.Fatalf("sig=%d: %+v want EINVAL", sig, reply)
+		}
+	}
+	// 未装配端口 ENOSYS;登记端口故障透传。
+	if reply := (Syscalls{}).Handle(ctx, Call{Syscall: SysRtSigaction}); reply.Errno != errno.NotImplemented {
+		t.Fatalf("未装配: %+v want ENOSYS", reply)
+	}
+	failing := &fakeSignals{err: errno.Permission, actions: map[uint64]SignalAction{}}
+	if reply := (Syscalls{Memory: space, Signals: failing}).Handle(ctx, Call{Syscall: SysRtSigaction, Args: [6]uint64{10, 0x1000, 0, sigsetSize}}); reply.Errno != errno.Permission {
+		t.Fatalf("登记故障: %+v want EACCES", reply)
+	}
+}
+
+func TestRtSigprocmaskBlockUnblockAndSetmask(t *testing.T) {
+	ctx := context.Background()
+	space := newFakeMemory()
+	signals := &fakeSignals{actions: map[uint64]SignalAction{}}
+	syscalls := Syscalls{Memory: space, Signals: signals}
+
+	// SIG_BLOCK 叠加并回写旧屏蔽集。
+	var set [8]byte
+	binary.LittleEndian.PutUint64(set[0:], 1<<9|1<<10)
+	if err := space.Write(ctx, 0x1000, set[:]); err != nil {
+		t.Fatal(err)
+	}
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysRtSigprocmask, Args: [6]uint64{sigBlock, 0x1000, 0x2000, sigsetSize}}); reply.Errno != "" {
+		t.Fatalf("block: %+v", reply)
+	}
+	var old [8]byte
+	if err := space.Read(ctx, 0x2000, old[:]); err != nil {
+		t.Fatal(err)
+	}
+	if binary.LittleEndian.Uint64(old[:]) != 0 {
+		t.Fatalf("首次 block 旧值=%d", binary.LittleEndian.Uint64(old[:]))
+	}
+	// SIG_SETMASK 整体替换。
+	binary.LittleEndian.PutUint64(set[0:], 1<<1)
+	if err := space.Write(ctx, 0x1000, set[:]); err != nil {
+		t.Fatal(err)
+	}
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysRtSigprocmask, Args: [6]uint64{sigSetMask, 0x1000, 0x2000, sigsetSize}}); reply.Errno != "" {
+		t.Fatalf("setmask: %+v", reply)
+	}
+	if err := space.Read(ctx, 0x2000, old[:]); err != nil {
+		t.Fatal(err)
+	}
+	if binary.LittleEndian.Uint64(old[:]) != 1<<9|1<<10 {
+		t.Fatalf("setmask 回写旧值=%d", binary.LittleEndian.Uint64(old[:]))
+	}
+	// set=NULL 仅查询当前值。
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysRtSigprocmask, Args: [6]uint64{sigBlock, 0, 0x2000, sigsetSize}}); reply.Errno != "" {
+		t.Fatalf("查询: %+v", reply)
+	}
+	if err := space.Read(ctx, 0x2000, old[:]); err != nil {
+		t.Fatal(err)
+	}
+	if binary.LittleEndian.Uint64(old[:]) != 1<<1 {
+		t.Fatalf("查询旧值=%d", binary.LittleEndian.Uint64(old[:]))
+	}
+	// 未知 how / 错误 sigsetsize / 越界位 EINVAL。
+	for _, tc := range [][6]uint64{
+		{9, 0x1000, 0x2000, sigsetSize},
+		{sigBlock, 0x1000, 0x2000, 4},
+	} {
+		if reply := syscalls.Handle(ctx, Call{Syscall: SysRtSigprocmask, Args: tc}); reply.Errno != errno.Invalid {
+			t.Fatalf("校验 %+v: %+v want EINVAL", tc, reply)
+		}
+	}
+	binary.LittleEndian.PutUint64(set[0:], 1<<40)
+	if err := space.Write(ctx, 0x1000, set[:]); err != nil {
+		t.Fatal(err)
+	}
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysRtSigprocmask, Args: [6]uint64{sigBlock, 0x1000, 0, sigsetSize}}); reply.Errno != errno.Invalid {
+		t.Fatalf("越界位: %+v want EINVAL", reply)
+	}
+	// 未装配端口 ENOSYS。
+	if reply := (Syscalls{}).Handle(ctx, Call{Syscall: SysRtSigprocmask}); reply.Errno != errno.NotImplemented {
+		t.Fatalf("未装配: %+v want ENOSYS", reply)
+	}
+}

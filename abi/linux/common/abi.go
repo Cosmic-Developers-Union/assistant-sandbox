@@ -205,6 +205,8 @@ const (
 	SysGetCPU
 	SysWaitid
 	SysDup
+	SysRtSigaction
+	SysRtSigprocmask
 )
 
 func (s Syscall) String() string {
@@ -465,6 +467,10 @@ func (s Syscall) String() string {
 		return "waitid"
 	case SysDup:
 		return "dup"
+	case SysRtSigaction:
+		return "rt_sigaction"
+	case SysRtSigprocmask:
+		return "rt_sigprocmask"
 	case SysReadlinkat:
 		return "readlinkat"
 	case SysUmask:

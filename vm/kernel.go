@@ -611,6 +611,11 @@ func (k *Kernel) Signal(target proc.PID, n signal.Number) error {
 
 	ignored := k.signals.Ignored(uint64(target), n)
 	if !ignored {
+		if config, err := k.signals.Action(uint64(target), n); err == nil && config.Handler == signal.SigIgnore {
+			ignored = true
+		}
+	}
+	if !ignored {
 		if err := k.signals.Raise(uint64(target), n); err != nil {
 			k.mu.Unlock()
 			return err
@@ -1289,6 +1294,34 @@ func (c procControl) Finish(parent, id proc.PID, code uint8) error {
 
 func (c procControl) SetUmask(id proc.PID, mask stdfs.FileMode) error {
 	return c.k.SetUmask(id, mask)
+}
+
+func (c procControl) SetSignalAction(sig signal.Number, config signal.ActionConfig) error {
+	if c.self == 0 {
+		return errno.NoProcess
+	}
+	return c.k.signals.SetAction(uint64(c.self), sig, config)
+}
+
+func (c procControl) SignalAction(sig signal.Number) (signal.ActionConfig, error) {
+	if c.self == 0 {
+		return signal.ActionConfig{}, errno.NoProcess
+	}
+	return c.k.signals.Action(uint64(c.self), sig)
+}
+
+func (c procControl) SetSignalMask(how signal.MaskHow, set uint64) (uint64, error) {
+	if c.self == 0 {
+		return 0, errno.NoProcess
+	}
+	return c.k.signals.ApplyMask(uint64(c.self), how, set)
+}
+
+func (c procControl) SignalMask() (uint64, error) {
+	if c.self == 0 {
+		return 0, errno.NoProcess
+	}
+	return c.k.signals.Mask(uint64(c.self))
 }
 
 func (c procControl) WaitChild(ctx context.Context, target proc.PID, nohang bool) (proc.ChildState, bool, error) {

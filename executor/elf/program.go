@@ -17,6 +17,7 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/memory"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/proc"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/resources"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/signal"
 )
 
 const randomBytes = 16
@@ -187,6 +188,9 @@ func syscalls(ctx context.Context, process proc.Proc, space *memory.Table, plan 
 	handler.Limiter = &limiter{meters: metersOf(process), pid: uint64(process.ID)}
 	if waiter, ok := process.Control.(proc.WaitControl); ok {
 		handler.Waiter = processWaiter{control: waiter}
+	}
+	if dispositions, ok := process.Control.(proc.SignalDispositionControl); ok {
+		handler.Signals = processSignals{control: dispositions}
 	}
 	if source, err := process.Resources.Time(); err == nil {
 		handler.Clock = source
@@ -384,4 +388,45 @@ func (w processWaiter) WaitChild(ctx context.Context, target uint64, nohang bool
 
 func (w processWaiter) HasChildren() bool {
 	return w.control.HasChildren()
+}
+
+// processSignals 把进程控制端口的信号处置能力适配为 ABI 登记端口。
+type processSignals struct {
+	control proc.SignalDispositionControl
+}
+
+func (p processSignals) SetAction(sig uint64, action common.SignalAction) error {
+	if !signal.Number(sig).Valid() {
+		return errno.Invalid
+	}
+	return p.control.SetSignalAction(signal.Number(sig), signal.ActionConfig{
+		Handler: action.Handler, Flags: action.Flags, Restorer: action.Restorer, Mask: action.Mask,
+	})
+}
+
+func (p processSignals) Action(sig uint64) (common.SignalAction, error) {
+	config, err := p.control.SignalAction(signal.Number(sig))
+	if err != nil {
+		return common.SignalAction{}, err
+	}
+	return common.SignalAction{
+		Handler: config.Handler, Flags: config.Flags, Restorer: config.Restorer, Mask: config.Mask,
+	}, nil
+}
+
+func (p processSignals) ApplyMask(how, set uint64) (uint64, error) {
+	switch how {
+	case 1:
+		return p.control.SetSignalMask(signal.MaskBlock, set)
+	case 2:
+		return p.control.SetSignalMask(signal.MaskUnblock, set)
+	case 3:
+		return p.control.SetSignalMask(signal.MaskSetMask, set)
+	default:
+		return 0, errno.Invalid
+	}
+}
+
+func (p processSignals) Mask() (uint64, error) {
+	return p.control.SignalMask()
 }

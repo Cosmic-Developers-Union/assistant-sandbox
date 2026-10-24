@@ -182,6 +182,29 @@ type Syscalls struct {
 	CPUs uint64
 
 	Waiter Waiter
+
+	Signals SignalDispositions
+}
+
+// SignalAction 是 rt_sigaction 的登记项(asm-generic struct sigaction):
+// Handler 为 0(SIG_DFL)/1(SIG_IGN) 或客户态处理器地址。
+type SignalAction struct {
+	Handler  uint64
+	Mask     uint64
+	Flags    uint32
+	Restorer uint64
+}
+
+// SignalDispositions 是 rt_sigaction/rt_sigprocmask 的登记端口。
+type SignalDispositions interface {
+	SetAction(sig uint64, action SignalAction) error
+
+	Action(sig uint64) (SignalAction, error)
+
+	// ApplyMask 按 how(SIG_BLOCK/UNBLOCK/SETMASK)调整屏蔽集并返回旧值。
+	ApplyMask(how, set uint64) (uint64, error)
+
+	Mask() (uint64, error)
 }
 
 // ChildState 是 wait4/waitid 观察到的子进程终态。
@@ -306,6 +329,10 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 		return s.getcpu(ctx, call)
 	case SysWaitid:
 		return s.waitid(ctx, call)
+	case SysRtSigaction:
+		return s.rtSigaction(ctx, call)
+	case SysRtSigprocmask:
+		return s.rtSigprocmask(ctx, call)
 	case SysFstatfs:
 		return s.fstatfs(ctx, call)
 	case SysFcntl:
@@ -2237,6 +2264,114 @@ func (s Syscalls) writeSigchld(ctx context.Context, address uint64, state ChildS
 	putI32(siginfoUID, 0)
 	if err := s.Memory.Write(ctx, address, encoded[:]); err != nil {
 		return Reply{Errno: errno.Fault}
+	}
+	return Reply{}
+}
+
+// asm-generic 的 struct sigaction(32 字节)与 rt_sigprocmask 的 how。
+const (
+	sigactionHandler  = 0
+	sigactionMask     = 8
+	sigactionFlags    = 16
+	sigactionRestorer = 24
+	sigactionSize     = 32
+
+	sigBlock   = 1
+	sigUnblock = 2
+	sigSetMask = 3
+
+	// 客体 sigset 为 8 字节(64 位)。
+	sigsetSize = 8
+)
+
+// sigMaxNumbers 是本兼容配置支持的最高信号号(SIGRTMAX 边界)。
+const sigMaxNumbers = 31
+
+func validGuestSignal(sig uint64) bool { return sig >= 1 && sig <= sigMaxNumbers }
+
+// rt_sigaction(sig, act, oldact, sigsetsize) 登记处置并回写旧值。
+// 未知号 EINVAL,KILL/STOP 不可改,自定义处理器地址原样登记
+// (处理器执行随 J03/J04 信号帧落地)。
+func (s Syscalls) rtSigaction(ctx context.Context, call Call) Reply {
+	if s.Memory == nil || s.Signals == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	sig := call.Args[0]
+	if !validGuestSignal(sig) {
+		return Reply{Errno: errno.Invalid}
+	}
+	if call.Args[3] != sigsetSize {
+		return Reply{Errno: errno.Invalid}
+	}
+	if call.Args[1] != 0 {
+		var raw [sigactionSize]byte
+		if err := s.Memory.Read(ctx, call.Args[1], raw[:]); err != nil {
+			return Reply{Errno: errno.Fault}
+		}
+		action := SignalAction{
+			Handler:  binary.LittleEndian.Uint64(raw[sigactionHandler:]),
+			Mask:     binary.LittleEndian.Uint64(raw[sigactionMask:]),
+			Flags:    binary.LittleEndian.Uint32(raw[sigactionFlags:]),
+			Restorer: binary.LittleEndian.Uint64(raw[sigactionRestorer:]),
+		}
+		if err := s.Signals.SetAction(sig, action); err != nil {
+			return Reply{Errno: errnoOf(err)}
+		}
+	}
+	if call.Args[2] != 0 {
+		current, err := s.Signals.Action(sig)
+		if err != nil {
+			return Reply{Errno: errnoOf(err)}
+		}
+		var encoded [sigactionSize]byte
+		binary.LittleEndian.PutUint64(encoded[sigactionHandler:], current.Handler)
+		binary.LittleEndian.PutUint64(encoded[sigactionMask:], current.Mask)
+		binary.LittleEndian.PutUint32(encoded[sigactionFlags:], current.Flags)
+		binary.LittleEndian.PutUint64(encoded[sigactionRestorer:], current.Restorer)
+		if err := s.Memory.Write(ctx, call.Args[2], encoded[:]); err != nil {
+			return Reply{Errno: errno.Fault}
+		}
+	}
+	return Reply{}
+}
+
+// rt_sigprocmask(how, set, oldset, sigsetsize) 调整屏蔽集并回写旧值;
+// set 为 NULL 时仅查询。
+func (s Syscalls) rtSigprocmask(ctx context.Context, call Call) Reply {
+	if s.Memory == nil || s.Signals == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	if call.Args[3] != sigsetSize {
+		return Reply{Errno: errno.Invalid}
+	}
+	var old uint64
+	if call.Args[1] != 0 {
+		var set [8]byte
+		if err := s.Memory.Read(ctx, call.Args[1], set[:]); err != nil {
+			return Reply{Errno: errno.Fault}
+		}
+		mask := binary.LittleEndian.Uint64(set[:])
+		var err error
+		old, err = s.Signals.ApplyMask(call.Args[0], mask)
+		if err != nil {
+			return Reply{Errno: errnoOf(err)}
+		}
+	} else {
+		if call.Args[0] != sigBlock && call.Args[0] != sigUnblock && call.Args[0] != sigSetMask {
+			return Reply{Errno: errno.Invalid}
+		}
+		current, err := s.Signals.Mask()
+		if err != nil {
+			return Reply{Errno: errnoOf(err)}
+		}
+		old = current
+	}
+	if call.Args[2] != 0 {
+		var encoded [8]byte
+		binary.LittleEndian.PutUint64(encoded[0:], old)
+		if err := s.Memory.Write(ctx, call.Args[2], encoded[:]); err != nil {
+			return Reply{Errno: errno.Fault}
+		}
 	}
 	return Reply{}
 }

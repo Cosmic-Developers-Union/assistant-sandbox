@@ -112,11 +112,100 @@ func Default(n Number) (Action, error) {
 
 func Unmaskable(n Number) bool { return n == KILL || n == STOP }
 
+// ActionConfig 是 rt_sigaction 登记的单个信号处置。
+// Handler 为 SigDefault(0) 时按默认行为处置,SigIgnore(1) 时丢弃,
+// 其余值是客户态处理器地址(处理器执行随 J03/J04 信号帧落地)。
+type ActionConfig struct {
+	Handler  uint64
+	Flags    uint32
+	Restorer uint64
+	Mask     uint64
+}
+
+const (
+	SigDefault uint64 = 0
+	SigIgnore  uint64 = 1
+)
+
+// MaskHow 是 rt_sigprocmask 的 how 参数(SIG_BLOCK/SIG_UNBLOCK/SIG_SETMASK)。
+type MaskHow uint8
+
+const (
+	MaskBlock MaskHow = iota + 1
+	MaskUnblock
+	MaskSetMask
+)
+
+// ApplyMask 以位图批量调整屏蔽集,返回调整前的屏蔽集;
+// 位 0 与超出信号范围的位报 EINVAL(不伪成功)。
+func (s *State) ApplyMask(how MaskHow, set uint64) (uint64, error) {
+	if set&^maskRangeBits() != 0 {
+		return 0, errno.Invalid
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	blocked := uint64(s.blocked)
+	old := blocked
+	switch how {
+	case MaskBlock:
+		blocked |= set
+	case MaskUnblock:
+		blocked &^= set
+	case MaskSetMask:
+		blocked = set
+	default:
+		return 0, errno.Invalid
+	}
+	s.blocked = uint32(blocked)
+	return old, nil
+}
+
+// maskRangeBits 是客体信号(1..Max)在 64 位 sigset 中的合法位。
+func maskRangeBits() uint64 {
+	var bits uint64
+	for n := Number(1); n <= Max; n++ {
+		bits |= 1 << (n - 1)
+	}
+	return bits
+}
+
+// Mask 返回当前屏蔽位图。
+func (s *State) Mask() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return uint64(s.blocked)
+}
+
 type State struct {
 	mu      sync.Mutex
 	pending uint32
 	blocked uint32
 	ignored uint32
+	actions [Max + 1]ActionConfig
+}
+
+// SetAction 登记 rt_sigaction 处置;KILL/STOP 不可改,EINVAL。
+func (s *State) SetAction(n Number, config ActionConfig) error {
+	if !n.Valid() {
+		return errno.Invalid
+	}
+	if Unmaskable(n) {
+		return errno.Invalid
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.actions[n] = config
+	return nil
+}
+
+// Action 返回登记的处置;未登记为零值(即 SIG_DFL)。
+func (s *State) Action(n Number) (ActionConfig, error) {
+	if !n.Valid() {
+		return ActionConfig{}, errno.Invalid
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.actions[n], nil
 }
 
 func mask(n Number) uint32 { return 1 << (n - 1) }
@@ -243,9 +332,54 @@ func (t *Table) ResetForExec(pid uint64) error {
 	}
 	state.mu.Lock()
 	state.pending = 0
+	state.actions = [Max + 1]ActionConfig{}
 	state.mu.Unlock()
 	delete(t.interrupts, pid)
 	return nil
+}
+
+// SetAction 登记 pid 的 rt_sigaction 处置。
+func (t *Table) SetAction(pid uint64, n Number, config ActionConfig) error {
+	t.mu.Lock()
+	state := t.states[pid]
+	t.mu.Unlock()
+	if state == nil {
+		return errno.NoProcess
+	}
+	return state.SetAction(n, config)
+}
+
+// Action 返回 pid 已登记的处置;未登记为零值(SIG_DFL)。
+func (t *Table) Action(pid uint64, n Number) (ActionConfig, error) {
+	t.mu.Lock()
+	state := t.states[pid]
+	t.mu.Unlock()
+	if state == nil {
+		return ActionConfig{}, errno.NoProcess
+	}
+	return state.Action(n)
+}
+
+// ApplyMask 以 rt_sigprocmask 语义批量调整 pid 的屏蔽集。
+func (t *Table) ApplyMask(pid uint64, how MaskHow, set uint64) (uint64, error) {
+	t.mu.Lock()
+	state := t.states[pid]
+	t.mu.Unlock()
+	if state == nil {
+		return 0, errno.NoProcess
+	}
+	return state.ApplyMask(how, set)
+}
+
+// Mask 返回 pid 当前屏蔽位图。
+func (t *Table) Mask(pid uint64) (uint64, error) {
+	t.mu.Lock()
+	state := t.states[pid]
+	t.mu.Unlock()
+	if state == nil {
+		return 0, errno.NoProcess
+	}
+	return state.Mask(), nil
 }
 
 func (t *Table) Ignored(pid uint64, n Number) bool {

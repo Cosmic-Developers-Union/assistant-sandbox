@@ -204,7 +204,7 @@ Python 和 Node.js 的验收必须执行客体运行时，不能通过调用宿�
 依赖：H01 至 H03、G07。
 
 - [x] J01 实现每进程/线程信号掩码与待处理集合。验收：屏蔽、解除屏蔽与定向发送不会丢失应保留的信号。 证据:vm/signal/signal.go 每进程掩码与待处理集合,signal_test.go 合并/顺序/屏蔽/忽略/恢复/并发。测试:`go test ./vm/signal/`。CI:Test 工作流。
-- [ ] J02 接入 rt_sigaction 和 rt_sigprocmask。验收：默认、忽略和自定义处理器可由真实 ELF 设置。
+- [x] J02 接入 rt_sigaction 和 rt_sigprocmask。验收：默认、忽略和自定义处理器可由真实 ELF 设置。 证据:vm/signal/signal.go 新增 ActionConfig(SigDefault/SigIgnore/客户态地址)与 State/Table 的 SetAction/Action(KILL/STOP EINVAL、exec 复位全部登记)、ApplyMask/Mask(SIG_BLOCK/UNBLOCK/SETMASK 批量位图、越界位与未知 how EINVAL);kernel.go Signal 投递前查询登记处置,SIG_IGN 丢弃;vm/proc/context.go SignalDispositionControl 端口 + procControl 实现(self 作用域);abi/linux/common/syscalls.go rtSigaction(asm-generic struct sigaction 32 字节:handler/mask/flags/restorer 逐字段,sigsetsize≠8 EINVAL,act=NULL 仅查询,oldact 回写)与 rtSigprocmask(how 校验、set=NULL 查询、oldset 回写);executor/elf/program.go processSignals 适配;riscv64 登记号 134/135;signal_test.go TestActionRegistrationLifecycle、TestApplyMaskBulkSemantics;syscalls_test.go TestRtSigactionRegistersAndWritesBackOld、TestRtSigprocmaskBlockUnblockAndSetmask;program_test.go TestRealELFRegistersSignalDisposition(真实 RISC-V ELF 经 ecall 完整栈登记 handler 0xCAFE/SA_RESTORER/屏蔽 USR2)。测试:`make docker-test TEST_ARGS="./vm/... ./abi/... ./executor/..."`。CI:Test 工作流。备注:自定义处理器的执行(取帧、跳转、返回)随 J03/J04 信号帧落地;当前自定义处理器登记生效但投递仍走默认终止路径。
 - [ ] J03 实现目标 ABI 的用户信号帧。验收：处理器获取正确参数，保存整数、浮点和掩码状态。
 - [ ] J04 实现 rt_sigreturn 与备用信号栈。验收：处理后继续原指令流，栈与寄存器完整恢复。
 - [ ] J05 接入 kill/tgkill 与进程组发送。验收：目标、权限、不存在 ID 和组播行为与 Linux 一致。

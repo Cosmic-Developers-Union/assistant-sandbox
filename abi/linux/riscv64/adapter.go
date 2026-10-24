@@ -90,6 +90,8 @@ const (
 	numberGetCPU           = 168
 	numberWaitid           = 95
 	numberDup              = 23
+	numberRtSigaction      = 134
+	numberRtSigprocmask    = 135
 	numberSocket           = 198
 	numberBind             = 200
 	numberListen           = 201
@@ -380,6 +382,10 @@ func syscallOf(number uint64) common.Syscall {
 		return common.SysWaitid
 	case numberDup:
 		return common.SysDup
+	case numberRtSigaction:
+		return common.SysRtSigaction
+	case numberRtSigprocmask:
+		return common.SysRtSigprocmask
 	case numberSocket:
 		return common.SysSocket
 	case numberBind:

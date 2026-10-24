@@ -67,6 +67,14 @@ type WaitControl interface {
 	HasChildren() bool
 }
 
+// SignalDispositionControl 是 rt_sigaction/rt_sigprocmask 的登记端口。
+type SignalDispositionControl interface {
+	SetSignalAction(signal.Number, signal.ActionConfig) error
+	SignalAction(signal.Number) (signal.ActionConfig, error)
+	SetSignalMask(signal.MaskHow, uint64) (uint64, error)
+	SignalMask() (uint64, error)
+}
+
 type UsageControl interface {
 	Usage(PID) (Usage, error)
 }
