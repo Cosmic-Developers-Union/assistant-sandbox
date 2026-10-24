@@ -611,3 +611,125 @@ func TestDupAndFcntlFlagsAgainstRealFileSystem(t *testing.T) {
 		t.Fatalf("原描述符失效: %v", err)
 	}
 }
+
+// TestDirectoryOperationsAgainstRealFileSystem 验证 I10:mkdirat/
+// unlinkat/renameat 在真实 memfs 上的目录、文件、覆盖与跨挂载
+// 失败语义(Linux errno 矩阵)。
+func TestDirectoryOperationsAgainstRealFileSystem(t *testing.T) {
+	ctx := context.Background()
+	system, err := memfs.New(&clock.Virtual{}, memfs.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const pid = 41
+	table := fd.New()
+	table.Attach(pid, fd.Streams{})
+	files := ProcessFiles{System: system, Store: table, PID: pid, Dir: "/"}
+	syscalls := Syscalls{Memory: newFakeMemory(), Files: files}
+
+	writePath := func(address uint64, path string) {
+		t.Helper()
+		if err := syscalls.Memory.Write(ctx, address, append([]byte(path), 0)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// mkdirat 成功与 EEXIST(目录与普通文件同名冲突)。
+	writePath(0x1000, "/dir")
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysMkdirat, Args: [6]uint64{atCurrentWorkingDirectory, 0x1000, 0o755}}); reply.Errno != "" {
+		t.Fatalf("mkdirat: %+v", reply)
+	}
+	writePath(0x1010, "/dir")
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysMkdirat, Args: [6]uint64{atCurrentWorkingDirectory, 0x1010, 0o755}}); reply.Errno != errno.Exist {
+		t.Fatalf("重复 mkdirat: %+v want EEXIST", reply)
+	}
+	writePath(0x1000, "/note")
+	if _, err := files.Open(ctx, OpenRequest{Path: "/note", Flags: OpenFlags{Mode: OpenReadWrite, Create: true}, Perm: 0o644}); err != nil {
+		t.Fatal(err)
+	}
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysMkdirat, Args: [6]uint64{atCurrentWorkingDirectory, 0x1010, 0o755}}); reply.Errno != errno.Exist {
+		t.Fatalf("mkdirat 覆盖普通文件: %+v want EEXIST", reply)
+	}
+	// 缺失父目录 ENOENT。
+	writePath(0x1000, "/missing/child")
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysMkdirat, Args: [6]uint64{atCurrentWorkingDirectory, 0x1000, 0o755}}); reply.Errno != errno.NotFound {
+		t.Fatalf("缺失父目录: %+v want ENOENT", reply)
+	}
+
+	// unlinkat:未知 flags EINVAL;非空目录 ENOTEMPTY;空目录成功。
+	writePath(0x1020, "/dir")
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysUnlinkat, Args: [6]uint64{atCurrentWorkingDirectory, 0x1020, 1 << 20}}); reply.Errno != errno.Invalid {
+		t.Fatalf("未知 flags: %+v want EINVAL", reply)
+	}
+	writePath(0x1000, "/dir/child")
+	if _, err := files.Open(ctx, OpenRequest{Path: "/dir/child", Flags: OpenFlags{Mode: OpenReadWrite, Create: true}, Perm: 0o644}); err != nil {
+		t.Fatal(err)
+	}
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysUnlinkat, Args: [6]uint64{atCurrentWorkingDirectory, 0x1020, atRemovedir}}); reply.Errno != errno.NotEmpty {
+		t.Fatalf("非空目录: %+v want ENOTEMPTY", reply)
+	}
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysUnlinkat, Args: [6]uint64{atCurrentWorkingDirectory, 0x1000, 0}}); reply.Errno != "" {
+		t.Fatalf("unlink 文件: %+v", reply)
+	}
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysUnlinkat, Args: [6]uint64{atCurrentWorkingDirectory, 0x1020, atRemovedir}}); reply.Errno != "" {
+		t.Fatalf("目录内文件已删后删除目录: %+v want 成功", reply)
+	}
+
+	// renameat 覆盖矩阵:file→file 原子替换、file→dir EISDIR、
+	// dir→file ENOTDIR、缺失源 ENOENT、目录替换空目录成功。
+	writePath(0x1000, "/note")
+	if _, err := files.Open(ctx, OpenRequest{Path: "/note", Flags: OpenFlags{Mode: OpenReadWrite, Create: true}, Perm: 0o644}); err != nil {
+		t.Fatal(err)
+	}
+	writePath(0x1010, "/note2")
+	if _, err := files.Open(ctx, OpenRequest{Path: "/note2", Flags: OpenFlags{Mode: OpenReadWrite, Create: true}, Perm: 0o644}); err != nil {
+		t.Fatal(err)
+	}
+	writePath(0x1020, "/note3")
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysRenameat, Args: [6]uint64{atCurrentWorkingDirectory, 0x1000, atCurrentWorkingDirectory, 0x1020}}); reply.Errno != "" {
+		t.Fatalf("file→file 覆盖: %+v", reply)
+	}
+	if _, err := files.Stat(ctx, "/note3"); err != nil {
+		t.Fatalf("覆盖后目标缺失: %v", err)
+	}
+	if _, err := files.Stat(ctx, "/note"); !errors.Is(err, errno.NotFound) {
+		t.Fatalf("覆盖后源应消失: %v", err)
+	}
+	writePath(0x1000, "/note4")
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysMkdirat, Args: [6]uint64{atCurrentWorkingDirectory, 0x1000, 0o755}}); reply.Errno != "" {
+		t.Fatalf("mkdirat /note4: %+v", reply)
+	}
+	writePath(0x1010, "/note5")
+	if _, err := files.Open(ctx, OpenRequest{Path: "/note5", Flags: OpenFlags{Mode: OpenReadWrite, Create: true}, Perm: 0o644}); err != nil {
+		t.Fatal(err)
+	}
+	writePath(0x1020, "/note4")
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysRenameat, Args: [6]uint64{atCurrentWorkingDirectory, 0x1010, atCurrentWorkingDirectory, 0x1020}}); reply.Errno != errno.IsDirectory {
+		t.Fatalf("file→dir: %+v want EISDIR", reply)
+	}
+	writePath(0x1010, "/note5")
+	writePath(0x1020, "/note4")
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysRenameat, Args: [6]uint64{atCurrentWorkingDirectory, 0x1020, atCurrentWorkingDirectory, 0x1010}}); reply.Errno != errno.NotDirectory {
+		t.Fatalf("dir→file: %+v want ENOTDIR", reply)
+	}
+	writePath(0x1000, "/gone")
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysRenameat, Args: [6]uint64{atCurrentWorkingDirectory, 0x1000, atCurrentWorkingDirectory, 0x1010}}); reply.Errno != errno.NotFound {
+		t.Fatalf("缺失源: %+v want ENOENT", reply)
+	}
+	// renameat2:flags=0 等价 renameat,RENAME_NOREPLACE 明确 EINVAL。
+	writePath(0x1010, "/note5")
+	if _, err := files.Open(ctx, OpenRequest{Path: "/note5", Flags: OpenFlags{Mode: OpenReadWrite, Create: true}, Perm: 0o644}); err != nil {
+		t.Fatal(err)
+	}
+	writePath(0x1020, "/note2")
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysRenameat2, Args: [6]uint64{atCurrentWorkingDirectory, 0x1010, atCurrentWorkingDirectory, 0x1020, 0}}); reply.Errno != "" {
+		t.Fatalf("renameat2 flags=0: %+v", reply)
+	}
+	writePath(0x1010, "/note5")
+	if _, err := files.Open(ctx, OpenRequest{Path: "/note5", Flags: OpenFlags{Mode: OpenReadWrite, Create: true}, Perm: 0o644}); err != nil {
+		t.Fatal(err)
+	}
+	writePath(0x1020, "/note2")
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysRenameat2, Args: [6]uint64{atCurrentWorkingDirectory, 0x1010, atCurrentWorkingDirectory, 0x1020, 1}}); reply.Errno != errno.Invalid {
+		t.Fatalf("RENAME_NOREPLACE: %+v want EINVAL", reply)
+	}
+}

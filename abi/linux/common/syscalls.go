@@ -350,8 +350,10 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 		return s.symlinkat(ctx, call)
 	case SysLinkat:
 		return s.linkat(ctx, call)
-	case SysRenameat, SysRenameat2:
+	case SysRenameat:
 		return s.renameat(ctx, call)
+	case SysRenameat2:
+		return s.renameat2(ctx, call)
 	case SysFtruncate:
 		return s.ftruncate(ctx, call)
 	case SysUtimensat:
@@ -1584,6 +1586,10 @@ func (s Syscalls) unlinkat(ctx context.Context, call Call) Reply {
 		return Reply{Errno: code}
 	}
 	flags := call.Args[2]
+	// unlinkat 只接受 AT_REMOVEDIR;未知 flags 位报 EINVAL(Linux 语义)。
+	if flags&^uint64(atRemovedir) != 0 {
+		return Reply{Errno: errno.Invalid}
+	}
 	info, statErr := s.Files.Stat(ctx, path)
 	if statErr == nil && info != nil {
 		if flags&atRemovedir != 0 {
@@ -1661,6 +1667,16 @@ func (s Syscalls) renameat(ctx context.Context, call Call) Reply {
 		return Reply{Errno: errnoOf(err)}
 	}
 	return Reply{}
+}
+
+// renameat2 的 flags 扩展(RENAME_NOREPLACE/EXCHANGE/WHITEOUT)不在
+// 首个兼容配置内:非零 flags 明确 EINVAL,不伪装成功;flags=0 等价
+// renameat。
+func (s Syscalls) renameat2(ctx context.Context, call Call) Reply {
+	if call.Args[4] != 0 {
+		return Reply{Errno: errno.Invalid}
+	}
+	return s.renameat(ctx, call)
 }
 
 func (s Syscalls) ftruncate(ctx context.Context, call Call) Reply {

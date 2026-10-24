@@ -874,7 +874,8 @@ func TestRenameAndLinkErrors(t *testing.T) {
 		t.Fatalf("err=%v", err)
 	}
 
-	if err := f.Rename(ctx, "/d", "/f"); !errors.Is(err, errno.IsDirectory) {
+	// 目录覆盖非目录:Linux rename(2) 报 ENOTDIR。
+	if err := f.Rename(ctx, "/d", "/f"); !errors.Is(err, errno.NotDirectory) {
 		t.Fatalf("err=%v", err)
 	}
 

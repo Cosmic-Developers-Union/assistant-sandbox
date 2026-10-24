@@ -518,7 +518,8 @@ func (f *FS) Rename(ctx context.Context, oldPath, newPath string) error {
 			}
 			dstParent.nlink--
 		case src.kind == kindDir:
-			return errno.IsDirectory
+			// 目录覆盖非目录:Linux rename(2) 报 ENOTDIR。
+			return errno.NotDirectory
 		case existing.kind == kindDir:
 			return errno.IsDirectory
 		default:
