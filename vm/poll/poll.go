@@ -4,7 +4,6 @@ import (
 	"context"
 	"sync/atomic"
 
-	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/clock"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/wait"
 )
@@ -65,11 +64,17 @@ func Immediate(entries []Entry) []Result {
 	return results
 }
 
+// Sleeper 是超时等待所需的最小能力:按纳秒等待,可被上下文取消。
+type Sleeper interface {
+	Sleep(ctx context.Context, nanoseconds uint64) error
+}
+
 func Wait(ctx context.Context, entries []Entry) ([]Result, error) {
 	return WaitFor(ctx, nil, entries, 0)
 }
 
-func WaitFor(ctx context.Context, clk clock.Source, entries []Entry, timeoutNanos uint64) ([]Result, error) {
+// WaitFor 等待条目就绪;timeoutNanos 为 0 表示无限等待。
+func WaitFor(ctx context.Context, clk Sleeper, entries []Entry, timeoutNanos uint64) ([]Result, error) {
 	if len(entries) == 0 {
 		return nil, nil
 	}

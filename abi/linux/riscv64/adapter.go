@@ -77,6 +77,8 @@ const (
 	numberFcntl            = 25
 	numberPipe             = 59
 	numberPipe2            = 60
+	numberPoll             = 73
+	numberPpoll            = 293
 	numberDup3             = 24
 	numberGetdents64       = 61
 	numberNewfstatat       = 79
@@ -135,7 +137,6 @@ const (
 	numberEpollCreate1     = 20
 	numberEpollCtl         = 21
 	numberEpollPwait       = 22
-	numberPpoll            = 73
 	numberPselect6         = 72
 	numberEventfd2         = 19
 	numberTimerfdCreate    = 85
@@ -381,6 +382,10 @@ func syscallOf(number uint64) common.Syscall {
 		return common.SysPipe
 	case numberPipe2:
 		return common.SysPipe2
+	case numberPoll:
+		return common.SysPoll
+	case numberPpoll:
+		return common.SysPpoll
 	case numberDup3:
 		return common.SysDup3
 	case numberGetdents64:
@@ -497,8 +502,6 @@ func syscallOf(number uint64) common.Syscall {
 		return common.SysEpollCtl
 	case numberEpollPwait:
 		return common.SysEpollPwait
-	case numberPpoll:
-		return common.SysPpoll
 	case numberPselect6:
 		return common.SysPselect6
 	case numberEventfd2:

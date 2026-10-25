@@ -585,7 +585,7 @@ func TestRegistryMatchesAdapterMapping(t *testing.T) {
 		"faccessat2": true, "fadvise64": true, "fallocate": true, "inotify_add_watch": true,
 		"inotify_init1": true, "inotify_rm_watch": true, "kexec_load": true, "memfd_create": true,
 		"mount": true, "openat2": true, "perf_event_open": true, "pidfd_getfd": true,
-		"pidfd_open": true, "pivot_root": true, "ppoll": true, "pselect6": true,
+		"pidfd_open": true, "pivot_root": true, "pselect6": true,
 		"ptrace": true, "reboot": true, "signalfd4": true, "sync": true,
 		"syslog": true, "timerfd_create": true, "timerfd_gettime": true, "timerfd_settime": true,
 		"umount2": true, "userfaultfd": true,

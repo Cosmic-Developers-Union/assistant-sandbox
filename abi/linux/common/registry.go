@@ -69,6 +69,8 @@ var handled = map[Syscall]bool{
 	SysOpenAt:           true,
 	SysPipe:             true,
 	SysPipe2:            true,
+	SysPoll:             true,
+	SysPpoll:            true,
 	SysPrlimit64:        true,
 	SysRead:             true,
 	SysReadlinkat:       true,

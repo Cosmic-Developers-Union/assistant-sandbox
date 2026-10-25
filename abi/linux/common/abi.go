@@ -126,6 +126,8 @@ const (
 	SysPipe
 	SysPipe2
 
+	SysPoll
+
 	SysDup3
 
 	SysGetdents64
@@ -353,6 +355,10 @@ func (s Syscall) String() string {
 		return "pipe"
 	case SysPipe2:
 		return "pipe2"
+	case SysPoll:
+		return "poll"
+	case SysPpoll:
+		return "ppoll"
 	case SysDup3:
 		return "dup3"
 	case SysGetdents64:
@@ -431,8 +437,6 @@ func (s Syscall) String() string {
 		return "epoll_ctl"
 	case SysEpollPwait:
 		return "epoll_pwait"
-	case SysPpoll:
-		return "ppoll"
 	case SysPselect6:
 		return "pselect6"
 	case SysEventfd2:
