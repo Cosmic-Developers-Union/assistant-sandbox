@@ -89,7 +89,7 @@ Python 和 Node.js 的验收必须执行客体运行时，不能通过调用宿�
 
 依赖：A02、A03、A08、A09。按选定 ISA 实施；以下 RISC-V 项目是当前路线的候选，不强制迁就现有实现。
 
-- [ ] D01 固定 CPU 架构配置与状态格式。验收：声明字长、端序、扩展集、寄存器和异常模型，客体与加载器检查一致。
+- [x] D01 固定 CPU 架构配置与状态格式。验收：声明字长、端序、扩展集、寄存器和异常模型，客体与加载器检查一致。 证据：docs/architecture/isa.md（机器模型:RV64GC=RV64I+M+A+C+F+D+用户态 Zicsr 子集与 fence、小端、47 位地址空间;状态格式:PC+32 整数+32 浮点+FCSR+LR/SC 保留+retired 计数;异常模型:四种 TrapKind 及客体可见结果,ecall 非异常;逐项链接实现位置）+ executor/cpu/riscv64/isa_test.go TestMachineStateFormat（32 整数寄存器读写往返、x0 恒零、越界编号 EINVAL、状态数组维度、Trap 携带地址与描述）+ 装载器一致性由 parseHeader 既有链覆盖（ELF64/小端/EM_RISCV/浮点 ABI 三种/RVC,TestLoadRejections）。测试:`go test ./executor/cpu/riscv64/ -run TestMachineStateFormat`、`go test ./loader/elf/`。CI:Test 工作流 integration/ISA 门禁。
 - [ ] D02 审计整数基础指令。验收：逐条差分覆盖立即数、符号扩展、溢出、分支和寄存器零值。
 - [x] D03 审计整数乘除指令。验收：除零、有符号最小值、余数和高位乘积与参考一致。 证据:executor/cpu/riscv64/core.go 乘除实现、core_test.go TestRV64MultiplicationAndDivision(除零/有符号最小值/余数/高位乘积)。测试:`go test ./executor/cpu/riscv64/`。CI:Test 工作流。备注:向量为规范用例,A09 差分执行器落地前以规范断言为准。
 - [x] D04 实现目标所需压缩指令。验收：混合长度指令的取指、跳转和异常地址正确。 证据:executor/cpu/riscv64/compressed.go(expandCompressed 覆盖 RV64C 三象限全部编码,HINT 按基指令展开,F 依赖与保留编码区分报告)、core.go 两段取指(2/4 字节)、loader/elf 接受 EF_RISCV_RVC;compressed_test.go TestExpandCompressedAgainstCanonicalEncoding(44 组向量)、TestMixedLengthFetchAndBranch、TestCompressedLoadStoreAndStackRoundTrip、TestCompressedJumpRegistersExecute、core_test.go TestReservedCompressedEncodingsTrap。测试:`make docker-test TEST_ARGS=./executor/cpu/riscv64/`。CI:Test 工作流。备注:C.FLD/FSD/FLDSP/FSDSP 报未实现,随 D07/D08 浮点落地复核。
