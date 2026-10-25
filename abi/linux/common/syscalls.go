@@ -225,9 +225,6 @@ type Syscalls struct {
 
 	Signals SignalDispositions
 
-	// Core 供 rt_sigreturn 恢复完整机器状态;未装配时 rt_sigreturn 报 ENOSYS。
-	Core cpu.Port
-
 	Spawner Spawner
 
 	Kills SignalSender
@@ -235,6 +232,13 @@ type Syscalls struct {
 	// Sessions 是 setsid/setpgid/getpgid/getsid 的会话端口(H11);
 	// 未装配时这四个调用明确 ENOTSUP。
 	Sessions SessionControl
+
+	// Futexes 是 futex WAIT/WAKE 的同步端口(K05);未装配时
+	// futex 报 ENOSYS。
+	Futexes Futexes
+
+	// Core 供 rt_sigreturn 恢复完整机器状态;未装配时 rt_sigreturn 报 ENOSYS。
+	Core cpu.Port
 
 	// Tracer 是受限的系统调用追踪端口(G08);未装配时不产生轨迹。
 	Tracer SyscallTracer
@@ -481,6 +485,8 @@ func (s Syscalls) dispatch(ctx context.Context, call Call) Reply {
 		return s.getdents64(ctx, call)
 	case SysPselect6:
 		return s.pselect6(ctx, call)
+	case SysFutex:
+		return s.futex(ctx, call)
 	case SysEpollCreate1:
 		return s.epollCreate1(ctx, call)
 	case SysEpollCtl:

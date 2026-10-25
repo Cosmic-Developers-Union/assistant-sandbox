@@ -17,6 +17,7 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/executable"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fd"
 	vmfs "github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fs"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/futex"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/ipc"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/job"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/memory"
@@ -95,6 +96,9 @@ type Kernel struct {
 	// 时间片与系统调用边界让出,驻停与退出归还。
 	queue *runQueue
 
+	// futexes 是 futex 的等待表(K05):按 {所有者,客体地址} 键控。
+	futexes *futex.Table
+
 	// trace 收集受限的系统调用轨迹(G08):有界,不记录缓冲区内容。
 	trace *trace.Recorder
 }
@@ -170,6 +174,7 @@ func New(services Services, maxProcesses int) (*Kernel, error) {
 	k.signals = signal.New()
 	k.instances = map[proc.PID]executable.Instance{}
 	k.queue = newRunQueue()
+	k.futexes = futex.New()
 	k.init = root.ID
 	k.signals.Spawn(uint64(root.ID))
 	if fdt, ok := services.FD.(*fd.Table); ok {
@@ -1359,6 +1364,8 @@ func (k *Kernel) Close(ctx context.Context) error {
 	k.mu.Unlock()
 	// 关闭可运行队列:排队等待执行权的进程以错误放行(H02)。
 	k.queue.close()
+	// 关闭 futex 等待表:阻塞的 WAIT 以 ECANCELED 放行(K05)。
+	k.futexes.Close()
 	for _, instance := range instances {
 		_ = instance.Interrupt(signal.TERM)
 	}
@@ -1778,6 +1785,11 @@ func (c procControl) RecordSyscall(pid, tid uint64, number uint64, result int64,
 	c.k.trace.Record(trace.Entry{
 		PID: pid, TID: tid, Number: number, Result: result, Duration: duration,
 	})
+}
+
+// FutexTable 暴露内核 futex 等待表(K05)。
+func (c procControl) FutexTable() *futex.Table {
+	return c.k.futexes
 }
 
 func (c procControl) KillSignal(pid int64, n signal.Number) error {

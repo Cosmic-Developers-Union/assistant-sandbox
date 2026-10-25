@@ -184,6 +184,8 @@ const (
 
 	SysPselect6
 
+	SysFutex
+
 	SysEventfd2
 
 	SysTimerfdCreate
@@ -442,6 +444,8 @@ func (s Syscall) String() string {
 		return "epoll_pwait2"
 	case SysPselect6:
 		return "pselect6"
+	case SysFutex:
+		return "futex"
 	case SysEventfd2:
 		return "eventfd2"
 	case SysTimerfdCreate:

@@ -6,6 +6,7 @@ import (
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fd"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/futex"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/memory"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/signal"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/trace"
@@ -111,6 +112,12 @@ type SignalKillControl interface {
 	// KillSignal 按 kill(2) 的 pid 语义发送:pid>0 目标进程,
 	// pid=0 调用方进程组,pid=-1 除调用方外的全部进程,pid<-1 进程组 -pid。
 	KillSignal(pid int64, number signal.Number) error
+}
+
+// FutexControl 是 futex 系统调用(K05)的同步端口:暴露内核的
+// futex 等待表;表按 {所有者,客体地址} 键控。
+type FutexControl interface {
+	FutexTable() *futex.Table
 }
 
 // SessionControl 是 setsid/setpgid/getpgid/getsid 的会话与进程组端口

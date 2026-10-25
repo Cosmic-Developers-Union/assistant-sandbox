@@ -397,6 +397,10 @@ func syscalls(ctx context.Context, process proc.Proc, space *memory.Table, plan 
 	if sessions, ok := process.Control.(proc.SessionControl); ok {
 		handler.Sessions = processSessions{control: sessions}
 	}
+	if futexes, ok := process.Control.(proc.FutexControl); ok {
+		// futex WAIT/WAKE 的同步表(K05):按 {进程,客体地址} 键控。
+		handler.Futexes = futexes.FutexTable()
+	}
 	if recorder, ok := process.Control.(proc.TraceRecorder); ok {
 		// 受限系统调用追踪(G08):只记录标识、调用编号、结果与耗时。
 		handler.Tracer = processTrace{control: recorder}
