@@ -1129,7 +1129,7 @@ func TestRealELFRegistersSignalDisposition(t *testing.T) {
 		0x00800693, // li a3, 8 (sigsetsize)
 		0x08600893, // li a7, 134 (rt_sigaction)
 		0x00000073, // ecall
-		0x00100513, // li a0, 1 (SIG_BLOCK)
+		0x00000513, // li a0, 0 (SIG_BLOCK:asm-generic 为 0)
 		0x000125B7, // lui a1, 0x12 → set
 		0x00000613, // li a2, 0
 		0x00800693, // li a3, 8

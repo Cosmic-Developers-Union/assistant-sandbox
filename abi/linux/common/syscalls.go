@@ -2578,9 +2578,10 @@ const (
 	sigactionRestorer = 24
 	sigactionSize     = 32
 
-	sigBlock   = 1
-	sigUnblock = 2
-	sigSetMask = 3
+	// asm-generic 的 SIG_BLOCK=0、SIG_UNBLOCK=1、SIG_SETMASK=2。
+	sigBlock   = 0
+	sigUnblock = 1
+	sigSetMask = 2
 
 	// 客体 sigset 为 8 字节(64 位)。
 	sigsetSize = 8

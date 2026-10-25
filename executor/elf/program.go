@@ -637,11 +637,11 @@ func (p processSignals) Action(sig uint64) (common.SignalAction, error) {
 
 func (p processSignals) ApplyMask(how, set uint64) (uint64, error) {
 	switch how {
-	case 1:
+	case 0:
 		return p.control.SetSignalMask(signal.MaskBlock, set)
-	case 2:
+	case 1:
 		return p.control.SetSignalMask(signal.MaskUnblock, set)
-	case 3:
+	case 2:
 		return p.control.SetSignalMask(signal.MaskSetMask, set)
 	default:
 		return 0, errno.Invalid

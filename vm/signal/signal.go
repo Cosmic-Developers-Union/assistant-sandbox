@@ -131,7 +131,10 @@ const (
 type MaskHow uint8
 
 const (
-	MaskBlock MaskHow = iota + 1
+	// MaskBlock/MaskUnblock/MaskSetMask 取 asm-generic 的
+	// SIG_BLOCK=0、SIG_UNBLOCK=1、SIG_SETMASK=2:客体的 how 参数
+	// 直接使用这些数值(此前偏移 1,真实程序按 0 传 SIG_BLOCK 会被拒)。
+	MaskBlock MaskHow = iota
 	MaskUnblock
 	MaskSetMask
 )

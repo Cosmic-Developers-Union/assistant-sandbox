@@ -2673,11 +2673,11 @@ func (f *fakeSignals) ApplyMask(how, set uint64) (uint64, error) {
 	}
 	old := f.mask
 	switch how {
-	case 1:
+	case 0:
 		f.mask |= set
-	case 2:
+	case 1:
 		f.mask &^= set
-	case 3:
+	case 2:
 		f.mask = set
 	default:
 		return 0, errno.Invalid
@@ -3246,5 +3246,49 @@ func TestClockNanosleepRelativeIgnoresWallClockJump(t *testing.T) {
 	}
 	if source.monotonic != 2_000_000 {
 		t.Fatalf("单调推进=%d want 2000000(相对期限以单调时钟计量)", source.monotonic)
+	}
+}
+
+// TestSignalMaskHowMatchesAsmGeneric 锁定 J02:rt_sigprocmask 的 how
+// 参数取值与 asm-generic 一致——SIG_BLOCK=0、SIG_UNBLOCK=1、
+// SIG_SETMASK=2。真实程序按 0 传 SIG_BLOCK,取值偏移会让屏蔽语义
+// 整体错位。
+func TestSignalMaskHowMatchesAsmGeneric(t *testing.T) {
+	if sigBlock != 0 || sigUnblock != 1 || sigSetMask != 2 {
+		t.Fatalf("how 取值=%d/%d/%d want 0/1/2", sigBlock, sigUnblock, sigSetMask)
+	}
+	ctx := context.Background()
+	space := newFakeMemory()
+	signals := &fakeSignals{}
+	handler := Syscalls{Memory: space, Signals: signals}
+	set := make([]byte, 8)
+	binary.LittleEndian.PutUint64(set, 1<<(10-1))
+	if err := space.Write(ctx, 0x1000, set); err != nil {
+		t.Fatal(err)
+	}
+	// SIG_BLOCK(0) 加屏蔽。
+	if reply := handler.Handle(ctx, Call{Syscall: SysRtSigprocmask, Args: [6]uint64{sigBlock, 0x1000, 0, sigsetSize}}); reply.Errno != "" {
+		t.Fatalf("SIG_BLOCK: %+v", reply)
+	}
+	if signals.mask != 1<<(10-1) {
+		t.Fatalf("屏蔽集=%x want %x", signals.mask, 1<<(10-1))
+	}
+	// SIG_UNBLOCK(1) 解除屏蔽。
+	if reply := handler.Handle(ctx, Call{Syscall: SysRtSigprocmask, Args: [6]uint64{sigUnblock, 0x1000, 0, sigsetSize}}); reply.Errno != "" {
+		t.Fatalf("SIG_UNBLOCK: %+v", reply)
+	}
+	if signals.mask != 0 {
+		t.Fatalf("屏蔽集=%x want 0", signals.mask)
+	}
+	// SIG_SETMASK(2) 整体替换。
+	if reply := handler.Handle(ctx, Call{Syscall: SysRtSigprocmask, Args: [6]uint64{sigSetMask, 0x1000, 0, sigsetSize}}); reply.Errno != "" {
+		t.Fatalf("SIG_SETMASK: %+v", reply)
+	}
+	if signals.mask != 1<<(10-1) {
+		t.Fatalf("屏蔽集=%x want %x", signals.mask, 1<<(10-1))
+	}
+	// 非法 how 报 EINVAL。
+	if reply := handler.Handle(ctx, Call{Syscall: SysRtSigprocmask, Args: [6]uint64{3, 0x1000, 0, sigsetSize}}); reply.Errno != errno.Invalid {
+		t.Fatalf("非法 how: %+v want EINVAL", reply)
 	}
 }
