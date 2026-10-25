@@ -1598,3 +1598,35 @@ func TestKernelWaitDeadlineWakesWithoutSideEffects(t *testing.T) {
 		}
 	}
 }
+
+// TestKernelWaitOnReapedTargetEndsWithECHILD 验证等待一个已被回收的
+// 目标进程不会无限等待:父进程以 SIG_IGN 忽略 SIGCHLD 时子进程被
+// 自动回收,等待方以 ECHILD 结束。
+func TestKernelWaitOnReapedTargetEndsWithECHILD(t *testing.T) {
+	reg, err := registryFor("long")
+	if err != nil {
+		t.Fatal(err)
+	}
+	kernel, err := New(Services{Set: capability.Set{FD: fd.New()}, Programs: reg}, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := kernel.Begin(0, "long", nil, "/", nil, fd.Streams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 父进程忽略 SIGCHLD:子进程退出后被自动回收。
+	if err := kernel.signals.SetIgnored(uint64(kernel.Init()), signal.CHLD, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := kernel.table.Exit(child.ID, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	kernel.childStateChanged(child.ID, true)
+
+	waitCtx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	if _, err := kernel.Wait(waitCtx, kernel.Init(), child.ID); !errors.Is(err, errno.NoChild) {
+		t.Fatalf("等待已回收的目标 err=%v want ECHILD", err)
+	}
+}

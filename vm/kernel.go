@@ -609,7 +609,13 @@ func (k *Kernel) Wait(ctx context.Context, parent, target proc.PID) (proc.Proc, 
 			}
 			if target != 0 {
 				p, err := k.table.Get(target)
-				return err == nil && p.Parent == parent && p.State == proc.Zombie, wait.Data, nil
+				if err != nil {
+					// 目标进程已被回收(例如父进程以 SIG_IGN 忽略
+					// SIGCHLD 时自动回收):等待以 ECHILD 结束,
+					// 不再无限等待一个已消失的进程。
+					return true, wait.Data, errno.NoChild
+				}
+				return p.Parent == parent && p.State == proc.Zombie, wait.Data, nil
 			}
 			_, ok := k.table.WaitAny(parent)
 			return ok, wait.Data, nil
