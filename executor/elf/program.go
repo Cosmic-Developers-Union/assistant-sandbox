@@ -260,7 +260,8 @@ func loadProgram(ctx context.Context, process proc.Proc, path string, argv, envp
 	}
 	interpContent, err := readImage(ctx, process, plan.InterpreterPath)
 	if err != nil {
-		return nil, err
+		// 携带客体路径:F05 要求缺失/不可读时报告明确加载错误。
+		return nil, errno.Wrap(err, "动态解释器 "+plan.InterpreterPath)
 	}
 	interpPlan, err := loaderelf.Load(interpContent, loaderelf.Options{
 		Argv:     argv,
