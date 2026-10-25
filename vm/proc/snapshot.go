@@ -24,6 +24,8 @@ type tableSnapshot struct {
 type processRecord struct {
 	ID         PID               `json:"id"`
 	Parent     PID               `json:"parent"`
+	TID        PID               `json:"tid,omitempty"`
+	TGID       PID               `json:"tgid,omitempty"`
 	Generation uint64            `json:"generation"`
 	Program    string            `json:"program"`
 	Args       []string          `json:"args,omitempty"`
@@ -58,6 +60,8 @@ func (t *Table) Snapshot(ctx context.Context) ([]byte, error) {
 		snapshot.Entries = append(snapshot.Entries, processRecord{
 			ID:         p.ID,
 			Parent:     p.Parent,
+			TID:        p.TID,
+			TGID:       p.TGID,
 			Generation: p.Generation,
 			Program:    p.Program,
 			Args:       slices.Clone(p.Args),
@@ -142,9 +146,19 @@ func (s tableSnapshot) materialize() (map[PID]Proc, PID, error) {
 		if record.ID > maxID {
 			maxID = record.ID
 		}
+		// 旧快照没有线程标识字段:以进程号补齐,保持单线程模型。
+		tid, tgid := record.TID, record.TGID
+		if tid == 0 {
+			tid = record.ID
+		}
+		if tgid == 0 {
+			tgid = record.ID
+		}
 		entries[record.ID] = Proc{
 			ID:         record.ID,
 			Parent:     record.Parent,
+			TID:        tid,
+			TGID:       tgid,
 			Generation: record.Generation,
 			Program:    record.Program,
 			Args:       slices.Clone(record.Args),

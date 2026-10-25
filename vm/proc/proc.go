@@ -22,6 +22,10 @@ const (
 	// SIGCONT 恢复,SIGKILL 可直接终止(J07)。
 	Stopped
 
+	// Waiting 是阻塞在等待队列中的状态:进程不可被调度,但仍可被
+	// 唤醒、可被信号终止(H01)。Linux 中对应 S 状态。
+	Waiting
+
 	Zombie
 )
 
@@ -33,6 +37,8 @@ func (s State) String() string {
 		return "running"
 	case Stopped:
 		return "stopped"
+	case Waiting:
+		return "waiting"
 	case Zombie:
 		return "zombie"
 	default:
@@ -45,6 +51,11 @@ type Proc struct {
 
 	Resources  capability.Access `json:"-"`
 	ID, Parent PID
+
+	// TID 是线程标识,TGID 是线程组标识:单线程模型下二者都等于
+	// 进程号;线程创建落地后同组线程共享 TGID、各自持有 TID
+	// (K01/K02)。
+	TID, TGID PID
 
 	Generation uint64
 	Program    string
@@ -99,6 +110,8 @@ func (t *Table) Create(parent PID, program string, args []string, dir string, en
 	}
 	p := Proc{
 		ID:         t.next,
+		TID:        t.next,
+		TGID:       t.next,
 		Program:    program,
 		Args:       slices.Clone(args),
 		Dir:        dir,
@@ -211,9 +224,41 @@ func (t *Table) Start(id PID) error {
 	if p.State != Ready {
 		return errno.Busy
 	}
-	p.State = Running
+	return t.Transition(id, Running)
+}
+
+// Transition 把进程状态迁移到目标状态:不合法的迁移报 EBUSY。
+// 合法迁移与 Linux 进程状态一致——就绪→运行;运行→等待/驻停/僵尸;
+// 等待→运行/驻停/僵尸;驻停→运行/僵尸;僵尸是终态,只能被回收移除。
+func (t *Table) Transition(id PID, to State) error {
+	p, ok := t.entries[id]
+	if !ok {
+		return errno.NoProcess
+	}
+	if !canTransit(p.State, to) {
+		return errno.Busy
+	}
+	p.State = to
 	t.entries[id] = p
 	return nil
+}
+
+// canTransit 判断状态迁移是否合法。
+func canTransit(from, to State) bool {
+	switch from {
+	case Ready:
+		return to == Running
+	case Running:
+		return to == Waiting || to == Stopped || to == Zombie
+	case Waiting:
+		return to == Running || to == Stopped || to == Zombie
+	case Stopped:
+		// 驻停进程不占用等待队列:继续后回到运行,不能直接进入等待。
+		return to == Running || to == Zombie
+	case Zombie:
+		return false
+	}
+	return false
 }
 
 func (t *Table) Exit(id PID, code uint8, signal uint8) error {
@@ -221,11 +266,11 @@ func (t *Table) Exit(id PID, code uint8, signal uint8) error {
 	if !ok {
 		return errno.NoProcess
 	}
-	// 驻停进程可被 SIGKILL 直接终止:Stopped → Zombie 合法。
-	if p.State != Running && p.State != Stopped {
+	// 驻停与阻塞进程可被 SIGKILL 直接终止:Stopped/Waiting →
+	// Zombie 合法。
+	if p.State != Running && p.State != Stopped && p.State != Waiting {
 		return errno.Busy
 	}
-	p.State = Zombie
 	p.ExitCode = code
 	p.ExitSignal = signal
 	for childID, child := range t.entries {
@@ -234,22 +279,22 @@ func (t *Table) Exit(id PID, code uint8, signal uint8) error {
 			t.entries[childID] = child
 		}
 	}
+	p.State = Zombie
 	t.entries[id] = p
 	return nil
 }
 
-// Stop 把运行中的进程转入驻停状态;僵尸与已驻停进程报错。
+// Stop 把运行中的进程转入驻停状态;僵尸与已驻停进程报错。阻塞
+// 中的进程同样可以被 SIGSTOP 驻停(Linux:S → T)。
 func (t *Table) Stop(id PID) error {
 	p, ok := t.entries[id]
 	if !ok {
 		return errno.NoProcess
 	}
-	if p.State != Running {
+	if p.State != Running && p.State != Waiting {
 		return errno.Busy
 	}
-	p.State = Stopped
-	t.entries[id] = p
-	return nil
+	return t.Transition(id, Stopped)
 }
 
 // Continue 把驻停进程恢复为运行;非驻停进程按 Linux 语义视为无操作成功。
@@ -259,8 +304,7 @@ func (t *Table) Continue(id PID) error {
 		return errno.NoProcess
 	}
 	if p.State == Stopped {
-		p.State = Running
-		t.entries[id] = p
+		return t.Transition(id, Running)
 	}
 	return nil
 }

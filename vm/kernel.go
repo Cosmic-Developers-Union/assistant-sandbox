@@ -596,6 +596,8 @@ func (k *Kernel) Wait(ctx context.Context, parent, target proc.PID) (proc.Proc, 
 			return proc.Proc{}, errno.Interrupted
 		}
 		k.mu.Unlock()
+		// H01:等待子进程期间进程处于等待状态,唤醒后恢复运行。
+		k.setWaiting(parent)
 		reason, err := k.children.Wait(ctx, func() (bool, wait.Reason, error) {
 			k.mu.Lock()
 			defer k.mu.Unlock()
@@ -620,6 +622,7 @@ func (k *Kernel) Wait(ctx context.Context, parent, target proc.PID) (proc.Proc, 
 			_, ok := k.table.WaitAny(parent)
 			return ok, wait.Data, nil
 		})
+		k.setRunnable(parent)
 		if err != nil {
 			if reason == wait.Shutdown {
 				return proc.Proc{}, errno.Cancelled
@@ -628,6 +631,26 @@ func (k *Kernel) Wait(ctx context.Context, parent, target proc.PID) (proc.Proc, 
 		}
 
 	}
+}
+
+// setWaiting 把进程标记为阻塞等待状态(H01):进程已退出或已驻停时
+// 保持原状态。
+func (k *Kernel) setWaiting(id proc.PID) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	_ = k.table.Transition(id, proc.Waiting)
+}
+
+// setRunnable 把阻塞等待的进程恢复为运行状态(H01):驻停或已退出
+// 的进程保持原状态,不被唤醒路径误恢复。
+func (k *Kernel) setRunnable(id proc.PID) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	p, err := k.table.Get(id)
+	if err != nil || p.State != proc.Waiting {
+		return
+	}
+	_ = k.table.Transition(id, proc.Running)
 }
 
 // WaitChild 按 wait4/waitid 语义等待或探测子进程:
