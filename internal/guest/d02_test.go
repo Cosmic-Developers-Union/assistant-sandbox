@@ -184,6 +184,46 @@ func wrapStaticELF(instructions []uint32) []byte {
 	return image
 }
 
+// runProbeWithExit 执行并返回 stdout 与退出码。
+func runProbeWithExit(t *testing.T, image []byte, args []string, env map[string]string) (string, uint8) {
+	t.Helper()
+	system, err := memfs.New(&clock.Virtual{}, memfs.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := system.Open(context.Background(), "/probe", fs.Create|fs.ReadWrite, 0o755)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write(image); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	const pid = 56
+	table := fd.New()
+	output := &strings.Builder{}
+	table.Attach(pid, fd.Streams{Output: writerFunc(output.Write)})
+	process := proc.Proc{
+		ID: pid, Parent: 1, Program: "/probe",
+		Args: args, Dir: "/", Env: env,
+		Resources: capability.Set{
+			FS: system, FD: table, Clock: &clock.Virtual{},
+			Identity: identity.SingleUser{}, Entropy: sequenceEntropy{},
+		},
+	}
+	program, _, err := elf.Factory{}.New("/probe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, runErr := program.Run(context.Background(), process)
+	if runErr != nil {
+		t.Fatalf("run: %v", runErr)
+	}
+	return output.String(), code
+}
+
 // runProbeOnVM 在 VM 内执行映像并收集 stdout。
 func runProbeOnVM(t *testing.T, image []byte, args []string, env map[string]string) string {
 	t.Helper()

@@ -3,6 +3,7 @@ package elf
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -227,6 +228,11 @@ func (l *loadedProgram) interpreterSegments() []loaderelf.Segment {
 // loadProgram 从客体文件系统装载 path 的映像;PT_INTERP 指向的
 // 动态解释器同样从客体文件系统装载(F05),主计划初始栈的 AT_BASE
 // 记录解释器基址(F06)。路径不可达宿主,缺失报明确加载错误。
+// pieBase 是 ET_DYN 主程序(PIE)的确定性装载基址(F04):与动态
+// 解释器槽位(interpreterBase=0x40000000)错开,映像上限(64MB)加
+// 基址仍低于解释器;同一程序在任何次启动中布局一致,差分可重放。
+const pieBase = uint64(0x20000000)
+
 func loadProgram(ctx context.Context, process proc.Proc, path string, argv, envp []string) (*loadedProgram, error) {
 	content, err := readImage(ctx, process, path)
 	if err != nil {
@@ -237,6 +243,12 @@ func loadProgram(ctx context.Context, process proc.Proc, path string, argv, envp
 		Env:      envp,
 		ExecPath: path,
 		Random:   randomBytesFor(ctx, process),
+		// ET_DYN 主程序按 PIE 基址装载;ET_EXEC 忽略 bias(装载器
+		// 对可执行映像的非零 bias 报 EINVAL,故仅对动态形态传递)。
+		LoadBias: pieBase,
+	}
+	if !isDynamicImage(content) {
+		options.LoadBias = 0
 	}
 	plan, err := loaderelf.Load(content, options)
 	if err != nil {
@@ -1067,4 +1079,12 @@ func (p processKiller) Kill(ctx context.Context, pid int64, number uint64) error
 		return errno.Invalid
 	}
 	return p.control.KillSignal(pid, signal.Number(number))
+}
+
+// isDynamicImage 报告映像头是否为 ET_DYN(e_type=3)。
+func isDynamicImage(content []byte) bool {
+	if len(content) < 18 {
+		return false
+	}
+	return binary.LittleEndian.Uint16(content[16:]) == 3
 }
