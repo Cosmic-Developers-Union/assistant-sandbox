@@ -74,6 +74,7 @@ var handled = map[Syscall]bool{
 	SysEpollCreate1:     true,
 	SysEpollCtl:         true,
 	SysEpollPwait:       true,
+	SysEpollPwait2:      true,
 	SysPrlimit64:        true,
 	SysRead:             true,
 	SysReadlinkat:       true,

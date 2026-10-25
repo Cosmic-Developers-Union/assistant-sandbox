@@ -487,6 +487,8 @@ func (s Syscalls) dispatch(ctx context.Context, call Call) Reply {
 		return s.epollCtl(ctx, call)
 	case SysEpollPwait:
 		return s.epollPwait(ctx, call)
+	case SysEpollPwait2:
+		return s.epollPwait2(ctx, call)
 	case SysPoll, SysPpoll:
 		return s.poll(ctx, call)
 	case SysFstat:

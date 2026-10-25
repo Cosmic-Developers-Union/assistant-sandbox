@@ -431,3 +431,188 @@ func TestEpollPwaitBlocksAndWakes(t *testing.T) {
 		t.Fatal("就绪变化未唤醒无限等待")
 	}
 }
+
+// writeTimespec 在客体内存写一个 struct timespec。
+func writeTimespec(t *testing.T, handler Syscalls, address uint64, seconds int64, nanoseconds int64) {
+	t.Helper()
+	var raw [16]byte
+	binary.LittleEndian.PutUint64(raw[0:], uint64(seconds))
+	binary.LittleEndian.PutUint64(raw[8:], uint64(nanoseconds))
+	if err := handler.Memory.Write(context.Background(), address, raw[:]); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestEpollEdgeTriggeredAndOneShotThroughSyscalls 验证 L08:EPOLLET 经
+// ctl 登记后只在初始边沿与新活动时报告(等待 0ms),非阻塞语义下
+// 重复查询不再报告;EPOLLONESHOT 报告一次后禁用,MOD 重新武装。
+func TestEpollEdgeTriggeredAndOneShotThroughSyscalls(t *testing.T) {
+	ctx := context.Background()
+	table := fd.New()
+	const pid = 95
+	table.Attach(pid, fd.Streams{})
+	reader, writer, err := table.Pipe(pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := Syscalls{
+		Memory:      newFakeMemory(),
+		Descriptors: ProcessDescriptors{Table: table, PID: pid},
+		Clock:       &fakeClock{monotonic: 0},
+		Sleeper:     &fakeSleeper{onSleep: func(ns uint64) {}},
+	}
+	reply := handler.Handle(ctx, Call{Syscall: SysEpollCreate1})
+	if reply.Errno != "" {
+		t.Fatal(reply)
+	}
+	epfd := reply.Value
+
+	// 边缘触发登记:空管道无初始边沿。
+	writeEpollEvent(t, handler, 0x4000, epollIn|epollEt, 0x77)
+	if r := handler.Handle(ctx, Call{Syscall: SysEpollCtl, Args: [6]uint64{epfd, epollCtlAdd, uint64(reader), 0x4000}}); r.Errno != "" {
+		t.Fatal(r)
+	}
+	pollZero := func() uint64 {
+		r := handler.Handle(ctx, Call{Syscall: SysEpollPwait, Args: [6]uint64{epfd, 0x5000, 8, 0, 0}})
+		if r.Errno != "" {
+			t.Fatalf("pwait 0ms: %+v", r)
+		}
+		return r.Value
+	}
+	if got := pollZero(); got != 0 {
+		t.Fatalf("空管道边缘等待=%d want 0", got)
+	}
+	// 写入 → 边沿报告一次;数据未读再查不再报告(水平触发会)。
+	if err := writePipe(t, table, pid, writer, "hi"); err != nil {
+		t.Fatal(err)
+	}
+	if got := pollZero(); got != 1 {
+		t.Fatalf("首次边沿=%d want 1", got)
+	}
+	events := readEpollEvents(t, handler, 0x5000, 1)
+	if events[0].events&epollIn == 0 || events[0].data != 0x77 {
+		t.Fatalf("边沿事件: %+v", events[0])
+	}
+	if got := pollZero(); got != 0 {
+		t.Fatalf("边沿消费后重复报告=%d want 0", got)
+	}
+	// 未排空时的新写入是新边沿。
+	if err := writePipe(t, table, pid, writer, "yo"); err != nil {
+		t.Fatal(err)
+	}
+	if got := pollZero(); got != 1 {
+		t.Fatalf("未排空新活动=%d want 1", got)
+	}
+	// 排空后 MOD 换一次性模式:排空状态无初始报告;新数据报告一次
+	// 后禁用,再写也不报;重新武装后立即可报。
+	handle, err := table.Get(ctx, pid, reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := handle.Read(make([]byte, 4)); err != nil {
+		t.Fatal(err)
+	}
+	writeEpollEvent(t, handler, 0x4010, epollIn|epollOneShot, 0x88)
+	if r := handler.Handle(ctx, Call{Syscall: SysEpollCtl, Args: [6]uint64{epfd, epollCtlMod, uint64(reader), 0x4010}}); r.Errno != "" {
+		t.Fatal(r)
+	}
+	if got := pollZero(); got != 0 {
+		t.Fatalf("排空后重新武装立即报告=%d want 0", got)
+	}
+	if err := writePipe(t, table, pid, writer, "1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := pollZero(); got != 1 {
+		t.Fatalf("一次性首次报告=%d want 1", got)
+	}
+	events = readEpollEvents(t, handler, 0x5000, 1)
+	if events[0].data != 0x88 {
+		t.Fatalf("一次性事件 data=%#x want 0x88", events[0].data)
+	}
+	if got := pollZero(); got != 0 {
+		t.Fatalf("一次性禁用后仍报告=%d want 0", got)
+	}
+	if err := writePipe(t, table, pid, writer, "2"); err != nil {
+		t.Fatal(err)
+	}
+	if got := pollZero(); got != 0 {
+		t.Fatalf("一次性禁用后新数据仍报告=%d want 0", got)
+	}
+	if r := handler.Handle(ctx, Call{Syscall: SysEpollCtl, Args: [6]uint64{epfd, epollCtlMod, uint64(reader), 0x4010}}); r.Errno != "" {
+		t.Fatal(r)
+	}
+	if got := pollZero(); got != 1 {
+		t.Fatalf("重新武装后未报告=%d want 1", got)
+	}
+}
+
+// TestEpollPwait2TimespecAndSigmask 验证 L08:epoll_pwait2 超时为
+// timespec 指针(NULL 无限、零立即、非法值 EINVAL),sigmask 是
+// 直指针且非空时长度必须为 8。
+func TestEpollPwait2TimespecAndSigmask(t *testing.T) {
+	ctx := context.Background()
+	table := fd.New()
+	const pid = 96
+	table.Attach(pid, fd.Streams{})
+	reader, writer, err := table.Pipe(pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := Syscalls{
+		Memory:      newFakeMemory(),
+		Descriptors: ProcessDescriptors{Table: table, PID: pid},
+		Clock:       &fakeClock{monotonic: 0},
+		Sleeper:     &fakeSleeper{onSleep: func(ns uint64) {}},
+	}
+	reply := handler.Handle(ctx, Call{Syscall: SysEpollCreate1})
+	if reply.Errno != "" {
+		t.Fatal(reply)
+	}
+	epfd := reply.Value
+	writeEpollEvent(t, handler, 0x4000, epollIn, 0)
+	if r := handler.Handle(ctx, Call{Syscall: SysEpollCtl, Args: [6]uint64{epfd, epollCtlAdd, uint64(reader), 0x4000}}); r.Errno != "" {
+		t.Fatal(r)
+	}
+
+	// timespec 非法:nsec 越界与负秒 EINVAL。
+	writeTimespec(t, handler, 0x6000, 0, 1_000_000_000)
+	if r := handler.Handle(ctx, Call{Syscall: SysEpollPwait2, Args: [6]uint64{epfd, 0x5000, 8, 0x6000, 0, 0}}); r.Errno != errno.Invalid {
+		t.Fatalf("纳秒越界: %+v want EINVAL", r)
+	}
+	writeTimespec(t, handler, 0x6000, -1, 0)
+	if r := handler.Handle(ctx, Call{Syscall: SysEpollPwait2, Args: [6]uint64{epfd, 0x5000, 8, 0x6000, 0, 0}}); r.Errno != errno.Invalid {
+		t.Fatalf("负秒: %+v want EINVAL", r)
+	}
+	// sigmask 非空且长度 ≠ 8:EINVAL。
+	writeTimespec(t, handler, 0x6000, 0, 1_000_000)
+	if r := handler.Handle(ctx, Call{Syscall: SysEpollPwait2, Args: [6]uint64{epfd, 0x5000, 8, 0x6000, 0x7000, 7}}); r.Errno != errno.Invalid {
+		t.Fatalf("sigsetsize≠8: %+v want EINVAL", r)
+	}
+	// 有限超时(1ms)空实例到期返回 0;NULL timespec 无限路径由
+	// ReadyNow 快路径覆盖(就绪即返回)。
+	slept := make(chan uint64, 16)
+	handler.Sleeper = &fakeSleeper{onSleep: func(ns uint64) { slept <- ns }}
+	if r := handler.Handle(ctx, Call{Syscall: SysEpollPwait2, Args: [6]uint64{epfd, 0x5000, 8, 0x6000, 0, 0}}); r.Errno != "" || r.Value != 0 {
+		t.Fatalf("超时返回: %+v want 0", r)
+	}
+	total := uint64(0)
+	for {
+		select {
+		case ns := <-slept:
+			total += ns
+		default:
+			goto sleptEnough
+		}
+	}
+sleptEnough:
+	if total != 1_000_000 {
+		t.Fatalf("超时睡眠总时长=%d want 1ms", total)
+	}
+	// 就绪项 + NULL timespec(无限):立即报告。
+	if err := writePipe(t, table, pid, writer, "x"); err != nil {
+		t.Fatal(err)
+	}
+	if r := handler.Handle(ctx, Call{Syscall: SysEpollPwait2, Args: [6]uint64{epfd, 0x5000, 8, 0, 0, 0}}); r.Errno != "" || r.Value != 1 {
+		t.Fatalf("无限路径就绪报告: %+v want 1", r)
+	}
+}

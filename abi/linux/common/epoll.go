@@ -11,15 +11,20 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/poll"
 )
 
-// epoll(L07,水平触发):登记项在等待时按当前就绪状态重查,仍就绪
-// 的项每次都报告;读空后不再报告。边缘触发与 ONESHOT 随 L08。
+// epoll(L07 水平触发,L08 边缘触发与一次性):登记项在等待时按
+// 当前就绪状态重查;边缘触发(EPOLLET)只在登记/重新武装后的新
+// 活动产生边沿时报告一次;一次性(EPOLLONESHOT)报告一次后禁用,
+// MOD 重新武装。
 //
 //   - epoll_create1(flags):仅 EPOLL_CLOEXEC,未知位 EINVAL;
 //   - epoll_ctl(epfd, op, fd, event):ADD/MOD/DEL;目标描述符必须
 //     存在(EBADF);普通文件与目录恒就绪(包装为静态就绪源);
-//   - epoll_pwait(epfd, events, maxevents, timeout_ms, sigmask):
-//     超时 -1 无限、0 立即;等待期间替换信号屏蔽集(结构同
-//     pselect6);被待投递信号打断返回 EINTR。
+//   - epoll_pwait(epfd, events, maxevents, timeout_ms, sigmask, size):
+//     超时 -1 无限、0 立即;sigmask 是直指针(非 pselect6 的
+//     {指针,长度} 结构),非空时 size 必须为 8;
+//   - epoll_pwait2(同上,超时为 timespec 指针):NULL 表示无限,
+//     负值或纳秒越界 EINVAL;等待期间替换信号屏蔽集;被待投递
+//     信号打断返回 EINTR。
 
 // asm-generic 的 epoll 事件位与操作码。
 const (
@@ -28,6 +33,8 @@ const (
 	epollErr     = 0x008
 	epollHup     = 0x010
 	epollRdHup   = 0x2000
+	epollEt      = 0x80000000 // EPOLLET(1 << 31)
+	epollOneShot = 0x40000000 // EPOLLONESHOT(1 << 30)
 	epollCloexec = 0o2000000
 
 	epollCtlAdd = 1
@@ -55,6 +62,18 @@ func epollWant(events uint32) poll.Readiness {
 		want |= poll.Hangup | poll.Error
 	}
 	return want
+}
+
+// epollFlags 提取触发模式位(EPOLLET/EPOLLONESHOT)。
+func epollFlags(events uint32) epoll.Flags {
+	var flags epoll.Flags
+	if events&epollEt != 0 {
+		flags |= epoll.EdgeTrigger
+	}
+	if events&epollOneShot != 0 {
+		flags |= epoll.OneShot
+	}
+	return flags
 }
 
 // epollEvents 把内部就绪位映射回客体事件位。
@@ -131,19 +150,48 @@ func (s Syscalls) epollCtl(ctx context.Context, call Call) Reply {
 		source = staticSource{readiness: poll.Readable | poll.Writable}
 	}
 	want := epollWant(events)
+	flags := epollFlags(events)
 	if op == epollCtlAdd {
-		if err := instance.Add(uint32(target), source, want, data); err != nil {
+		if err := instance.Add(uint32(target), source, want, data, flags); err != nil {
 			return Reply{Errno: errnoOf(err)}
 		}
 		return Reply{}
 	}
-	if err := instance.Modify(uint32(target), want, data); err != nil {
+	if err := instance.Modify(uint32(target), want, data, flags); err != nil {
 		return Reply{Errno: errnoOf(err)}
 	}
 	return Reply{}
 }
 
+// epollPwait 是 epoll_pwait(22):超时为 int 毫秒(-1 无限,0 立即),
+// sigmask 为直指针 + 独立长度参数。
 func (s Syscalls) epollPwait(ctx context.Context, call Call) Reply {
+	timeout := int64(call.Args[3])
+	if timeout < -1 {
+		return Reply{Errno: errno.Invalid}
+	}
+	var nanoseconds uint64
+	if timeout > 0 {
+		nanoseconds = uint64(timeout) * 1_000_000
+	}
+	return s.epollWaitReady(ctx, call, nanoseconds, timeout < 0)
+}
+
+// epollPwait2 是 epoll_pwait2(441):超时为 timespec 指针(NULL 表示
+// 无限);负值或纳秒越界 EINVAL。
+func (s Syscalls) epollPwait2(ctx context.Context, call Call) Reply {
+	nanoseconds, forever, code := s.pselectTimeout(ctx, call.Args[3])
+	if code != "" {
+		return Reply{Errno: code}
+	}
+	return s.epollWaitReady(ctx, call, nanoseconds, forever)
+}
+
+// epollWaitReady 是 epoll_pwait/epoll_pwait2 的公共等待路径:
+// timeoutNanos 为 0 表示无限等待(forever);sigmask(直指针,
+// args[4])非空时 sigsetsize(args[5])必须为 8,等待期间替换
+// 信号屏蔽集,恢复在返回前完成。
+func (s Syscalls) epollWaitReady(ctx context.Context, call Call, timeoutNanos uint64, forever bool) Reply {
 	if s.Descriptors == nil || s.Memory == nil {
 		return Reply{Errno: errno.NotImplemented}
 	}
@@ -158,19 +206,16 @@ func (s Syscalls) epollPwait(ctx context.Context, call Call) Reply {
 	if maxEvents == 0 || maxEvents > epollMaxEvents {
 		return Reply{Errno: errno.Invalid}
 	}
-	timeout := int64(call.Args[3])
-	if timeout < -1 {
-		return Reply{Errno: errno.Invalid}
-	}
-	// 立即路径:timeout 0 或已就绪,不进入等待。
+	// 立即路径:已可报告或超时 0,不进入等待。
 	if events, _ := instance.ReadyNow(int(maxEvents)); len(events) > 0 {
 		return s.writeEpollEvents(ctx, call.Args[1], events, maxEvents)
 	}
-	if timeout == 0 {
+	if !forever && timeoutNanos == 0 {
 		return Reply{}
 	}
-	// 等待期间替换信号屏蔽集(结构同 pselect6)。
-	restore, err := s.applyPselectMask(ctx, call.Args[4])
+	// 等待期间替换信号屏蔽集(epoll_pwait 族:sigmask 是直指针,
+	// 长度独立传参——区别于 pselect6 的 {指针,长度} 结构)。
+	restore, err := s.applyEpollMask(ctx, call.Args[4], call.Args[5])
 	if err != nil {
 		return Reply{Errno: errnoOf(err)}
 	}
@@ -188,16 +233,16 @@ func (s Syscalls) epollPwait(ctx context.Context, call Call) Reply {
 		events, err := instance.Wait(waitCtx, int(maxEvents))
 		done <- outcome{events, err}
 	}()
-	// 超时切片轮询:有限超时到期返回 0;无限(-1)阻塞到就绪/取消;
+	// 超时切片轮询:有限超时到期返回 0;无限阻塞到就绪/取消;
 	// 待投递信号到达返回 EINTR(J09 契约)。
 	var deadline uint64
-	if timeout > 0 {
+	if !forever {
 		if s.Sleeper == nil {
 			cancel()
 			<-done
 			return Reply{Errno: errno.Interrupted}
 		}
-		deadline = uint64(timeout) * 1_000_000
+		deadline = timeoutNanos
 	}
 	remaining := deadline
 	for {
@@ -208,7 +253,7 @@ func (s Syscalls) epollPwait(ctx context.Context, call Call) Reply {
 				return Reply{Errno: errno.Interrupted}
 			}
 		}
-		if timeout > 0 {
+		if !forever {
 			step := sleepSlice
 			if remaining < step {
 				step = remaining
@@ -242,6 +287,29 @@ func (s Syscalls) epollPwait(ctx context.Context, call Call) Reply {
 		result := <-done
 		return s.epollOutcome(ctx, call.Args[1], result, maxEvents)
 	}
+}
+
+// applyEpollMask 在等待期间替换信号屏蔽集:epoll_pwait 族的 sigmask
+// 是直指针,长度独立传参;非空时长度必须为 8(sigset_t)。
+func (s Syscalls) applyEpollMask(ctx context.Context, maskAddress, size uint64) (*uint64, error) {
+	if maskAddress == 0 {
+		return nil, nil
+	}
+	if size != sigsetSize {
+		return nil, errno.Wrap(errno.Invalid, "sigsetsize 必须为 8")
+	}
+	if s.Signals == nil {
+		return nil, errno.Wrap(errno.NotImplemented, "信号端口未装配")
+	}
+	var set [8]byte
+	if err := s.Memory.Read(ctx, maskAddress, set[:]); err != nil {
+		return nil, errno.Fault
+	}
+	old, err := s.Signals.ApplyMask(sigSetMask, binary.LittleEndian.Uint64(set[:]))
+	if err != nil {
+		return nil, err
+	}
+	return &old, nil
 }
 
 // epollOutcome 归并等待结果为应答。
