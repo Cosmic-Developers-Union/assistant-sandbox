@@ -21,8 +21,10 @@ func shutdownVM(t *testing.T) *VM {
 				<-ctx.Done()
 				return 0, ctx.Err()
 			}),
-			"stubborn": executable.Func(func(context.Context, proc.Proc) (uint8, error) {
-				// 忽略协作退出:无视取消,占用一段时间后自行结束。
+			"stubborn": executable.Func(func(ctx context.Context, _ proc.Proc) (uint8, error) {
+				// 收到协作退出后收尾很慢:关闭流程的截止时间因此到期,
+				// 进入明确终止流程。
+				<-ctx.Done()
 				time.Sleep(200 * time.Millisecond)
 				return 0, nil
 			}),

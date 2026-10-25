@@ -58,10 +58,17 @@ func (c *Connection) Exec(ctx context.Context, spec ExecSpec) (proc.Proc, error)
 	if err != nil {
 		return proc.Proc{}, err
 	}
+	// 执行上下文由 VM 掌握:关闭时统一取消,不依赖执行器登记时机。
+	runCtx, cancel := context.WithCancel(ctx)
+	c.vm.registerRunning(process.ID, cancel)
+	c.vm.executions.Add(1)
 	go func() {
+		defer c.vm.executions.Done()
+		defer cancel()
+		defer c.vm.unregisterRunning(process.ID)
 		// 进程退出后保持僵尸态,由等待方回收(与 Linux 的父子语义
 		// 一致);此处不代替父进程回收。
-		_, _ = c.vm.kernel.RunRegistered(ctx, process)
+		_, _ = c.vm.kernel.RunRegistered(runCtx, process)
 	}()
 	return process, nil
 }

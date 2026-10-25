@@ -1170,6 +1170,15 @@ func (k *Kernel) RunRegistered(ctx context.Context, p proc.Proc) (ExitStatus, er
 		cancel(nil)
 	}()
 	result, waitErr := instance.Wait(ctx)
+	if ctx.Err() != nil {
+		// 上下文被取消后仍等待客体程序真正结束:进程在程序退出前
+		// 不算结束,避免遗留宿主 goroutine(C07)。无视取消的客体
+		// 程序由关闭流程的截止时间兜底。
+		if finished, finishErr := instance.Wait(context.WithoutCancel(ctx)); finishErr == nil {
+			result = finished
+			waitErr = finishErr
+		}
+	}
 	status := ExitStatus{Code: result.Code}
 	if result.Reason == executable.Signaled {
 		status = ExitStatus{Code: signal.ExitCode(result.Signal), Signal: result.Signal}

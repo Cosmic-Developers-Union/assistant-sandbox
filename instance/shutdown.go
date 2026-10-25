@@ -32,12 +32,14 @@ func (v *VM) Shutdown(ctx context.Context) error {
 	v.connections = map[uint64]*Connection{}
 	v.mu.Unlock()
 
-	// 2) 协作退出:终止全部正在执行的客体程序。
+	// 2) 协作退出:先取消执行上下文(不依赖执行器登记时机),再向
+	// 全部客体进程投递 SIGTERM。
+	v.cancelRunning()
 	for _, pid := range v.kernel.ActiveProcesses() {
 		_ = v.kernel.Signal(pid, signal.TERM)
 	}
 	// 3) 等待退出:受上下文截止时间约束。
-	waitErr := v.kernel.AwaitExit(ctx)
+	waitErr := v.awaitExecutions(ctx)
 	// 4) 超时则强制终止。
 	if waitErr != nil {
 		for _, pid := range v.kernel.ActiveProcesses() {
@@ -53,6 +55,23 @@ func (v *VM) Shutdown(ctx context.Context) error {
 		return errors.Join(waitErr, closeErr)
 	}
 	return closeErr
+}
+
+// awaitExecutions 等待 VM 发起的客体执行全部结束;上下文到期即返回
+// 错误。执行结束后进程可能仍处于僵尸态(由等待方回收),不影响此处
+// 的完成判定。
+func (v *VM) awaitExecutions(ctx context.Context) error {
+	done := make(chan struct{})
+	go func() {
+		v.executions.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // ErrShutdownTimeout 表示协作退出未在截止时间内完成,已转入强制

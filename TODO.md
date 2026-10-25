@@ -83,7 +83,7 @@ Python 和 Node.js 的验收必须执行客体运行时，不能通过调用宿�
 - [x] C09 处理创建中途失败的回滚。验收：逐个注入初始化失败，内存、文件和设备无泄漏。 证据:instance/vm.go newVM 分步装配并逐步回滚(挂载表、设备注册表、内核、常驻会话四个注入点;内核创建之后的失败一律 kernel.Close 回滚:中断执行、释放全部进程句柄、等待队列关闭、内核进入终态);instance/vm.go initFaults 提供逐点注入与内核观察口;vm/kernel.go Close 释放每个进程绑定的描述符。测试:instance/image_test.go TestCreationRollbackReleasesResources(四个注入点逐个验证:返回注入错误、不返回半成品 VM、已创建内核进入终态且拒绝新任务、进程不再持有描述符)。CI:Test 工作流 integration 任务。
 - [x] C10 分离镜像、VM 实例与连接句柄。验收：同一镜像可创建两台互相隔离的 VM；断开句柄不改变镜像。 证据:instance/image.go(Image 是只读根文件系统模板:快照+编码+摘要;Instantiate 为每台 VM 复制独立根文件系统,镜像本身不可变);instance/vm.go(VM 实例与连接句柄分离:连接只是 VM 的句柄,断开不影响 VM);测试:instance/image_test.go TestImageCreatesIsolatedVMs(同一镜像创建的三台 VM 互相隔离:第一台的写入不进第二台、镜像摘要不变、新实例不继承旧实例写入、断开连接后镜像摘要仍不变)。CI:Test 工作流 integration 任务。
 - [x] C11 明确启动任务与 PID 1 的职责。验收：孤儿收养、关闭顺序和 init 退出后的 VM 状态符合契约。 证据:vm/proc/proc_test.go TestReparentToInitOnParentExit、vm/proc/snapshot_test.go TestRestoreReparentsMissingParents、guest/boot_test.go TestBootUsesExplicitWorkspaceAndReapsShell、vm/kernel_fault_test.go TestKernelSelfReapedProcessIsNotReportedAsRunning。测试:`go test ./vm/... ./guest/`。CI:Test 工作流。
-- [ ] C12 验证生命周期并发。验收：启动、连接、执行和关闭相互竞争时，无死锁、重复释放或关闭后新增资源。
+- [x] C12 验证生命周期并发。验收：启动、连接、执行和关闭相互竞争时，无死锁、重复释放或关闭后新增资源。 证据:instance/vm.go(VM 持有执行登记 running 与执行计数 executions:执行上下文由 VM 掌握,关闭时统一取消,不依赖执行器登记时机);instance/connection.go(连接断开与执行登记在同一把锁下串行);instance/shutdown.go(关闭流程:取消执行上下文 → SIGTERM → 等待执行结束 → 超时升级 SIGKILL → 关闭内核);vm/kernel.go RunRegistered 在上下文取消后仍等待客体程序真正结束(进程在程序退出前不算结束,避免遗留宿主 goroutine),Close 释放每个进程的描述符。测试:instance/lifecycle_test.go TestLifecycleConcurrencyHasNoDeadlockOrDoubleRelease(8 路并发:建立 VM、连接、执行、断开与关闭同时竞争;关闭后拒绝新连接与新任务,重复关闭幂等;go test -race 通过)。CI:Test 工作流 integration 任务。
 
 ## D. 客体 CPU 与执行控制
 

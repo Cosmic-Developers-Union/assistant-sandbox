@@ -80,6 +80,13 @@ type VM struct {
 	closed      bool
 	nextID      uint64
 	connections map[uint64]*Connection
+
+	// running 记录正在执行的客体程序及其取消函数:关闭时统一取消,
+	// 不依赖执行器是否已完成登记。
+	running map[proc.PID]context.CancelFunc
+
+	// executions 统计尚未结束的客体执行,关闭时等待其全部结束。
+	executions sync.WaitGroup
 }
 
 // New 装配一台 VM:建立根文件系统与挂载表、时钟、随机源与设备注册
@@ -148,6 +155,7 @@ func newVM(ctx context.Context, opts Options, root *memfs.FS, source clock.Sourc
 		root: root, mounts: mounts, devices: devices,
 		clock: source, entropy: random,
 		connections: map[uint64]*Connection{},
+		running:     map[proc.PID]context.CancelFunc{},
 	}
 	var parent proc.Proc
 	factory := func(dir string, environment []string, in io.Reader, out, diagnostic io.Writer) (*interp.Runner, error) {
@@ -299,3 +307,34 @@ func (f initFaults) afterMounts() error  { return f.mounts }
 func (f initFaults) afterDevices() error { return f.devices }
 func (f initFaults) afterKernel() error  { return f.kernel }
 func (f initFaults) afterSession() error { return f.session }
+
+// registerRunning 登记正在执行的客体程序及其取消函数。
+func (v *VM) registerRunning(pid proc.PID, cancel context.CancelFunc) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.running == nil {
+		v.running = map[proc.PID]context.CancelFunc{}
+	}
+	v.running[pid] = cancel
+}
+
+// unregisterRunning 注销已结束的客体程序。
+func (v *VM) unregisterRunning(pid proc.PID) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	delete(v.running, pid)
+}
+
+// cancelRunning 取消全部正在执行的客体程序:协作退出的第一手段,
+// 与执行器是否完成登记无关。
+func (v *VM) cancelRunning() {
+	v.mu.Lock()
+	cancels := make([]context.CancelFunc, 0, len(v.running))
+	for _, cancel := range v.running {
+		cancels = append(cancels, cancel)
+	}
+	v.mu.Unlock()
+	for _, cancel := range cancels {
+		cancel()
+	}
+}
