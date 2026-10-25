@@ -1266,10 +1266,17 @@ func (k *Kernel) Close(ctx context.Context) error {
 	for _, instance := range k.instances {
 		instances = append(instances, instance)
 	}
+	// 回收句柄:每个进程绑定的描述符一并释放(C06:关闭后不残留句柄)。
+	processes := k.table.List()
 	k.emitLocked(scheduler.KindClose, k.init, "session")
 	k.mu.Unlock()
 	for _, instance := range instances {
 		_ = instance.Interrupt(signal.TERM)
+	}
+	if k.fds != nil {
+		for _, process := range processes {
+			_ = k.fds.Detach(uint64(process.ID))
+		}
 	}
 	k.children.Close()
 	_ = k.life.enter(StateClosed)

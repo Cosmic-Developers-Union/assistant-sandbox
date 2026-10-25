@@ -58,6 +58,9 @@ type Options struct {
 
 	// Binaries 是客体二进制工厂;为空时使用 RV64 ELF 工厂。
 	Binaries executable.BinaryFactory
+
+	// faults 是初始化失败注入点(仅供同包测试)。
+	faults initFaults
 }
 
 // VM 是一台虚拟机:拥有自己的内核实例、根文件系统与挂载表、时钟、
@@ -85,17 +88,7 @@ func New(ctx context.Context, opts Options) (*VM, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if opts.MaxProcesses <= 0 {
-		opts.MaxProcesses = defaultMaxProcesses
-	}
-	var source clock.Source = clock.NewReal()
-	if opts.Deterministic {
-		source = &clock.Virtual{}
-	}
-	random := vmentropy.Source(entropy.NewProduction())
-	if opts.Deterministic || opts.Seed != 0 {
-		random = vmentropy.NewSeeded(opts.Seed)
-	}
+	source := clockFor(opts)
 	root, err := memfs.New(source, memfs.Options{})
 	if err != nil {
 		return nil, err
@@ -105,8 +98,39 @@ func New(ctx context.Context, opts Options) (*VM, error) {
 			return nil, err
 		}
 	}
+	return newVM(ctx, opts, root, source)
+}
+
+// clockFor 按选项选择 VM 的时钟来源:确定性模式用虚拟时钟,否则用
+// 宿主生产时钟。
+func clockFor(opts Options) clock.Source {
+	if opts.Deterministic {
+		return &clock.Virtual{}
+	}
+	return clock.NewReal()
+}
+
+// entropyFor 按选项选择 VM 的随机源:确定性模式或指定种子时用可重放
+// 的种子源,否则用生产熵源。
+func entropyFor(opts Options) vmentropy.Source {
+	if opts.Deterministic || opts.Seed != 0 {
+		return vmentropy.NewSeeded(opts.Seed)
+	}
+	return entropy.NewProduction()
+}
+
+// newVM 用给定的根文件系统装配 VM。初始化任一步骤失败即回滚:
+// 已创建的内核被关闭、句柄释放,不留半成品(C09)。
+func newVM(ctx context.Context, opts Options, root *memfs.FS, source clock.Source) (*VM, error) {
+	if opts.MaxProcesses <= 0 {
+		opts.MaxProcesses = defaultMaxProcesses
+	}
+	random := entropyFor(opts)
 	mounts := &mountfs.Mounts{}
 	if err := mounts.Mount("/", root); err != nil {
+		return nil, err
+	}
+	if err := opts.faults.afterMounts(); err != nil {
 		return nil, err
 	}
 	devices, err := devfs.New(devfs.Options{Entropy: random})
@@ -114,6 +138,9 @@ func New(ctx context.Context, opts Options) (*VM, error) {
 		return nil, err
 	}
 	if err := mounts.Mount(DevRoot, devices); err != nil {
+		return nil, err
+	}
+	if err := opts.faults.afterDevices(); err != nil {
 		return nil, err
 	}
 
@@ -161,15 +188,27 @@ func New(ctx context.Context, opts Options) (*VM, error) {
 		return nil, err
 	}
 	machine.kernel = kernel
+	if opts.faults.observe != nil {
+		opts.faults.observe(kernel)
+	}
 	if opts.TraceLimit > 0 {
 		kernel.SetTraceLimit(opts.TraceLimit)
+	}
+	if err := opts.faults.afterKernel(); err != nil {
+		_ = kernel.Close(ctx)
+		return nil, err
 	}
 	// 客体 Shell 会话:作为内核的常驻父进程,连接的子进程都挂在它下面。
 	parent, err = kernel.Begin(0, "bash", nil, WorkRoot, map[string]string{"HOME": WorkRoot, "TMPDIR": TempRoot}, fd.Streams{})
 	if err != nil {
+		_ = kernel.Close(ctx)
 		return nil, err
 	}
 	machine.session = parent
+	if err := opts.faults.afterSession(); err != nil {
+		_ = kernel.Close(ctx)
+		return nil, err
+	}
 	return machine, nil
 }
 
@@ -243,3 +282,20 @@ func (v *VM) Closed() bool {
 	defer v.mu.Unlock()
 	return v.closed
 }
+
+// initFaults 是初始化过程中的失败注入点(C09):仅供同包测试逐个注入
+// 失败,验证回滚不泄漏内核、句柄与文件。
+type initFaults struct {
+	mounts  error
+	devices error
+	kernel  error
+	session error
+
+	// observe 观察已创建的内核实例(测试用)。
+	observe func(*vm.Kernel)
+}
+
+func (f initFaults) afterMounts() error  { return f.mounts }
+func (f initFaults) afterDevices() error { return f.devices }
+func (f initFaults) afterKernel() error  { return f.kernel }
+func (f initFaults) afterSession() error { return f.session }
