@@ -1276,6 +1276,39 @@ func (k *Kernel) Close(ctx context.Context) error {
 	return ctx.Err()
 }
 
+// ActiveProcesses 返回当前有活动执行实例的进程号(C06:关闭时只等待
+// 真正在运行的客体程序,内核自身的会话进程不计入)。
+func (k *Kernel) ActiveProcesses() []proc.PID {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	out := make([]proc.PID, 0, len(k.instances))
+	for pid := range k.instances {
+		out = append(out, pid)
+	}
+	slices.Sort(out)
+	return out
+}
+
+// AwaitExit 等待内核中正在运行的客体程序全部结束(C06/C07):上下文
+// 到期即返回,不遗留宿主 goroutine——已中断的程序会自行退出。
+func (k *Kernel) AwaitExit(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	k.mu.Lock()
+	instances := make([]executable.Instance, 0, len(k.instances))
+	for _, instance := range k.instances {
+		instances = append(instances, instance)
+	}
+	k.mu.Unlock()
+	for _, instance := range instances {
+		if _, err := instance.Wait(ctx); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (k *Kernel) Closed() (bool, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
