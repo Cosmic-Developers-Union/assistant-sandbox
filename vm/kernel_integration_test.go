@@ -1543,3 +1543,58 @@ func TestKernelResetForExecResetsProcessState(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestKernelWaitDeadlineWakesWithoutSideEffects 验证 G07 超时轴:
+// 阻塞等待被调用方截止时间唤醒,返回上下文错误;超时不破坏进程
+// 状态——子进程结束后同一等待仍可正常回收。
+func TestKernelWaitDeadlineWakesWithoutSideEffects(t *testing.T) {
+	reg, _ := registryFor("long")
+	kernel, _ := New(Services{Set: capability.Set{FD: fd.New()}, Programs: reg}, 4)
+	parent, err := kernel.Begin(0, "long", nil, "/", nil, fd.Streams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := kernel.Begin(parent.ID, "long", nil, "/", nil, fd.Streams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 40*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, _, err = kernel.WaitChild(ctx, parent.ID, child.ID, false)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("超时截止的等待不应成功")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("错误=%v want DeadlineExceeded", err)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("等待未按截止时间唤醒: %v", elapsed)
+	}
+	// 超时后子进程仍在表中且可被后续等待回收(约定:超时无副作用)。
+	if _, err := kernel.table.Get(child.ID); err != nil {
+		t.Fatalf("超时改变了子进程状态: %v", err)
+	}
+	if err := kernel.Signal(child.ID, signal.TERM); err != nil {
+		t.Fatal(err)
+	}
+	waitCtx, waitCancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer waitCancel()
+	for {
+		state, _, err := kernel.WaitChild(waitCtx, parent.ID, child.ID, true)
+		if err == nil {
+			_ = state
+			break
+		}
+		if !errors.Is(err, errno.NoChild) {
+			t.Fatalf("回收等待: %v", err)
+		}
+		select {
+		case <-waitCtx.Done():
+			t.Fatal("超时后无法回收子进程")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+}
