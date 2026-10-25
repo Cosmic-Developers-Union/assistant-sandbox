@@ -72,6 +72,21 @@ type inode struct {
 	name     string
 }
 
+// pathOf 返回节点当前所在的客体绝对路径:沿父指针回溯,目录被
+// 重命名后即时反映新位置(目录句柄跟随 inode,I02)。
+func (f *FS) pathOf(node *inode) string {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	var parts []string
+	for cur := node; cur != f.root && cur != nil; cur = cur.parent {
+		parts = append(parts, cur.name)
+	}
+	for i, j := 0, len(parts)-1; i < j; i, j = i+1, j-1 {
+		parts[i], parts[j] = parts[j], parts[i]
+	}
+	return "/" + strings.Join(parts, "/")
+}
+
 func New(clk clock.Source, opts Options) (*FS, error) {
 	if clk == nil {
 		return nil, errno.Invalid

@@ -518,6 +518,7 @@ func TestOpenAtRejections(t *testing.T) {
 	ctx := context.Background()
 	space := newFakeMemory()
 	writeString(space, 0x1000, "/etc/motd")
+	writeString(space, 0x1040, "etc/motd") // 相对路径:dirfd 参与解析
 	base := Syscalls{Memory: space, Descriptors: &fakeDescriptors{}, Files: &fakeFiles{}}
 	flags := OpenFlags{Mode: OpenRead}
 	for _, tc := range []struct {
@@ -526,9 +527,9 @@ func TestOpenAtRejections(t *testing.T) {
 		want  errno.Code
 	}{
 		{
-			label: "目录描述符相对解析未实现",
-			call:  Call{Syscall: SysOpenAt, Args: [6]uint64{3, 0x1000, 0, 0}, OpenFlags: &flags},
-			want:  errno.NotSupported,
+			label: "非目录描述符做 dirfd 报 ENOTDIR(I02,相对路径)",
+			call:  Call{Syscall: SysOpenAt, Args: [6]uint64{3, 0x1040, 0, 0}, OpenFlags: &flags},
+			want:  errno.NotDirectory,
 		},
 		{
 			label: "架构层不认识标志位",
@@ -2030,9 +2031,9 @@ func TestNewfstatatValidatesFlagsAndDirectoryHandles(t *testing.T) {
 	if reply := syscalls.Handle(ctx, Call{Syscall: SysNewfstatat, Args: [6]uint64{atFDCWD, 0x1000, 0x3000, 0x4000}}); reply.Errno != errno.Invalid {
 		t.Fatalf("未知标志: reply=%+v want EINVAL", reply)
 	}
-	// 非空路径 + 非 AT_FDCWD 明确 ENOTSUP。
-	if reply := syscalls.Handle(ctx, Call{Syscall: SysNewfstatat, Args: [6]uint64{4, 0x1000, 0x3000}}); reply.Errno != errno.NotSupported {
-		t.Fatalf("目录句柄: reply=%+v want ENOTSUP", reply)
+	// 非空路径 + 非目录描述符做 dirfd 报 ENOTDIR(I02)。
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysNewfstatat, Args: [6]uint64{4, 0x1000, 0x3000}}); reply.Errno != errno.NotDirectory {
+		t.Fatalf("目录句柄: reply=%+v want ENOTDIR", reply)
 	}
 	// 路径不存在透传 ENOENT。
 	if reply := syscalls.Handle(ctx, Call{Syscall: SysNewfstatat, Args: [6]uint64{atFDCWD, 0x1800, 0x3000}}); reply.Errno != errno.NotFound {

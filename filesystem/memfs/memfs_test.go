@@ -1437,3 +1437,56 @@ func TestOpenFlagCombinationsMatchLinux(t *testing.T) {
 		t.Fatalf("O_CREAT 打开目录: %v", err)
 	}
 }
+
+// TestDirectoryHandlePathResolution 验证 I02:目录句柄把相对路径解析为
+// 句柄目录当前所在的绝对路径;目录重命名后跟随 inode 反映新位置。
+func TestDirectoryHandlePathResolution(t *testing.T) {
+	ctx := context.Background()
+	f, err := New(&clock.Virtual{}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Mkdir(ctx, "/a", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	file, err := f.Open(ctx, "/a", vmfs.ReadOnly, 0o755)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver, ok := file.(vmfs.DirectoryResolver)
+	if !ok {
+		t.Fatalf("目录句柄应支持路径解析能力,实际 %T", file)
+	}
+	if resolved, err := resolver.ResolveGuestPath("b/c"); err != nil || resolved != "/a/b/c" {
+		t.Fatalf("解析=%q err=%v want /a/b/c", resolved, err)
+	}
+	if resolved, err := resolver.ResolveGuestPath("/abs"); err != nil || resolved != "/abs" {
+		t.Fatalf("绝对路径=%q err=%v want 原样", resolved, err)
+	}
+	if resolved, err := resolver.ResolveGuestPath(".."); err != nil || resolved != "/" {
+		t.Fatalf("词法 .. 收敛=%q err=%v want /", resolved, err)
+	}
+	// 重命名目录后句柄跟随 inode:解析反映新位置。
+	if err := f.Rename(ctx, "/a", "/renamed"); err != nil {
+		t.Fatal(err)
+	}
+	if resolved, err := resolver.ResolveGuestPath("b/c"); err != nil || resolved != "/renamed/b/c" {
+		t.Fatalf("重命名后解析=%q err=%v want /renamed/b/c", resolved, err)
+	}
+	// 非目录句柄做解析在运行时报 ENOTDIR(类型实现能力,目录性
+	// 由句柄状态判定)。
+	regular, err := f.Open(ctx, "/renamed/f", vmfs.Create|vmfs.ReadWrite, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	regularResolver := regular.(vmfs.DirectoryResolver)
+	if _, err := regularResolver.ResolveGuestPath("x"); !errors.Is(err, errno.NotDirectory) {
+		t.Fatalf("普通文件句柄解析 err=%v want ENOTDIR", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := regular.Close(); err != nil {
+		t.Fatal(err)
+	}
+}

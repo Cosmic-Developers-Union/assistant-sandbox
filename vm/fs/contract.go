@@ -111,3 +111,12 @@ type Capacity interface {
 
 	Filesystems(context.Context) ([]Space, error)
 }
+
+// DirectoryResolver 是目录句柄的可选能力(I02):把相对路径解析为
+// 以句柄目录为基准的客体绝对路径。实现必须跟随目录 inode:目录被
+// 重命名后,解析结果反映新位置,与 Linux 目录描述符语义一致。
+type DirectoryResolver interface {
+	// ResolveGuestPath 解析相对路径;name 为绝对路径时原样返回。
+	// 非目录句柄或不支持解析时报错(ENOTDIR/ENOTSUP)。
+	ResolveGuestPath(name string) (string, error)
+}

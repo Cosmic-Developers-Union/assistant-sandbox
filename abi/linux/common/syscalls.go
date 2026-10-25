@@ -597,9 +597,6 @@ func (s Syscalls) openAt(ctx context.Context, call Call) Reply {
 	if s.Files == nil || s.Memory == nil {
 		return Reply{Errno: errno.NotImplemented}
 	}
-	if call.Args[0] != atCurrentWorkingDirectory {
-		return Reply{Errno: errno.NotSupported}
-	}
 	if call.OpenFlags == nil {
 
 		return Reply{Errno: errno.NotSupported}
@@ -608,6 +605,10 @@ func (s Syscalls) openAt(ctx context.Context, call Call) Reply {
 		return Reply{Errno: errno.Invalid}
 	}
 	path, code := s.readPath(ctx, call.Args[1])
+	if code != "" {
+		return Reply{Errno: code}
+	}
+	path, code = s.resolveDirPath(ctx, call.Args[0], path)
 	if code != "" {
 		return Reply{Errno: code}
 	}
@@ -630,6 +631,38 @@ func (s Syscalls) close(ctx context.Context, call Call) Reply {
 		return Reply{Errno: errnoOf(err)}
 	}
 	return Reply{}
+}
+
+// resolveDirPath 按目录句柄解析客体路径(I02):绝对路径忽略 dirfd;
+// AT_FDCWD 的相对路径按进程工作目录(由文件端口解析);有效目录
+// 描述符按句柄目录当前所在位置解析——目录被重命名后句柄跟随
+// inode,解析结果反映新位置。非目录句柄报 ENOTDIR,坏描述符 EBADF。
+func (s Syscalls) resolveDirPath(ctx context.Context, dirfd uint64, name string) (string, errno.Code) {
+	if strings.HasPrefix(name, "/") {
+		return name, ""
+	}
+	if dirfd == atCurrentWorkingDirectory {
+		return name, ""
+	}
+	if s.Descriptors == nil {
+		return "", errno.NotImplemented
+	}
+	if dirfd > math.MaxUint32 {
+		return "", errno.BadHandle
+	}
+	handle, err := s.Descriptors.Get(ctx, dirfd)
+	if err != nil {
+		return "", errnoOf(err)
+	}
+	resolver, ok := handle.(vmfs.DirectoryResolver)
+	if !ok {
+		return "", errno.NotDirectory
+	}
+	resolved, err := resolver.ResolveGuestPath(name)
+	if err != nil {
+		return "", errnoOf(err)
+	}
+	return resolved, ""
 }
 
 func (s Syscalls) readPath(ctx context.Context, address uint64) (string, errno.Code) {
@@ -1738,10 +1771,11 @@ func (s Syscalls) faccessat(ctx context.Context, call Call) Reply {
 	if s.Files == nil || s.Memory == nil {
 		return Reply{Errno: errno.NotImplemented}
 	}
-	if call.Args[0] != atCurrentWorkingDirectory {
-		return Reply{Errno: errno.NotSupported}
-	}
 	path, code := s.readPath(ctx, call.Args[1])
+	if code != "" {
+		return Reply{Errno: code}
+	}
+	path, code = s.resolveDirPath(ctx, call.Args[0], path)
 	if code != "" {
 		return Reply{Errno: code}
 	}
@@ -1768,10 +1802,11 @@ func (s Syscalls) readlinkat(ctx context.Context, call Call) Reply {
 	if s.Files == nil || s.Memory == nil {
 		return Reply{Errno: errno.NotImplemented}
 	}
-	if call.Args[0] != atCurrentWorkingDirectory {
-		return Reply{Errno: errno.NotSupported}
-	}
 	path, code := s.readPath(ctx, call.Args[1])
+	if code != "" {
+		return Reply{Errno: code}
+	}
+	path, code = s.resolveDirPath(ctx, call.Args[0], path)
 	if code != "" {
 		return Reply{Errno: code}
 	}
@@ -1798,10 +1833,11 @@ func (s Syscalls) mkdirat(ctx context.Context, call Call) Reply {
 	if s.Files == nil || s.Memory == nil {
 		return Reply{Errno: errno.NotImplemented}
 	}
-	if call.Args[0] != atCurrentWorkingDirectory {
-		return Reply{Errno: errno.NotSupported}
-	}
 	path, code := s.readPath(ctx, call.Args[1])
+	if code != "" {
+		return Reply{Errno: code}
+	}
+	path, code = s.resolveDirPath(ctx, call.Args[0], path)
 	if code != "" {
 		return Reply{Errno: code}
 	}
@@ -1816,10 +1852,11 @@ func (s Syscalls) unlinkat(ctx context.Context, call Call) Reply {
 	if s.Files == nil || s.Memory == nil {
 		return Reply{Errno: errno.NotImplemented}
 	}
-	if call.Args[0] != atCurrentWorkingDirectory {
-		return Reply{Errno: errno.NotSupported}
-	}
 	path, code := s.readPath(ctx, call.Args[1])
+	if code != "" {
+		return Reply{Errno: code}
+	}
+	path, code = s.resolveDirPath(ctx, call.Args[0], path)
 	if code != "" {
 		return Reply{Errno: code}
 	}
@@ -1852,10 +1889,11 @@ func (s Syscalls) symlinkat(ctx context.Context, call Call) Reply {
 	if code != "" {
 		return Reply{Errno: code}
 	}
-	if call.Args[1] != atCurrentWorkingDirectory {
-		return Reply{Errno: errno.NotSupported}
-	}
 	linkpath, code := s.readPath(ctx, call.Args[2])
+	if code != "" {
+		return Reply{Errno: code}
+	}
+	linkpath, code = s.resolveDirPath(ctx, call.Args[1], linkpath)
 	if code != "" {
 		return Reply{Errno: code}
 	}
@@ -1872,9 +1910,6 @@ func (s Syscalls) linkat(ctx context.Context, call Call) Reply {
 	if s.Files == nil || s.Memory == nil {
 		return Reply{Errno: errno.NotImplemented}
 	}
-	if call.Args[0] != atCurrentWorkingDirectory || call.Args[2] != atCurrentWorkingDirectory {
-		return Reply{Errno: errno.NotSupported}
-	}
 	// linkat 只接受 AT_SYMLINK_FOLLOW;未知 flags 位报 EINVAL。
 	flags := call.Args[4]
 	if flags&^uint64(atSymlinkFollow) != 0 {
@@ -1884,7 +1919,15 @@ func (s Syscalls) linkat(ctx context.Context, call Call) Reply {
 	if code != "" {
 		return Reply{Errno: code}
 	}
+	oldpath, code = s.resolveDirPath(ctx, call.Args[0], oldpath)
+	if code != "" {
+		return Reply{Errno: code}
+	}
 	newpath, code := s.readPath(ctx, call.Args[3])
+	if code != "" {
+		return Reply{Errno: code}
+	}
+	newpath, code = s.resolveDirPath(ctx, call.Args[2], newpath)
 	if code != "" {
 		return Reply{Errno: code}
 	}
@@ -1910,14 +1953,19 @@ func (s Syscalls) renameat(ctx context.Context, call Call) Reply {
 	if s.Files == nil || s.Memory == nil {
 		return Reply{Errno: errno.NotImplemented}
 	}
-	if call.Args[0] != atCurrentWorkingDirectory || call.Args[2] != atCurrentWorkingDirectory {
-		return Reply{Errno: errno.NotSupported}
-	}
 	oldpath, code := s.readPath(ctx, call.Args[1])
 	if code != "" {
 		return Reply{Errno: code}
 	}
+	oldpath, code = s.resolveDirPath(ctx, call.Args[0], oldpath)
+	if code != "" {
+		return Reply{Errno: code}
+	}
 	newpath, code := s.readPath(ctx, call.Args[3])
+	if code != "" {
+		return Reply{Errno: code}
+	}
+	newpath, code = s.resolveDirPath(ctx, call.Args[2], newpath)
 	if code != "" {
 		return Reply{Errno: code}
 	}
@@ -2261,8 +2309,8 @@ func (s Syscalls) fstat(ctx context.Context, call Call) Reply {
 	return s.statDescriptor(ctx, call.Args[0], call.Args[1])
 }
 
-// statPathTarget 解析 fstatat/statx 共用的状态目标:非空路径按 AT_FDCWD
-// 解析(目录句柄相对解析由 I02 交付,当前明确 ENOTSUP);空路径仅在
+// statPathTarget 解析 fstatat/statx 共用的状态目标:非空路径按
+// dirfd 解析(AT_FDCWD 或目录句柄相对解析,I02);空路径仅在
 // AT_EMPTY_PATH 且 dirfd 指向真实描述符时返回该句柄。
 func (s Syscalls) statPathTarget(ctx context.Context, dirfd, pathAddress, flags uint64) (stdfs.FileInfo, any, errno.Code) {
 	pathname, code := s.readPath(ctx, pathAddress)
@@ -2284,8 +2332,9 @@ func (s Syscalls) statPathTarget(ctx context.Context, dirfd, pathAddress, flags 
 		}
 		return nil, handle, ""
 	}
-	if dirfd != atCurrentWorkingDirectory {
-		return nil, nil, errno.NotSupported
+	pathname, code = s.resolveDirPath(ctx, dirfd, pathname)
+	if code != "" {
+		return nil, nil, code
 	}
 	var (
 		info stdfs.FileInfo
@@ -2423,11 +2472,11 @@ func (s Syscalls) utimensat(ctx context.Context, call Call) Reply {
 	if s.Files == nil {
 		return Reply{Errno: errno.NotImplemented}
 	}
-	if call.Args[0] != atCurrentWorkingDirectory {
-		// 目录句柄相对解析由 I02 交付,当前明确 ENOTSUP。
-		return Reply{Errno: errno.NotSupported}
-	}
 	pathname, code := s.readPath(ctx, call.Args[1])
+	if code != "" {
+		return Reply{Errno: code}
+	}
+	pathname, code = s.resolveDirPath(ctx, call.Args[0], pathname)
 	if code != "" {
 		return Reply{Errno: code}
 	}

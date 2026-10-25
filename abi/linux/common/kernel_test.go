@@ -1207,3 +1207,123 @@ func (f *interruptAfter) DeliverableSignal() (uint64, SignalAction, bool) {
 	}
 	return 15, SignalAction{Flags: 0x04000000}, true
 }
+
+// TestDirectoryHandleRelativeResolution 验证 I02:目录句柄相对解析——
+// openat/mkdirat/newfstatat/readlinkat/unlinkat/renameat 经 dirfd 解析;
+// AT_FDCWD 按工作目录;绝对路径忽略 dirfd;非目录句柄 ENOTDIR、坏
+// 描述符 EBADF;目录重命名后句柄跟随 inode,解析反映新位置。
+func TestDirectoryHandleRelativeResolution(t *testing.T) {
+	ctx := context.Background()
+	system, err := memfs.New(&clock.Virtual{}, memfs.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const pid = 81
+	table := fd.New()
+	table.Attach(pid, fd.Streams{})
+	files := ProcessFiles{System: system, Store: table, PID: pid, Dir: "/"}
+	descriptors := ProcessDescriptors{Table: table, PID: pid}
+	syscalls := Syscalls{Memory: newFakeMemory(), Files: files, Descriptors: descriptors}
+	atFDCWD := atCurrentWorkingDirectory
+
+	writePath := func(address uint64, path string) {
+		t.Helper()
+		if err := syscalls.Memory.Write(ctx, address, append([]byte(path), 0)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// 建立工作目录结构与目录句柄。
+	writePath(0x1000, "/work")
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysMkdirat, Args: [6]uint64{atFDCWD, 0x1000, 0o755}}); reply.Errno != "" {
+		t.Fatalf("mkdirat /work: %+v", reply)
+	}
+	writePath(0x1010, "/work")
+	flags := OpenFlags{Mode: OpenRead}
+	dirfd, err := files.Open(ctx, OpenRequest{Path: "/work", Flags: flags})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// openat(dirfd, "f", O_CREAT|O_WRONLY):创建 /work/f。
+	writePath(0x1020, "f")
+	createFlags := OpenFlags{Mode: OpenWrite, Create: true}
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysOpenAt, Args: [6]uint64{dirfd, 0x1020, 0, 0o644}, OpenFlags: &createFlags}); reply.Errno != "" {
+		t.Fatalf("openat(dirfd,f): %+v", reply)
+	}
+	if _, err := files.Stat(ctx, "/work/f"); err != nil {
+		t.Fatalf("/work/f 未创建: %v", err)
+	}
+
+	// newfstatat(dirfd, "f"):经句柄取状态,大小为 0。
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysNewfstatat, Args: [6]uint64{dirfd, 0x1020, 0x3000, 0}}); reply.Errno != "" {
+		t.Fatalf("newfstatat(dirfd,f): %+v", reply)
+	}
+
+	// mkdirat(dirfd, "sub") + readlinkat(dirfd, "ln") + 经 dirfd 解析悬空链接。
+	writePath(0x1030, "sub")
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysMkdirat, Args: [6]uint64{dirfd, 0x1030, 0o755}}); reply.Errno != "" {
+		t.Fatalf("mkdirat(dirfd,sub): %+v", reply)
+	}
+	writePath(0x1040, "../work/sub")
+	writePath(0x1050, "ln")
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysSymlinkat, Args: [6]uint64{0x1040, dirfd, 0x1050}}); reply.Errno != "" {
+		t.Fatalf("symlinkat: %+v", reply)
+	}
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysReadlinkat, Args: [6]uint64{dirfd, 0x1050, 0x3060, 64}}); reply.Errno != "" || reply.Value != uint64(len("../work/sub")) {
+		t.Fatalf("readlinkat(dirfd,ln): %+v", reply)
+	}
+
+	// renameat(dirfd, "f", dirfd, "sub/g"):经同一句柄两端重命名。
+	writePath(0x1060, "sub/g")
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysRenameat, Args: [6]uint64{dirfd, 0x1020, dirfd, 0x1060}}); reply.Errno != "" {
+		t.Fatalf("renameat 经 dirfd: %+v", reply)
+	}
+	if _, err := files.Stat(ctx, "/work/sub/g"); err != nil {
+		t.Fatalf("/work/sub/g 未就位: %v", err)
+	}
+	if _, err := files.Stat(ctx, "/work/f"); err == nil {
+		t.Fatal("旧路径应消失")
+	}
+
+	// 目录重命名后句柄跟随 inode:rename /work → /moved,经原句柄
+	// openat(dirfd, "sub/g") 读到新位置内容。
+	writePath(0x1070, "/work")
+	writePath(0x1080, "/moved")
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysRenameat, Args: [6]uint64{atFDCWD, 0x1070, atFDCWD, 0x1080}}); reply.Errno != "" {
+		t.Fatalf("rename /work→/moved: %+v", reply)
+	}
+	writePath(0x1090, "sub/g")
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysOpenAt, Args: [6]uint64{dirfd, 0x1090, 0, 0}, OpenFlags: &flags}); reply.Errno != "" {
+		t.Fatalf("重命名后经原句柄 openat: %+v", reply)
+	}
+
+	// 绝对路径忽略 dirfd:openat(坏值, "/moved/sub/g") 成功。
+	writePath(0x10A0, "/moved/sub/g")
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysOpenAt, Args: [6]uint64{1 << 20, 0x10A0, 0, 0}, OpenFlags: &flags}); reply.Errno != "" {
+		t.Fatalf("绝对路径忽略 dirfd: %+v", reply)
+	}
+
+	// 非目录句柄做 dirfd 报 ENOTDIR;坏描述符报 EBADF。
+	fileFlags := OpenFlags{Mode: OpenReadWrite, Create: true}
+	filefd, err := files.Open(ctx, OpenRequest{Path: "/moved/sub/g", Flags: fileFlags})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writePath(0x10B0, "any")
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysOpenAt, Args: [6]uint64{filefd, 0x10B0, 0, 0}, OpenFlags: &flags}); reply.Errno != errno.NotDirectory {
+		t.Fatalf("非目录 dirfd: %+v want ENOTDIR", reply)
+	}
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysOpenAt, Args: [6]uint64{900, 0x10B0, 0, 0}, OpenFlags: &flags}); reply.Errno != errno.BadHandle {
+		t.Fatalf("坏 dirfd: %+v want EBADF", reply)
+	}
+
+	// unlinkat(dirfd, "sub/g"):经句柄删除。
+	writePath(0x10C0, "sub/g")
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysUnlinkat, Args: [6]uint64{dirfd, 0x10C0, 0}}); reply.Errno != "" {
+		t.Fatalf("unlinkat(dirfd): %+v", reply)
+	}
+	if _, err := files.Stat(ctx, "/moved/sub/g"); err == nil {
+		t.Fatal("删除未生效")
+	}
+}

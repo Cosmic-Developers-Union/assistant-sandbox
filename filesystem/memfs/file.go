@@ -5,7 +5,9 @@ import (
 	"context"
 	"io"
 	stdfs "io/fs"
+	"path"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -365,3 +367,26 @@ func (e dirEntry) Name() string                  { return e.info.Name() }
 func (e dirEntry) IsDir() bool                   { return e.info.IsDir() }
 func (e dirEntry) Type() stdfs.FileMode          { return e.info.Mode().Type() }
 func (e dirEntry) Info() (stdfs.FileInfo, error) { return e.info, nil }
+
+// ResolveGuestPath 把相对路径解析为以本句柄目录为基准的客体绝对
+// 路径(I02):目录句柄跟随 inode,目录被重命名后解析结果反映新
+// 位置;词法拼接后的符号链接由文件系统按客体语义解析。
+func (h *handle) ResolveGuestPath(name string) (string, error) {
+	h.mu.Lock()
+	closed := h.closed
+	node := h.node
+	h.mu.Unlock()
+	if closed {
+		return "", errno.Wrap(errno.BadHandle, "目录句柄已关闭")
+	}
+	if node.kind != kindDir {
+		return "", errno.Wrap(errno.NotDirectory, "描述符不是目录")
+	}
+	if name == "" {
+		return "", errno.Wrap(errno.Invalid, "客体路径不能为空")
+	}
+	if strings.HasPrefix(name, "/") {
+		return name, nil
+	}
+	return path.Join(h.fs.pathOf(node), name), nil
+}
