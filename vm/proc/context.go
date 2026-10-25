@@ -221,3 +221,18 @@ type SystemConfiguration struct {
 type SystemControl interface {
 	SystemConfiguration() (SystemConfiguration, error)
 }
+
+// ExecutionScheduling 是进程执行权排队端口(H02/H03):单核语义下,
+// 时间片用尽或进入(可能阻塞的)系统调用时让出执行权排到队尾,
+// 驻停(SIGSTOP)与退出归还执行权;阻塞在等待队列的进程不持有
+// 执行权,不占用其他进程的执行时间片。未装配时进程独立执行。
+type ExecutionScheduling interface {
+	// Enter 排队获取执行权;上下文结束或内核关闭时返回错误。
+	Enter(ctx context.Context) error
+
+	// Slice 让出执行权并等待下一轮;没有其他等待者时立即继续。
+	Slice(ctx context.Context) error
+
+	// Leave 归还执行权(进入长期阻塞、驻停或退出前);幂等。
+	Leave() error
+}

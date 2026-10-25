@@ -89,13 +89,24 @@ func (p *program) Run(ctx context.Context, process proc.Proc) (uint8, error) {
 	// execve 经同一 handler 原地替换映像(H06/H07):handler 以指针
 	// 共享,替换后 Heap/映像布局对运行中的分派器可见。
 	handler.Execs = &processExec{process: process, space: space, core: core, handler: &handler}
-	runner, err := common.NewRunner(common.Config{
+	config := common.Config{
 		Core: core,
 		// 同步 CPU 故障(非法指令/无效访问/保护错误)经 faultDispatching
 		// 转换为客体信号(J06);ecall 仍由适配器分派系统调用。
 		Dispatcher: faultDispatching{next: &linuxriscv64.Adapter{Handler: &handler, Registers: core}, deliver: deliverer},
 		Boundary:   deliverer.boundary,
-	})
+	}
+	// H02/H03:执行权排队。时间片用尽与进入(可能阻塞的)系统调用
+	// 时让出执行权(单核轮转);退出归还。
+	if scheduling, ok := process.Control.(proc.ExecutionScheduling); ok {
+		if err := scheduling.Enter(ctx); err != nil {
+			return 0, err
+		}
+		defer func() { _ = scheduling.Leave() }()
+		config.Switcher = &sliceSwitcher{sched: scheduling, remaining: instructionsPerSlice}
+		config.Dispatcher = schedulingDispatch{next: config.Dispatcher, sched: scheduling}
+	}
+	runner, err := common.NewRunner(config)
 	if err != nil {
 		return 0, err
 	}
@@ -904,11 +915,23 @@ func (f processForker) Fork(ctx context.Context) (uint64, error) {
 			deliverer.disposition = dispositions
 		}
 		childHandler.Execs = &processExec{process: child, space: childSpace, core: childCore, handler: &childHandler}
-		runner, err := common.NewRunner(common.Config{
+		childConfig := common.Config{
 			Core:       childCore,
 			Dispatcher: faultDispatching{next: &linuxriscv64.Adapter{Handler: &childHandler, Registers: childCore}, deliver: deliverer},
 			Boundary:   deliverer.boundary,
-		})
+		}
+		// 子进程同样接入执行权排队(H02/H03)。
+		childScheduling, hasScheduling := child.Control.(proc.ExecutionScheduling)
+		if hasScheduling {
+			if err := childScheduling.Enter(runCtx); err != nil {
+				_ = child.Control.Finish(f.parent.ID, child.ID, 125)
+				return
+			}
+			defer func() { _ = childScheduling.Leave() }()
+			childConfig.Switcher = &sliceSwitcher{sched: childScheduling, remaining: instructionsPerSlice}
+			childConfig.Dispatcher = schedulingDispatch{next: childConfig.Dispatcher, sched: childScheduling}
+		}
+		runner, err := common.NewRunner(childConfig)
 		if err != nil {
 			return
 		}
@@ -1126,4 +1149,53 @@ func isDynamicImage(content []byte) bool {
 		return false
 	}
 	return binary.LittleEndian.Uint16(content[16:]) == 3
+}
+
+// instructionsPerSlice 是 H02 的每个时间片指令数:时间片用尽的
+// CPU 密集进程让出执行权,其他可运行进程继续推进。
+const instructionsPerSlice = 1 << 16
+
+// sliceSwitcher 把执行权排队端口适配为 Runner 的任务切换端口:
+// 时间片用尽时让出执行权并等待下一轮(单核轮转, D10/D11 的
+// Switcher 契约在进程间复用)。
+type sliceSwitcher struct {
+	sched     proc.ExecutionScheduling
+	remaining uint64
+}
+
+func (s *sliceSwitcher) Tick() bool {
+	s.remaining--
+	return s.remaining == 0
+}
+
+func (s *sliceSwitcher) Switch(ctx context.Context) (bool, error) {
+	s.remaining = instructionsPerSlice
+	if err := s.sched.Slice(ctx); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// schedulingDispatch 在 ecall 分发期间让出执行权(H03):阻塞在
+// 等待队列或睡眠中的系统调用不独占执行,其他进程继续推进;分发
+// 返回后重新排队获取执行权。CPU 故障的分发快速且不阻塞,直通。
+type schedulingDispatch struct {
+	next  common.Dispatcher
+	sched proc.ExecutionScheduling
+}
+
+func (d schedulingDispatch) Dispatch(ctx context.Context, trap cpu.Trap) (common.Exit, error) {
+	if trap.Kind != cpu.TrapEcall {
+		return d.next.Dispatch(ctx, trap)
+	}
+	// 只归还不重取:系统调用返回后再重新排队。若在此处用 Slice
+	// (归还+重取)会在返回后再次 Enter,等待自己持有的令牌。
+	if err := d.sched.Leave(); err != nil {
+		return common.Exit{}, err
+	}
+	outcome, err := d.next.Dispatch(ctx, trap)
+	if enterErr := d.sched.Enter(ctx); enterErr != nil && err == nil {
+		return outcome, enterErr
+	}
+	return outcome, err
 }

@@ -25,6 +25,13 @@ func (p ProcessDescriptors) Read(ctx context.Context, descriptor uint64, buffer 
 	if err != nil {
 		return 0, err
 	}
+	// 可取消句柄(管道等)经 ctx 读写(H03):上下文结束(关闭/
+	// KILL)唤醒阻塞中的读,不遗留宿主等待。
+	if reader, ok := stream.(interface {
+		ReadContext(context.Context, []byte) (int, error)
+	}); ok {
+		return reader.ReadContext(ctx, buffer)
+	}
 	return stream.Read(buffer)
 }
 
@@ -32,6 +39,11 @@ func (p ProcessDescriptors) Write(ctx context.Context, descriptor uint64, buffer
 	stream, err := p.stream(ctx, descriptor)
 	if err != nil {
 		return 0, err
+	}
+	if writer, ok := stream.(interface {
+		WriteContext(context.Context, []byte) (int, error)
+	}); ok {
+		return writer.WriteContext(ctx, buffer)
 	}
 	return stream.Write(buffer)
 }

@@ -89,6 +89,10 @@ type pauseGate struct {
 	cond   *sync.Cond
 	parent context.Context
 	parked bool
+
+	// observer 观察驻停状态变化(H02):进入驻停前与恢复后各回调
+	// 一次,供内核归还/重新排队执行权;回调在锁外执行。
+	observer func(parked bool)
 }
 
 func newPauseGate(parent context.Context, done <-chan struct{}) *pauseGate {
@@ -122,15 +126,49 @@ func (g *pauseGate) resume() {
 func (g *pauseGate) Err() error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	observed := false
+	notify := func(parked bool) {
+		if g.observer == nil {
+			return
+		}
+		observer := g.observer
+		g.mu.Unlock()
+		observer(parked)
+		g.mu.Lock()
+	}
+	defer func() {
+		// 只有通知过驻停(true)的路径才在返回前通知恢复(false),
+		// 未驻停的常规检查不触发观察者。
+		if observed {
+			notify(false)
+		}
+	}()
 	for g.parked {
 		// 父上下文取消(KILL/关闭等强制终止)优先于驻停:
 		// 唤醒等待者放行,程序经 ctx.Err() 观察取消。
 		if err := g.parent.Err(); err != nil {
 			return err
 		}
+		if !observed {
+			observed = true
+			notify(true)
+		}
 		g.cond.Wait()
 	}
 	return g.parent.Err()
+}
+
+// observeParking 注册驻停观察函数;nil 清除。
+func (g *pauseGate) observeParking(fn func(parked bool)) {
+	g.mu.Lock()
+	g.observer = fn
+	g.mu.Unlock()
+}
+
+// ObserveParking 注册驻停观察函数(H02):进入驻停前以 true 回调,
+// 恢复或因取消离开驻停时以 false 回调;供内核在驻停期间归还执行权。
+func (i *builtinInstance) ObserveParking(fn func(parked bool)) {
+	i.gate.observeParking(fn)
 }
 
 // gateContext 把 Err() 的驻停语义接入程序上下文;其余委托父上下文。

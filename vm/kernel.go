@@ -91,6 +91,10 @@ type Kernel struct {
 	jobsMu      sync.Mutex
 	jobsRunning bool
 
+	// queue 是 H02/H03 的可运行队列:执行权令牌实现单核语义,
+	// 时间片与系统调用边界让出,驻停与退出归还。
+	queue *runQueue
+
 	// trace 收集受限的系统调用轨迹(G08):有界,不记录缓冲区内容。
 	trace *trace.Recorder
 }
@@ -165,6 +169,7 @@ func New(services Services, maxProcesses int) (*Kernel, error) {
 	k.sequencer = services.Sequencer
 	k.signals = signal.New()
 	k.instances = map[proc.PID]executable.Instance{}
+	k.queue = newRunQueue()
 	k.init = root.ID
 	k.signals.Spawn(uint64(root.ID))
 	if fdt, ok := services.FD.(*fd.Table); ok {
@@ -1210,6 +1215,22 @@ func (k *Kernel) RunRegistered(ctx context.Context, p proc.Proc) (ExitStatus, er
 		_ = instance.Interrupt(n)
 	})
 
+	// 驻停观察(H02):被 SIGSTOP 驻停的进程归还执行权,恢复后
+	// 重新排队——驻停进程不占用其他进程的执行时间片。
+	if observer, ok := instance.(interface {
+		ObserveParking(func(parked bool))
+	}); ok {
+		observer.ObserveParking(func(parked bool) {
+			if parked {
+				k.queue.leave()
+				return
+			}
+			// 恢复后排队等待下一轮;内核关闭时立即失败放行
+			//(父上下文随之取消,运行器经 ctx.Err() 退出)。
+			_ = k.queue.enter(context.Background())
+		})
+	}
+
 	if pending, ok := k.signals.Deliverable(uint64(pid)); ok {
 		if action, err := signal.Default(pending); err == nil {
 			switch action {
@@ -1336,6 +1357,8 @@ func (k *Kernel) Close(ctx context.Context) error {
 	processes := k.table.List()
 	k.emitLocked(scheduler.KindClose, k.init, "session")
 	k.mu.Unlock()
+	// 关闭可运行队列:排队等待执行权的进程以错误放行(H02)。
+	k.queue.close()
 	for _, instance := range instances {
 		_ = instance.Interrupt(signal.TERM)
 	}
@@ -2033,4 +2056,21 @@ func (c procControl) Run(ctx context.Context, spec proc.RunSpec) (proc.Proc, err
 		return exited, errors.Join(runErr, finishErr)
 	}
 	return exited, nil
+}
+
+// Enter 排队获取执行权(H02/H03):单核语义下等待轮到本进程。
+func (c procControl) Enter(ctx context.Context) error {
+	return c.k.queue.enter(ctx)
+}
+
+// Slice 让出执行权并等待下一轮:时间片用尽或进入可能阻塞的
+// 系统调用时调用;没有其他等待者时立即继续。
+func (c procControl) Slice(ctx context.Context) error {
+	return c.k.queue.slice(ctx)
+}
+
+// Leave 归还执行权:进入长期阻塞、驻停或退出前调用;幂等。
+func (c procControl) Leave() error {
+	c.k.queue.leave()
+	return nil
 }

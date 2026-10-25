@@ -1147,3 +1147,63 @@ func TestPipeEOFEpipeViaRealTable(t *testing.T) {
 		t.Fatalf("EOF 不应投递信号: %+v", killer.calls)
 	}
 }
+
+// TestPipeBlockingReadInterruptedBySignal 验证 H03:阻塞在空管道上的
+// 读被登记处理器的待投递信号打断,按 1ms 切片契约返回 EINTR;
+// 信号到达前读到数据则正常返回。
+func TestPipeBlockingReadInterruptedBySignal(t *testing.T) {
+	ctx := context.Background()
+	table := fd.New()
+	const pid = 73
+	table.Attach(pid, fd.Streams{})
+	interruptor := &interruptAfter{after: 2}
+	clk := &fakeClock{monotonic: 0}
+	sleeper := &fakeSleeper{onSleep: func(ns uint64) { clk.monotonic += ns }}
+	handler := Syscalls{Memory: newFakeMemory(), Descriptors: ProcessDescriptors{Table: table, PID: pid}, Identity: &Identity{PID: pid}, Clock: clk, Sleeper: sleeper, Interrupts: interruptor}
+
+	var pair [8]byte
+	if err := handler.Memory.Write(ctx, 0x3000, pair[:]); err != nil {
+		t.Fatal(err)
+	}
+	if reply := handler.Handle(ctx, Call{Syscall: SysPipe2, Args: [6]uint64{0x3000, 0}}); reply.Errno != "" {
+		t.Fatalf("pipe2: %+v", reply)
+	}
+	if err := handler.Memory.Read(ctx, 0x3000, pair[:]); err != nil {
+		t.Fatal(err)
+	}
+	reader := binary.LittleEndian.Uint32(pair[0:])
+
+	// 空管道阻塞读:第二次轮询报告待投递信号 → EINTR。
+	if reply := handler.Handle(ctx, Call{Syscall: SysRead, Args: [6]uint64{uint64(reader), 0x3100, 8}}); reply.Errno != errno.Interrupted {
+		t.Fatalf("阻塞读 err=%v want EINTR", reply.Errno)
+	}
+
+	// 无信号时读到数据正常返回:先写入再读。
+	writer := binary.LittleEndian.Uint32(pair[4:])
+	if err := handler.Memory.Write(ctx, 0x3200, []byte("ready")); err != nil {
+		t.Fatal(err)
+	}
+	// interruptor 有状态(已过阈值),换永不报告的实例。
+	handler.Interrupts = &interruptAfter{after: 1 << 30}
+	if reply := handler.Handle(ctx, Call{Syscall: SysWrite, Args: [6]uint64{uint64(writer), 0x3200, 5}}); reply.Errno != "" || reply.Value != 5 {
+		t.Fatalf("写: %+v", reply)
+	}
+	if reply := handler.Handle(ctx, Call{Syscall: SysRead, Args: [6]uint64{uint64(reader), 0x3300, 8}}); reply.Errno != "" || reply.Value != 5 {
+		t.Fatalf("读已写入数据: %+v", reply)
+	}
+}
+
+// interruptAfter 从第 after 次 DeliverableSignal 查询起报告待投递
+// 信号 SIGTERM(登记处置形态)。
+type interruptAfter struct {
+	polls int
+	after int
+}
+
+func (f *interruptAfter) DeliverableSignal() (uint64, SignalAction, bool) {
+	f.polls++
+	if f.polls < f.after {
+		return 0, SignalAction{}, false
+	}
+	return 15, SignalAction{Flags: 0x04000000}, true
+}

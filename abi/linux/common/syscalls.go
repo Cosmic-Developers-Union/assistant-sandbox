@@ -509,7 +509,9 @@ func (s Syscalls) write(ctx context.Context, call Call) Reply {
 
 		return Reply{Errno: errno.Fault}
 	}
-	written, err := s.Descriptors.Write(ctx, call.Args[0], buffer)
+	written, err := s.interruptibleIO(ctx, func(ioCtx context.Context) (int, error) {
+		return s.Descriptors.Write(ioCtx, call.Args[0], buffer)
+	})
 	if err != nil {
 		if errors.Is(err, errno.BrokenPipe) {
 			// EPIPE 前先投递 SIGPIPE(I15):默认处置终止进程,
@@ -541,9 +543,10 @@ func (s Syscalls) read(ctx context.Context, call Call) Reply {
 	if !ready {
 		return reply
 	}
-	loaded, err := s.Descriptors.Read(ctx, call.Args[0], buffer)
+	loaded, err := s.interruptibleIO(ctx, func(ioCtx context.Context) (int, error) {
+		return s.Descriptors.Read(ioCtx, call.Args[0], buffer)
+	})
 	if err != nil {
-
 		if errors.Is(err, io.EOF) {
 			return Reply{}
 		}
@@ -904,6 +907,52 @@ func addNoOverflow(left, right int64) (int64, error) {
 // sleepSlice 是接入信号轮询后的睡眠切片时长(1ms):切片之间检查
 // 待投递信号,信号投递延迟以切片为上界。
 const sleepSlice uint64 = 1_000_000
+
+// interruptibleIO 执行可能阻塞的描述符读写(H03):登记了处理器的
+// 待投递信号到达时以 EINTR 返回(J09 的 1ms 切片契约),上下文
+// 结束时取消在途读写并返回其结果。无中断源或睡眠端口未装配时
+// 直接执行一次阻塞调用。
+func (s Syscalls) interruptibleIO(ctx context.Context, run func(context.Context) (int, error)) (int, error) {
+	if s.Interrupts == nil || s.Sleeper == nil {
+		return run(ctx)
+	}
+	if _, _, ok := s.Interrupts.DeliverableSignal(); ok {
+		return 0, errno.Interrupted
+	}
+	ioCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	type outcome struct {
+		n   int
+		err error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		n, err := run(ioCtx)
+		done <- outcome{n, err}
+	}()
+	for {
+		if err := s.Sleeper.Sleep(ctx, sleepSlice); err != nil {
+			if ctx.Err() != nil {
+				// 上下文结束(关闭/KILL):取消在途读写并返回其结果。
+				cancel()
+				result := <-done
+				return result.n, result.err
+			}
+			// 睡眠端口的非取消错误与时序无关:退化为单次阻塞等待,
+			// 不再轮询中断(读写完成或 ctx 取消后经 done 返回)。
+			result := <-done
+			return result.n, result.err
+		}
+		select {
+		case result := <-done:
+			return result.n, result.err
+		default:
+		}
+		if _, _, ok := s.Interrupts.DeliverableSignal(); ok {
+			return 0, errno.Interrupted
+		}
+	}
+}
 
 // sleepOnce 睡指定时长;接入 Interrupts 时按切片睡眠并在片间检查
 // 待投递信号,发现即返回 errno.Interrupted。未接入时保持单次睡眠。
