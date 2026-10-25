@@ -92,8 +92,10 @@ ENOSYS 清单,归 L/I/H 组后续任务。
 - 文件类型:常规文件、目录、符号链接、硬链接(memfs/overlay/mountfs);
   设备节点仅由 devfs 提供;FIFO 与 socket 创建不在配置内(I15/M 组前
   mkfifo/socket 相关 ENOTSUP 或 ENOSYS)。
-- 路径解析:绝对路径与 AT_FDCWD;**dirfd 相对解析明确 ENOTSUP**(I02);
-  `.`/`..`、符号链接(含 ELOOP)由 memfs 语义提供;不能逃逸授权根(N11)。
+- 路径解析:全部文件类调用经统一解析器(I01)——绝对路径直接使用,相对
+  路径以进程工作目录为基准,`.`/`..` 按词法消解并在客体根处收敛(不逃逸
+  授权根);符号链接(含 ELOOP)由底层文件系统的客体语义提供;空路径报
+  EINVAL、超长路径报 ENAMETOOLONG。**dirfd 相对解析明确 ENOTSUP**(I02)。
 - open 标志矩阵、短读短写、目录游标、截断/时间戳按 I03/I06/I09/I12。
 - 地址空间:匿名私有 mmap(E03)、固定地址替换(E04)、munmap 拆分(E05)、
   mprotect 含 W^X 拒绝(E06)、brk(E07)、mremap/madvise 子集(E11/E12)、

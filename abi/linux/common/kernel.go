@@ -5,8 +5,6 @@ import (
 	"io"
 	stdfs "io/fs"
 	"math"
-	pathpkg "path"
-	"strings"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/clock"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
@@ -270,13 +268,16 @@ type ProcessFiles struct {
 	Dir string
 }
 
+// resolver 返回按工作目录解析客体路径的统一入口(I01)。
+func (p ProcessFiles) resolver() Resolver { return NewResolver(p.Dir) }
+
 func (p ProcessFiles) Mkdir(ctx context.Context, path string, mode uint32) error {
 	if p.System == nil {
 		return errno.Wrap(errno.NotImplemented, "文件端口未装配")
 	}
-	target := path
-	if !strings.HasPrefix(target, "/") {
-		target = pathpkg.Join(p.Dir, target)
+	target, err := p.resolver().Resolve(path)
+	if err != nil {
+		return err
 	}
 	return p.System.Mkdir(ctx, target, stdfs.FileMode(mode))
 }
@@ -285,9 +286,9 @@ func (p ProcessFiles) Remove(ctx context.Context, path string) error {
 	if p.System == nil {
 		return errno.Wrap(errno.NotImplemented, "文件端口未装配")
 	}
-	target := path
-	if !strings.HasPrefix(target, "/") {
-		target = pathpkg.Join(p.Dir, target)
+	target, err := p.resolver().Resolve(path)
+	if err != nil {
+		return err
 	}
 	return p.System.Remove(ctx, target)
 }
@@ -296,8 +297,9 @@ func (p ProcessFiles) Symlink(ctx context.Context, target, linkpath string) erro
 	if p.System == nil {
 		return errno.Wrap(errno.NotImplemented, "文件端口未装配")
 	}
-	if !strings.HasPrefix(linkpath, "/") {
-		linkpath = pathpkg.Join(p.Dir, linkpath)
+	linkpath, err := p.resolver().Resolve(linkpath)
+	if err != nil {
+		return err
 	}
 	return p.System.Symlink(ctx, target, linkpath)
 }
@@ -306,11 +308,9 @@ func (p ProcessFiles) Link(ctx context.Context, oldpath, newpath string) error {
 	if p.System == nil {
 		return errno.Wrap(errno.NotImplemented, "文件端口未装配")
 	}
-	if !strings.HasPrefix(oldpath, "/") {
-		oldpath = pathpkg.Join(p.Dir, oldpath)
-	}
-	if !strings.HasPrefix(newpath, "/") {
-		newpath = pathpkg.Join(p.Dir, newpath)
+	oldpath, newpath, err := p.resolver().ResolvePair(oldpath, newpath)
+	if err != nil {
+		return err
 	}
 	return p.System.Link(ctx, oldpath, newpath)
 }
@@ -321,11 +321,9 @@ func (p ProcessFiles) LinkFollowing(ctx context.Context, oldpath, newpath string
 	if p.System == nil {
 		return errno.Wrap(errno.NotImplemented, "文件端口未装配")
 	}
-	if !strings.HasPrefix(oldpath, "/") {
-		oldpath = pathpkg.Join(p.Dir, oldpath)
-	}
-	if !strings.HasPrefix(newpath, "/") {
-		newpath = pathpkg.Join(p.Dir, newpath)
+	oldpath, newpath, err := p.resolver().ResolvePair(oldpath, newpath)
+	if err != nil {
+		return err
 	}
 	follow, ok := p.System.(fs.LinkFollow)
 	if !ok {
@@ -338,9 +336,9 @@ func (p ProcessFiles) ReadDir(ctx context.Context, path string) ([]stdfs.DirEntr
 	if p.System == nil {
 		return nil, errno.Wrap(errno.NotImplemented, "文件端口未装配")
 	}
-	target := path
-	if !strings.HasPrefix(target, "/") {
-		target = pathpkg.Join(p.Dir, target)
+	target, err := p.resolver().Resolve(path)
+	if err != nil {
+		return nil, err
 	}
 	return p.System.ReadDir(ctx, target)
 }
@@ -349,11 +347,9 @@ func (p ProcessFiles) Rename(ctx context.Context, oldpath, newpath string) error
 	if p.System == nil {
 		return errno.Wrap(errno.NotImplemented, "文件端口未装配")
 	}
-	if !strings.HasPrefix(oldpath, "/") {
-		oldpath = pathpkg.Join(p.Dir, oldpath)
-	}
-	if !strings.HasPrefix(newpath, "/") {
-		newpath = pathpkg.Join(p.Dir, newpath)
+	oldpath, newpath, err := p.resolver().ResolvePair(oldpath, newpath)
+	if err != nil {
+		return err
 	}
 	return p.System.Rename(ctx, oldpath, newpath)
 }
@@ -362,9 +358,9 @@ func (p ProcessFiles) Statfs(ctx context.Context, path string) (StatfsInfo, erro
 	if p.System == nil {
 		return StatfsInfo{}, errno.Wrap(errno.NotImplemented, "文件端口未装配")
 	}
-	target := path
-	if !strings.HasPrefix(target, "/") {
-		target = pathpkg.Join(p.Dir, target)
+	target, err := p.resolver().Resolve(path)
+	if err != nil {
+		return StatfsInfo{}, err
 	}
 	capacity, ok := p.System.(fs.Capacity)
 	if !ok {
@@ -381,9 +377,9 @@ func (p ProcessFiles) SetTimes(ctx context.Context, path string, atime, mtime in
 	if p.System == nil {
 		return errno.Wrap(errno.NotImplemented, "文件端口未装配")
 	}
-	target := path
-	if !strings.HasPrefix(target, "/") {
-		target = pathpkg.Join(p.Dir, target)
+	target, err := p.resolver().Resolve(path)
+	if err != nil {
+		return err
 	}
 	if setter, ok := p.System.(fs.LinkTimestamps); ok {
 		return setter.SetTimesFollow(ctx, target, atime, mtime, follow)
@@ -400,9 +396,9 @@ func (p ProcessFiles) Readlink(ctx context.Context, path string) (string, error)
 	if p.System == nil {
 		return "", errno.Wrap(errno.NotImplemented, "文件端口未装配")
 	}
-	target := path
-	if !strings.HasPrefix(target, "/") {
-		target = pathpkg.Join(p.Dir, target)
+	target, err := p.resolver().Resolve(path)
+	if err != nil {
+		return "", err
 	}
 	return p.System.Readlink(ctx, target)
 }
@@ -411,9 +407,9 @@ func (p ProcessFiles) Stat(ctx context.Context, path string) (stdfs.FileInfo, er
 	if p.System == nil {
 		return nil, errno.Wrap(errno.NotImplemented, "文件端口未装配")
 	}
-	target := path
-	if !strings.HasPrefix(target, "/") {
-		target = pathpkg.Join(p.Dir, target)
+	target, err := p.resolver().Resolve(path)
+	if err != nil {
+		return nil, err
 	}
 	return p.System.Stat(ctx, target)
 }
@@ -422,9 +418,9 @@ func (p ProcessFiles) Lstat(ctx context.Context, path string) (stdfs.FileInfo, e
 	if p.System == nil {
 		return nil, errno.Wrap(errno.NotImplemented, "文件端口未装配")
 	}
-	target := path
-	if !strings.HasPrefix(target, "/") {
-		target = pathpkg.Join(p.Dir, target)
+	target, err := p.resolver().Resolve(path)
+	if err != nil {
+		return nil, err
 	}
 	return p.System.Lstat(ctx, target)
 }
@@ -436,12 +432,11 @@ func (p ProcessFiles) Open(ctx context.Context, request OpenRequest) (uint64, er
 	if err := request.Flags.Validate(); err != nil {
 		return 0, err
 	}
-	path := request.Path
-	if !strings.HasPrefix(path, "/") {
-
-		path = pathpkg.Join(p.Dir, path)
+	target, err := p.resolver().Resolve(request.Path)
+	if err != nil {
+		return 0, err
 	}
-	file, err := p.System.Open(ctx, path, rawOpenFlags(request.Flags), stdfs.FileMode(request.Perm))
+	file, err := p.System.Open(ctx, target, rawOpenFlags(request.Flags), stdfs.FileMode(request.Perm))
 	if err != nil {
 		return 0, err
 	}

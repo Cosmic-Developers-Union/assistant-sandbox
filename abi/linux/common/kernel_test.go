@@ -8,6 +8,7 @@ import (
 	"io"
 	stdfs "io/fs"
 	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -969,4 +970,58 @@ func TestDupAndSeparateOpensOffsetMatrix(t *testing.T) {
 		t.Fatalf("独立偏移不应影响共享链: %q", got)
 	}
 	_ = syscalls
+}
+
+// TestGuestPathResolutionAgainstRealFileSystem 验证 I01:文件类调用经
+// 统一路径解析——相对路径以工作目录为基准,"." 与 ".." 词法消解,
+// 越出工作目录后在客体根处收敛;符号链接按底层文件系统的客体语义
+// 解析。
+func TestGuestPathResolutionAgainstRealFileSystem(t *testing.T) {
+	ctx := context.Background()
+	system, err := memfs.New(&clock.Virtual{}, memfs.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const pid = 51
+	table := fd.New()
+	table.Attach(pid, fd.Streams{})
+	files := ProcessFiles{System: system, Store: table, PID: pid, Dir: "/work/a"}
+	for _, dir := range []string{"/work", "/work/a", "/work/a/b"} {
+		if err := system.Mkdir(ctx, dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 相对路径以工作目录为基准。
+	descriptor, err := files.Open(ctx, OpenRequest{Path: "b/file", Flags: OpenFlags{Mode: OpenReadWrite, Create: true}, Perm: 0o644})
+	if err != nil {
+		t.Fatalf("相对路径打开: %v", err)
+	}
+	if err := table.Close(ctx, pid, uint32(descriptor)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := system.Stat(ctx, "/work/a/b/file"); err != nil {
+		t.Fatalf("文件未落在工作目录下: %v", err)
+	}
+	// ".." 词法消解回到同一文件。
+	if _, err := files.Open(ctx, OpenRequest{Path: "../a/b/file", Flags: OpenFlags{Mode: OpenRead}}); err != nil {
+		t.Fatalf("上跳路径打开: %v", err)
+	}
+	// 越出工作目录后在客体根处收敛:不逃逸授权根。
+	if _, err := files.Open(ctx, OpenRequest{Path: "../../../../etc/passwd", Flags: OpenFlags{Mode: OpenRead}}); !errors.Is(err, errno.NotFound) {
+		t.Fatalf("越界路径 err=%v want ENOENT", err)
+	}
+	// 符号链接按客体语义解析:相对链接目标以链接所在目录为基准。
+	if err := files.Symlink(ctx, "b", "/work/a/link"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := files.Open(ctx, OpenRequest{Path: "link/file", Flags: OpenFlags{Mode: OpenRead}}); err != nil {
+		t.Fatalf("经符号链接打开: %v", err)
+	}
+	// 空路径与超长路径按 EINVAL/ENAMETOOLONG 拒绝。
+	if _, err := files.Open(ctx, OpenRequest{Path: "", Flags: OpenFlags{Mode: OpenRead}}); !errors.Is(err, errno.Invalid) {
+		t.Fatalf("空路径 err=%v want EINVAL", err)
+	}
+	if _, err := files.Open(ctx, OpenRequest{Path: "/" + strings.Repeat("a", PathLimit), Flags: OpenFlags{Mode: OpenRead}}); !errors.Is(err, errno.NameTooLong) {
+		t.Fatalf("超长路径 err=%v want ENAMETOOLONG", err)
+	}
 }
