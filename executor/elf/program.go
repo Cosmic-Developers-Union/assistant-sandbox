@@ -22,6 +22,7 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/proc"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/resources"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/signal"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/trace"
 )
 
 const randomBytes = 16
@@ -384,6 +385,10 @@ func syscalls(ctx context.Context, process proc.Proc, space *memory.Table, plan 
 	}
 	if sessions, ok := process.Control.(proc.SessionControl); ok {
 		handler.Sessions = processSessions{control: sessions}
+	}
+	if recorder, ok := process.Control.(proc.TraceRecorder); ok {
+		// 受限系统调用追踪(G08):只记录标识、调用编号、结果与耗时。
+		handler.Tracer = processTrace{control: recorder}
 	}
 	if forker, ok := process.Control.(proc.ForkControl); ok {
 		handler.Spawner = processForker{
@@ -1104,6 +1109,15 @@ func (p processSessions) GetPGID(pid int64) (uint64, error) {
 
 func (p processSessions) GetSID(pid int64) (uint64, error) {
 	return p.control.GetSID(pid)
+}
+
+// processTrace 适配受限系统调用追踪端口(G08)。
+type processTrace struct {
+	control proc.TraceRecorder
+}
+
+func (p processTrace) RecordSyscall(pid, tid uint64, number uint64, result int64, duration trace.Duration) {
+	p.control.RecordSyscall(pid, tid, number, result, duration)
 }
 
 // isDynamicImage 报告映像头是否为 ET_DYN(e_type=3)。

@@ -10,9 +10,11 @@ import (
 	"strings"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/executor/cpu"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/clock"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 	vmfs "github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fs"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/memory"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/trace"
 )
 
 type Memory interface {
@@ -90,8 +92,10 @@ type Limiter interface {
 type Identity struct {
 	PID  uint64
 	PPID uint64
-	UID  uint32
-	GID  uint32
+	// TID 是调用线程号;单线程模型下与 PID 相同,0 表示未区分。
+	TID uint64
+	UID uint32
+	GID uint32
 }
 
 type OpenRequest struct {
@@ -216,6 +220,9 @@ type Syscalls struct {
 	// Sessions 是 setsid/setpgid/getpgid/getsid 的会话端口(H11);
 	// 未装配时这四个调用明确 ENOTSUP。
 	Sessions SessionControl
+
+	// Tracer 是受限的系统调用追踪端口(G08);未装配时不产生轨迹。
+	Tracer SyscallTracer
 }
 
 // SignalSender 是 kill/tgkill 的发送端口;实现经内核投递,
@@ -238,6 +245,13 @@ type SessionControl interface {
 
 	// GetSID 返回目标进程的会话号。
 	GetSID(pid int64) (uint64, error)
+}
+
+// SyscallTracer 是受限的系统调用追踪端口(G08):只记录 PID/TID、
+// 调用编号、结果与耗时,不得携带路径、参数或缓冲区内容。
+type SyscallTracer interface {
+	// RecordSyscall 记录一次系统调用;result 为返回值,失败时为 -errno。
+	RecordSyscall(pid, tid uint64, number uint64, result int64, duration trace.Duration)
 }
 
 // Spawner 是 clone(SIGCHLD) 的进程复制端口;实现复制地址空间、
@@ -291,11 +305,26 @@ type Waiter interface {
 	HasChildren() bool
 }
 
+// Handle 分派一次系统调用。未登记的调用一律 ENOSYS(G01);装配了
+// 追踪端口时按 G08 记录 PID/TID、调用编号、结果与耗时——轨迹不含
+// 任何路径、参数或缓冲区内容。
 func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 	// 未登记的系统调用一律 ENOSYS:登记表见 registry.go(G01)。
 	if !handled[call.Syscall] {
 		return Reply{Errno: errno.NotImplemented}
 	}
+	if s.Tracer == nil {
+		return s.dispatch(ctx, call)
+	}
+	start := clock.MonotonicNanos()
+	reply := s.dispatch(ctx, call)
+	elapsed := clock.MonotonicNanos() - start
+	s.Tracer.RecordSyscall(s.identityPID(), s.identityTID(), call.Number, s.resultOf(reply), trace.Duration(elapsed))
+	return reply
+}
+
+// dispatch 是 Handle 的实际分派体(不含追踪)。
+func (s Syscalls) dispatch(ctx context.Context, call Call) Reply {
 	switch call.Syscall {
 	case SysExit, SysExitGroup:
 		return Reply{Exit: true, Value: call.Args[0]}
@@ -622,12 +651,45 @@ func (s Syscalls) lseek(ctx context.Context, call Call) Reply {
 	return Reply{Value: uint64(offset)}
 }
 
+// identityPID 返回调用进程的 PID(未装配身份端口时为 0)。
+func (s Syscalls) identityPID() uint64 {
+	if s.Identity == nil {
+		return 0
+	}
+	return s.Identity.PID
+}
+
+// identityTID 返回调用线程的 TID;单线程模型下与 PID 相同。
+func (s Syscalls) identityTID() uint64 {
+	if s.Identity == nil {
+		return 0
+	}
+	if s.Identity.TID != 0 {
+		return s.Identity.TID
+	}
+	return s.Identity.PID
+}
+
+// resultOf 把应答折算为轨迹结果:成功为返回值,失败为 -errno。
+func (s Syscalls) resultOf(reply Reply) int64 {
+	if reply.Errno != "" {
+		number, _ := errno.Linux(reply.Errno)
+		return -int64(number)
+	}
+	return int64(reply.Value)
+}
+
 func (s Syscalls) identity(call Call) Reply {
 	if s.Identity == nil {
 		return Reply{Errno: errno.NotImplemented}
 	}
 	switch call.Syscall {
-	case SysGetPID, SysGetTID:
+	case SysGetPID:
+		return Reply{Value: s.Identity.PID}
+	case SysGetTID:
+		if s.Identity.TID != 0 {
+			return Reply{Value: s.Identity.TID}
+		}
 		return Reply{Value: s.Identity.PID}
 	case SysGetPPID:
 		return Reply{Value: s.Identity.PPID}

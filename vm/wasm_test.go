@@ -63,7 +63,9 @@ func TestVMProductionCodeHasNoAmbientHostImports(t *testing.T) {
 		"platform/entropy/entropy_wasi.go":   {"crypto/rand": true},
 
 		"filesystem/memfs/file.go": {"time": true},
-		"guest/cmd/main.go":        {"os": true},
+		// 时钟读数只用于测量耗时(系统调用轨迹),不作为客体可见时间。
+		"vm/clock/monotonic.go": {"time": true},
+		"guest/cmd/main.go":     {"os": true},
 
 		"filesystem/persistent/store.go": {"os": true},
 

@@ -8,6 +8,7 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fd"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/memory"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/signal"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/trace"
 )
 
 type contextKey struct{}
@@ -127,6 +128,13 @@ type SessionControl interface {
 
 	// GetSID 返回目标进程的会话号。
 	GetSID(pid int64) (uint64, error)
+}
+
+// TraceRecorder 是受限系统调用追踪的记录端口(G08):只记录
+// PID/TID、调用编号、结果与耗时,不得携带路径、参数或缓冲区内容。
+type TraceRecorder interface {
+	// RecordSyscall 记录一次系统调用;result 为返回值,失败时为 -errno。
+	RecordSyscall(pid, tid uint64, number uint64, result int64, duration trace.Duration)
 }
 
 // SignalDispositionControl 是 rt_sigaction/rt_sigprocmask 的登记端口。

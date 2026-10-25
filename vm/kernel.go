@@ -27,6 +27,7 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/resources"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/scheduler"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/signal"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/trace"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/wait"
 )
 
@@ -88,6 +89,9 @@ type Kernel struct {
 
 	jobsMu      sync.Mutex
 	jobsRunning bool
+
+	// trace 收集受限的系统调用轨迹(G08):有界,不记录缓冲区内容。
+	trace *trace.Recorder
 }
 
 func New(services Services, maxProcesses int) (*Kernel, error) {
@@ -154,6 +158,7 @@ func New(services Services, maxProcesses int) (*Kernel, error) {
 	k.bootTime = bootTimeValue
 	k.bootDeclared = bootTimeDeclared
 	k.table = table
+	k.trace = trace.New(trace.DefaultLimit)
 	k.services = services
 	k.meters = services.Meters
 	k.sequencer = services.Sequencer
@@ -183,6 +188,18 @@ func New(services Services, maxProcesses int) (*Kernel, error) {
 }
 
 func (k *Kernel) Processes() []proc.Proc { k.mu.Lock(); defer k.mu.Unlock(); return k.table.List() }
+
+// Trace 返回本 VM 的受限系统调用轨迹记录器(G08):只含 PID/TID、
+// 调用编号、结果与耗时,条数有界。
+func (k *Kernel) Trace() *trace.Recorder { return k.trace }
+
+// SetTraceLimit 调整轨迹保留上限(缩小会丢弃最旧条目)。
+func (k *Kernel) SetTraceLimit(limit int) {
+	if k.trace == nil {
+		return
+	}
+	k.trace.SetLimit(limit)
+}
 
 func (k *Kernel) SystemConfiguration() (proc.SystemConfiguration, error) {
 	return proc.SystemConfiguration{
@@ -1615,6 +1632,17 @@ func (c procControl) GetSID(pid int64) (uint64, error) {
 		return 0, err
 	}
 	return uint64(value), nil
+}
+
+// RecordSyscall 记录一次受限系统调用轨迹(G08):只带标识、调用编号、
+// 结果与耗时,不记录任何缓冲区内容。
+func (c procControl) RecordSyscall(pid, tid uint64, number uint64, result int64, duration trace.Duration) {
+	if c.k.trace == nil {
+		return
+	}
+	c.k.trace.Record(trace.Entry{
+		PID: pid, TID: tid, Number: number, Result: result, Duration: duration,
+	})
 }
 
 func (c procControl) KillSignal(pid int64, n signal.Number) error {

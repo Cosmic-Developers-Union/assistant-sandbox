@@ -39,9 +39,9 @@ func TestSessionProbeIsDeterministic(t *testing.T) {
 	}
 }
 
-// runSessionProbeOnKernel 在真实内核(而非替身控制端口)上执行会话
-// 探针:内核的会话端口按 Linux 语义应答,客体经 riscv64 ABI 编号调用。
-func runSessionProbeOnKernel(t *testing.T, image []byte) (string, uint8) {
+// guestKernel 构造承载客体程序的内核:客体文件系统、可写描述符表
+// 与真实内核控制端口齐备(不走替身控制端口)。
+func guestKernel(t *testing.T, image []byte) (*vm.Kernel, fs.System) {
 	t.Helper()
 	system, err := memfs.New(&clock.Virtual{}, memfs.Options{})
 	if err != nil {
@@ -61,7 +61,6 @@ func runSessionProbeOnKernel(t *testing.T, image []byte) (string, uint8) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	output := &bytes.Buffer{}
 	kernel, err := vm.New(vm.Services{
 		Set: capability.Set{
 			FS:       system,
@@ -76,16 +75,49 @@ func runSessionProbeOnKernel(t *testing.T, image []byte) (string, uint8) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = kernel.Close(context.Background()) }()
+	return kernel, system
+}
+
+// runGuestOnKernel 在真实内核(而非替身控制端口)上执行客体程序:
+// 内核的会话端口按 Linux 语义应答,客体经 riscv64 ABI 编号调用。
+func runGuestOnKernel(t *testing.T, image []byte) (*vm.Kernel, string, uint8) {
+	t.Helper()
+	kernel, system := guestKernel(t, image)
+	stdout, code := runGuestOnKernelWith(t, kernel, system, image)
+	return kernel, stdout, code
+}
+
+// runGuestOnKernelWith 在既有内核上再次执行同一客体程序。
+func runGuestOnKernelWith(t *testing.T, kernel *vm.Kernel, system fs.System, image []byte) (string, uint8) {
+	t.Helper()
+	file, err := system.Open(context.Background(), "/probe", fs.Create|fs.ReadWrite, 0o755)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write(image); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	output := &bytes.Buffer{}
 	process, err := kernel.Begin(0, "/probe", nil, "/", nil, fd.Streams{Output: writerFunc(output.Write)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	status, err := kernel.RunRegistered(context.Background(), process)
 	if err != nil {
-		t.Fatalf("运行会话探针: %v", err)
+		t.Fatalf("运行客体程序: %v", err)
 	}
 	return output.String(), status.Code
+}
+
+// runSessionProbeOnKernel 执行会话探针并返回输出与退出码。
+func runSessionProbeOnKernel(t *testing.T, image []byte) (string, uint8) {
+	t.Helper()
+	kernel, stdout, code := runGuestOnKernel(t, image)
+	defer func() { _ = kernel.Close(context.Background()) }()
+	return stdout, code
 }
 
 // TestSessionProbeErrnosMatchLinuxSemantics 验证 H11:内核按 Linux

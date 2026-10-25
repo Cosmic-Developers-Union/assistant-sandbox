@@ -14,6 +14,7 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fd"
 	vmfs "github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fs"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/trace"
 )
 
 type fakeMemory struct {
@@ -3157,5 +3158,65 @@ func TestSessionSyscallsValidateAndDelegate(t *testing.T) {
 	}
 	if reply := failing.Handle(ctx, Call{Syscall: SysGetpgid}); reply.Errno != errno.NotPermitted {
 		t.Fatalf("getpgid EPERM: %+v", reply)
+	}
+}
+
+// fakeTracer 记录受限系统调用轨迹(G08)。
+type fakeTracer struct {
+	entries []struct {
+		pid, tid uint64
+		number   uint64
+		result   int64
+		duration trace.Duration
+	}
+}
+
+func (f *fakeTracer) RecordSyscall(pid, tid uint64, number uint64, result int64, duration trace.Duration) {
+	f.entries = append(f.entries, struct {
+		pid, tid uint64
+		number   uint64
+		result   int64
+		duration trace.Duration
+	}{pid, tid, number, result, duration})
+}
+
+// TestSyscallTraceRecordsCallResultAndDuration 验证 G08:装配追踪端口
+// 后每次调用都记录 PID/TID、调用编号、结果与耗时;失败调用记录负
+// errno;轨迹不含任何路径或缓冲区内容(记录项本身没有这类字段)。
+func TestSyscallTraceRecordsCallResultAndDuration(t *testing.T) {
+	ctx := context.Background()
+	tracer := &fakeTracer{}
+	handler := Syscalls{
+		Memory:   newFakeMemory(),
+		Identity: &Identity{PID: 42, PPID: 7, TID: 43},
+		Tracer:   tracer,
+	}
+	// 成功调用:结果为返回值。
+	if reply := handler.Handle(ctx, Call{Syscall: SysGetPID, Number: 39}); reply.Errno != "" {
+		t.Fatalf("getpid: %+v", reply)
+	}
+	// 失败调用:结果为负 errno。
+	if reply := handler.Handle(ctx, Call{Syscall: SysOpenAt, Number: 56}); reply.Errno == "" {
+		t.Fatalf("openat 应失败: %+v", reply)
+	}
+	if len(tracer.entries) != 2 {
+		t.Fatalf("轨迹条数=%d want 2", len(tracer.entries))
+	}
+	first := tracer.entries[0]
+	if first.pid != 42 || first.tid != 43 {
+		t.Fatalf("标识=%d/%d want 42/43", first.pid, first.tid)
+	}
+	if first.number != 39 || first.result != 42 {
+		t.Fatalf("调用=%d 结果=%d want 39/42", first.number, first.result)
+	}
+	// 耗时以纳秒记录(宿主单调时钟);此处只校验字段存在且非负。
+	second := tracer.entries[1]
+	if second.number != 56 || second.result >= 0 {
+		t.Fatalf("失败调用应记录负 errno: %+v", second)
+	}
+	// 未装配追踪端口时不产生轨迹。
+	plain := Syscalls{Memory: newFakeMemory(), Identity: &Identity{PID: 1}}
+	if reply := plain.Handle(ctx, Call{Syscall: SysGetPID}); reply.Errno != "" {
+		t.Fatalf("getpid: %+v", reply)
 	}
 }
