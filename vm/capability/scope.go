@@ -206,6 +206,11 @@ func (s scopedInstaller) SetCloexec(_ uint64, id uint32, flag bool) error {
 	return s.installer.SetCloexec(s.pid, id, flag)
 }
 
+// Cloexec 实现 fd.Installer:查询作用域绑定进程的 FD_CLOEXEC 标志。
+func (s scopedInstaller) Cloexec(_ uint64, id uint32) (bool, error) {
+	return s.installer.Cloexec(s.pid, id)
+}
+
 type scopedIdentity struct {
 	source identity.Source
 	pid    uint64

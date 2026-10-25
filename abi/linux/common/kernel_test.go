@@ -1025,3 +1025,125 @@ func TestGuestPathResolutionAgainstRealFileSystem(t *testing.T) {
 		t.Fatalf("超长路径 err=%v want ENAMETOOLONG", err)
 	}
 }
+
+// TestPipeNonBlockingModeViaFcntl 验证 I15:管道经 F_SETFL 切换
+// O_NONBLOCK 后,空读与满写返回 EAGAIN;pipe2 的 O_NONBLOCK 标志在
+// 创建时生效;F_GETFL 报告访问模式与非阻塞位。
+func TestPipeNonBlockingModeViaFcntl(t *testing.T) {
+	ctx := context.Background()
+	table := fd.New()
+	const pid = 71
+	table.Attach(pid, fd.Streams{})
+	handler := Syscalls{Memory: newFakeMemory(), Descriptors: ProcessDescriptors{Table: table, PID: pid}, Identity: &Identity{PID: pid}}
+
+	// pipe2(O_NONBLOCK):创建即非阻塞。
+	var pair [8]byte
+	if err := handler.Memory.Write(ctx, 0x3000, pair[:]); err != nil {
+		t.Fatal(err)
+	}
+	reply := handler.Handle(ctx, Call{Syscall: SysPipe2, Args: [6]uint64{0x3000, 0o4000}})
+	if reply.Errno != "" {
+		t.Fatalf("pipe2: %+v", reply)
+	}
+	if err := handler.Memory.Read(ctx, 0x3000, pair[:]); err != nil {
+		t.Fatal(err)
+	}
+	reader, writer := binary.LittleEndian.Uint32(pair[0:]), binary.LittleEndian.Uint32(pair[4:])
+
+	// 空读:非阻塞返回 EAGAIN(Linux EAGAIN=11)。
+	if reply := handler.Handle(ctx, Call{Syscall: SysRead, Args: [6]uint64{uint64(reader), 0x3100, 8}}); reply.Errno != errno.WouldBlock {
+		t.Fatalf("空读 err=%v want EAGAIN", reply.Errno)
+	}
+
+	// F_GETFL:读端 O_RDONLY|O_NONBLOCK。
+	if reply := handler.Handle(ctx, Call{Syscall: SysFcntl, Args: [6]uint64{uint64(reader), 3}}); reply.Errno != "" || reply.Value != 0o4000 {
+		t.Fatalf("读端 flags=%#x err=%v want O_NONBLOCK", reply.Value, reply.Errno)
+	}
+
+	// 恢复阻塞模式后写入再切回非阻塞:小写命中满缓冲整体拒绝。
+	if reply := handler.Handle(ctx, Call{Syscall: SysFcntl, Args: [6]uint64{uint64(writer), 4, 0}}); reply.Errno != "" {
+		t.Fatalf("清除非阻塞: %+v", reply)
+	}
+	payload := make([]byte, 32)
+	for i := range payload {
+		payload[i] = byte('a' + i%26)
+	}
+	if err := handler.Memory.Write(ctx, 0x3200, payload); err != nil {
+		t.Fatal(err)
+	}
+	if reply := handler.Handle(ctx, Call{Syscall: SysWrite, Args: [6]uint64{uint64(writer), 0x3200, 32}}); reply.Errno != "" || reply.Value != 32 {
+		t.Fatalf("阻塞写: %+v", reply)
+	}
+	if reply := handler.Handle(ctx, Call{Syscall: SysFcntl, Args: [6]uint64{uint64(writer), 4, 0o4000}}); reply.Errno != "" {
+		t.Fatalf("切回非阻塞: %+v", reply)
+	}
+	// 缓冲未排空(64KiB 容量,写 32 字节后仍有空间):以非阻塞读取
+	// 校验数据往返,再对读端做空读 EAGAIN。
+	if reply := handler.Handle(ctx, Call{Syscall: SysRead, Args: [6]uint64{uint64(reader), 0x3300, 32}}); reply.Errno != "" || reply.Value != 32 {
+		t.Fatalf("非阻塞读已有数据: %+v", reply)
+	}
+	if reply := handler.Handle(ctx, Call{Syscall: SysRead, Args: [6]uint64{uint64(reader), 0x3300, 8}}); reply.Errno != errno.WouldBlock {
+		t.Fatalf("排空后空读 err=%v want EAGAIN", reply.Errno)
+	}
+
+	// 未知 pipe2 标志拒绝。
+	if reply := handler.Handle(ctx, Call{Syscall: SysPipe2, Args: [6]uint64{0x3000, 0x8}}); reply.Errno != errno.Invalid {
+		t.Fatalf("未知标志 err=%v want EINVAL", reply.Errno)
+	}
+}
+
+// TestPipeEOFEpipeViaRealTable 验证 I15:读端关闭后写返回 EPIPE 并触发
+// SIGPIPE 投递;写端关闭后读返回 0(EOF)。
+func TestPipeEOFEpipeViaRealTable(t *testing.T) {
+	ctx := context.Background()
+	table := fd.New()
+	const pid = 72
+	table.Attach(pid, fd.Streams{})
+	killer := &fakeKiller{}
+	handler := Syscalls{Memory: newFakeMemory(), Descriptors: ProcessDescriptors{Table: table, PID: pid}, Identity: &Identity{PID: pid}, Kills: killer}
+
+	var pair [8]byte
+	if err := handler.Memory.Write(ctx, 0x3000, pair[:]); err != nil {
+		t.Fatal(err)
+	}
+	if reply := handler.Handle(ctx, Call{Syscall: SysPipe2, Args: [6]uint64{0x3000, 0}}); reply.Errno != "" {
+		t.Fatalf("pipe2: %+v", reply)
+	}
+	if err := handler.Memory.Read(ctx, 0x3000, pair[:]); err != nil {
+		t.Fatal(err)
+	}
+	reader, writer := binary.LittleEndian.Uint32(pair[0:]), binary.LittleEndian.Uint32(pair[4:])
+
+	// 关闭读端:写命中 EPIPE,先向调用方投递 SIGPIPE(13)。
+	if reply := handler.Handle(ctx, Call{Syscall: SysClose, Args: [6]uint64{uint64(reader)}}); reply.Errno != "" {
+		t.Fatalf("close: %+v", reply)
+	}
+	payload := []byte("broken")
+	if err := handler.Memory.Write(ctx, 0x3200, payload); err != nil {
+		t.Fatal(err)
+	}
+	if reply := handler.Handle(ctx, Call{Syscall: SysWrite, Args: [6]uint64{uint64(writer), 0x3200, uint64(len(payload))}}); reply.Errno != errno.BrokenPipe {
+		t.Fatalf("写 err=%v want EPIPE", reply.Errno)
+	}
+	if len(killer.calls) != 1 || killer.calls[0].pid != pid || killer.calls[0].sig != 13 {
+		t.Fatalf("SIGPIPE 投递=%+v want (pid=%d, 13)", killer.calls, pid)
+	}
+
+	// 第二对:关闭写端后读返回 0(EOF),不投递信号。
+	if reply := handler.Handle(ctx, Call{Syscall: SysPipe2, Args: [6]uint64{0x3400, 0}}); reply.Errno != "" {
+		t.Fatalf("pipe2: %+v", reply)
+	}
+	if err := handler.Memory.Read(ctx, 0x3400, pair[:]); err != nil {
+		t.Fatal(err)
+	}
+	reader2, writer2 := binary.LittleEndian.Uint32(pair[0:]), binary.LittleEndian.Uint32(pair[4:])
+	if reply := handler.Handle(ctx, Call{Syscall: SysClose, Args: [6]uint64{uint64(writer2)}}); reply.Errno != "" {
+		t.Fatalf("close: %+v", reply)
+	}
+	if reply := handler.Handle(ctx, Call{Syscall: SysRead, Args: [6]uint64{uint64(reader2), 0x3500, 8}}); reply.Errno != "" || reply.Value != 0 {
+		t.Fatalf("EOF 读: %+v", reply)
+	}
+	if len(killer.calls) != 1 {
+		t.Fatalf("EOF 不应投递信号: %+v", killer.calls)
+	}
+}

@@ -460,10 +460,8 @@ func (s Syscalls) dispatch(ctx context.Context, call Call) Reply {
 		return s.fstatfs(ctx, call)
 	case SysFcntl:
 		return s.fcntl(ctx, call)
-	case SysPipe:
-		return s.pipe(ctx, call, false)
 	case SysPipe2:
-		return s.pipe(ctx, call, true)
+		return s.pipe2(ctx, call)
 	case SysEventfd2:
 		return s.eventfd2(ctx, call)
 	case SysSignalfd4:
@@ -513,12 +511,29 @@ func (s Syscalls) write(ctx context.Context, call Call) Reply {
 	}
 	written, err := s.Descriptors.Write(ctx, call.Args[0], buffer)
 	if err != nil {
+		if errors.Is(err, errno.BrokenPipe) {
+			// EPIPE 前先投递 SIGPIPE(I15):默认处置终止进程,
+			// 忽略/屏蔽/登记处理器时调用仍按 EPIPE 返回。
+			s.raisePipeSignal(ctx)
+		}
 		return Reply{Errno: errnoOf(err)}
 	}
 	if written < 0 || written > len(buffer) {
 		return Reply{Errno: errno.IO}
 	}
 	return Reply{Value: uint64(written)}
+}
+
+// sigPipe 是 asm-generic 的 SIGPIPE 信号号。
+const sigPipe uint64 = 13
+
+// raisePipeSignal 向调用方进程投递 SIGPIPE(write 命中 EPIPE 时,
+// 与 Linux 语义一致)。端口未装配时静默跳过,EPIPE 仍如实返回。
+func (s Syscalls) raisePipeSignal(ctx context.Context) {
+	if s.Kills == nil || s.Identity == nil {
+		return
+	}
+	_ = s.Kills.Kill(ctx, int64(s.Identity.PID), sigPipe)
 }
 
 func (s Syscalls) read(ctx context.Context, call Call) Reply {
@@ -1317,6 +1332,9 @@ func (s Syscalls) writev(ctx context.Context, call Call) Reply {
 		if err != nil {
 			if total > 0 {
 				return Reply{Value: uint64(total)}
+			}
+			if errors.Is(err, errno.BrokenPipe) {
+				s.raisePipeSignal(ctx)
 			}
 			return Reply{Errno: errnoOf(err)}
 		}
@@ -2991,17 +3009,26 @@ func (s Syscalls) fcntl(ctx context.Context, call Call) Reply {
 	return Reply{Value: value}
 }
 
-func (s Syscalls) pipe(ctx context.Context, call Call, pipe2 bool) Reply {
+// pipe2(fds, flags) 创建匿名管道(I15):O_CLOEXEC/O_NONBLOCK 在
+// 创建时生效。asm-generic 无独立 pipe 系统调用(glibc 经 pipe2 实现)。
+func (s Syscalls) pipe2(ctx context.Context, call Call) Reply {
 	if s.Descriptors == nil || s.Memory == nil {
 		return Reply{Errno: errno.NotImplemented}
+	}
+	if call.Args[1]&^(0o2000000|0o4000) != 0 {
+		return Reply{Errno: errno.Invalid}
 	}
 	r, w, err := s.Descriptors.Pipe(ctx)
 	if err != nil {
 		return Reply{Errno: errnoOf(err)}
 	}
-	if pipe2 && call.Args[1]&0o2000000 != 0 { // O_CLOEXEC
+	if call.Args[1]&0o2000000 != 0 { // O_CLOEXEC
 		_, _ = s.Descriptors.Fcntl(ctx, r, 2, 1)
 		_, _ = s.Descriptors.Fcntl(ctx, w, 2, 1)
+	}
+	if call.Args[1]&0o4000 != 0 { // O_NONBLOCK
+		_, _ = s.Descriptors.Fcntl(ctx, r, 4, 0o4000)
+		_, _ = s.Descriptors.Fcntl(ctx, w, 4, 0o4000)
 	}
 	var encoded [8]byte
 	binary.LittleEndian.PutUint32(encoded[0:], uint32(r))

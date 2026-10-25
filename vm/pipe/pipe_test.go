@@ -1,6 +1,7 @@
 package pipe
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -349,5 +350,171 @@ func TestZeroLengthOperations(t *testing.T) {
 	}
 	if n, err := w.Write(nil); n != 0 || err != nil {
 		t.Fatalf("n=%d err=%v", n, err)
+	}
+}
+
+// TestNonBlockingReadReturnsEAGAIN 验证 I15:空缓冲非阻塞读返回
+// EWOULDBLOCK,不等待;有数据后正常读取。
+func TestNonBlockingReadReturnsEAGAIN(t *testing.T) {
+	r, w, err := New(64, Options{NonBlock: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r.Close(); _ = w.Close() }()
+	if _, err := r.Read(make([]byte, 8)); !errors.Is(err, errno.WouldBlock) {
+		t.Fatalf("空读 err=%v want EWOULDBLOCK", err)
+	}
+	if _, err := w.Write([]byte("abc")); err != nil {
+		t.Fatal(err)
+	}
+	n, err := r.Read(make([]byte, 8))
+	if err != nil || n != 3 {
+		t.Fatalf("n=%d err=%v want 3", n, err)
+	}
+}
+
+// TestNonBlockingWriteFullReturnsEAGAIN 验证 I15:缓冲已满时非阻塞写
+// 返回 EWOULDBLOCK 且不产生部分写入。
+func TestNonBlockingWriteFullReturnsEAGAIN(t *testing.T) {
+	r, w, err := New(4, Options{NonBlock: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r.Close(); _ = w.Close() }()
+	if _, err := w.Write([]byte("abcd")); err != nil {
+		t.Fatal(err)
+	}
+	// 剩余空间 0:≤PIPE_BUF 的原子写整体拒绝。
+	if _, err := w.Write([]byte("xy")); !errors.Is(err, errno.WouldBlock) {
+		t.Fatalf("满写 err=%v want EWOULDBLOCK", err)
+	}
+	if r.Buffered() != 4 {
+		t.Fatalf("缓冲被部分写入污染: %d", r.Buffered())
+	}
+}
+
+// TestSmallWriteIsAtomicUnderPressure 验证 I15:容量不足以完整容纳
+// ≤PIPE_BUF 的请求时阻塞等待而非部分写入;腾出空间后完整出现。
+func TestSmallWriteIsAtomicUnderPressure(t *testing.T) {
+	r, w, err := New(8, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r.Close(); _ = w.Close() }()
+	if _, err := w.Write([]byte("12345678")); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := w.Write([]byte("abcdef"))
+		done <- err
+	}()
+	// 等待写者阻塞在等待队列上(未产生部分写入)。
+	deadline := time.Now().Add(2 * time.Second)
+	for w.Buffered() != 8 {
+		if time.Now().After(deadline) {
+			t.Fatal("原子写未阻塞")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	got := make([]byte, 8)
+	if _, err := r.Read(got); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if r.Buffered() != 6 {
+		t.Fatalf("原子写被部分写入: 缓冲=%d want 8", r.Buffered())
+	}
+}
+
+// TestLargeWriteSplitsWhenAtomicImpossible 验证 I15:请求超过总容量时
+// 回退分块模式,避免永不满足的原子等待。
+func TestLargeWriteSplitsWhenAtomicImpossible(t *testing.T) {
+	r, w, err := New(4, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r.Close(); _ = w.Close() }()
+	payload := []byte("0123456789abcdef")
+	got := make([]byte, len(payload))
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := io.ReadFull(r, got)
+		readDone <- err
+	}()
+	n, err := w.Write(payload)
+	if err != nil || n != len(payload) {
+		t.Fatalf("n=%d err=%v want %d", n, err, len(payload))
+	}
+	if err := <-readDone; err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("数据不一致: %q", got)
+	}
+}
+
+// TestDirectionMismatchesReturnEBADF 验证 I15:读端写、写端读报 EBADF。
+func TestDirectionMismatchesReturnEBADF(t *testing.T) {
+	r, w, err := New(8, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r.Close(); _ = w.Close() }()
+	if _, err := r.Write([]byte("x")); !errors.Is(err, errno.BadHandle) {
+		t.Fatalf("读端写 err=%v want EBADF", err)
+	}
+	if _, err := w.Read(make([]byte, 1)); !errors.Is(err, errno.BadHandle) {
+		t.Fatalf("写端读 err=%v want EBADF", err)
+	}
+}
+
+// TestStatusFlagsRoundTrip 验证 I15:F_GETFL/F_SETFL 的 O_NONBLOCK 切换
+// 与访问模式报告;切换唤醒阻塞的读/写者按新模式重试。
+func TestStatusFlagsRoundTrip(t *testing.T) {
+	r, w, err := New(8, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r.Close(); _ = w.Close() }()
+	flags, err := r.StatusFlags()
+	if err != nil || flags != 0 {
+		t.Fatalf("读端初始 flags=%#x err=%v want O_RDONLY(0)", flags, err)
+	}
+	flags, err = w.StatusFlags()
+	if err != nil || flags != 1 {
+		t.Fatalf("写端初始 flags=%#x err=%v want O_WRONLY(1)", flags, err)
+	}
+	if err := r.SetStatusFlags(0o4000); err != nil {
+		t.Fatal(err)
+	}
+	if flags, _ := r.StatusFlags(); flags != 0o4000 {
+		t.Fatalf("切换后 flags=%#x want O_NONBLOCK", flags)
+	}
+	// 阻塞中的读者在切换后被唤醒并按 EWOULDBLOCK 返回。
+	results := make(chan error, 1)
+	go func() {
+		_, err := r.Read(make([]byte, 4))
+		results <- err
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for len(results) == 0 {
+		_ = r.SetStatusFlags(0o4000)
+		if time.Now().After(deadline) {
+			t.Fatal("切换 O_NONBLOCK 未唤醒阻塞读")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err := <-results; !errors.Is(err, errno.WouldBlock) {
+		t.Fatalf("唤醒后 err=%v want EWOULDBLOCK", err)
+	}
+	// 清除非阻塞后恢复阻塞语义。
+	if err := r.SetStatusFlags(0); err != nil {
+		t.Fatal(err)
+	}
+	if flags, _ := r.StatusFlags(); flags != 0 {
+		t.Fatalf("清除后 flags=%#x", flags)
 	}
 }

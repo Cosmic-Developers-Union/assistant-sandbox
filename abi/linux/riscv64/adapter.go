@@ -75,8 +75,7 @@ const (
 	numberRenameat2        = 276
 	numberFtruncate        = 46
 	numberFcntl            = 25
-	numberPipe             = 59
-	numberPipe2            = 60
+	numberPipe2            = 59
 	numberPoll             = 73
 	numberPpoll            = 293
 	numberDup3             = 24
@@ -378,8 +377,6 @@ func syscallOf(number uint64) common.Syscall {
 		return common.SysFtruncate
 	case numberFcntl:
 		return common.SysFcntl
-	case numberPipe:
-		return common.SysPipe
 	case numberPipe2:
 		return common.SysPipe2
 	case numberPoll:

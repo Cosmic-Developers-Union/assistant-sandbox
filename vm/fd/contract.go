@@ -74,6 +74,9 @@ type Installer interface {
 	Descriptors
 	InstallNext(uint64, Stream) (uint32, error)
 	SetCloexec(uint64, uint32, bool) error
+
+	// Cloexec 查询描述符的 FD_CLOEXEC 标志(F_GETFD)。
+	Cloexec(pid uint64, id uint32) (bool, error)
 }
 
 type Bindings interface {

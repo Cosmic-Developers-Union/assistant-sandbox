@@ -11,6 +11,7 @@ import (
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/eventfd"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/pipe"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/signalfd"
 )
 
@@ -224,8 +225,11 @@ func (t *Table) DupAt(ctx context.Context, pid, from, min uint64) (uint32, error
 	return 0, errno.Limit
 }
 
+// Pipe 创建并安装一对匿名管道端点(vm/pipe,容量与语义与 Linux 一致:
+// EOF/EPIPE/PIPE_BUF 原子写/非阻塞,poll 就绪按缓冲状态报告)。
 func (t *Table) Pipe(pid uint64) (uint32, uint32, error) {
-	if err := (func() error { return nil })(); err != nil {
+	readEnd, writeEnd, err := pipe.New(pipe.DefaultCapacity, pipe.Options{})
+	if err != nil {
 		return 0, 0, err
 	}
 	t.mu.Lock()
@@ -234,19 +238,18 @@ func (t *Table) Pipe(pid uint64) (uint32, uint32, error) {
 	if table == nil {
 		return 0, 0, errno.NoProcess
 	}
-	r, w := io.Pipe()
 	var readID, writeID uint32
 	for id := uint32(3); id < ^uint32(0); id++ {
 		if _, taken := table[id]; !taken {
 			readID = id
-			table[id] = newEntry(&stream{reader: r}, true)
+			table[id] = newEntry(readEnd, true)
 			break
 		}
 	}
 	for id := uint32(3); id < ^uint32(0); id++ {
 		if _, taken := table[id]; !taken {
 			writeID = id
-			table[id] = newEntry(&stream{writer: w}, true)
+			table[id] = newEntry(writeEnd, true)
 			break
 		}
 	}

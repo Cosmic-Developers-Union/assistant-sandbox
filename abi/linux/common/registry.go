@@ -67,7 +67,6 @@ var handled = map[Syscall]bool{
 	SysMunmap:           true,
 	SysNewfstatat:       true,
 	SysOpenAt:           true,
-	SysPipe:             true,
 	SysPipe2:            true,
 	SysPoll:             true,
 	SysPpoll:            true,

@@ -98,13 +98,16 @@ func (p ProcessDescriptors) Fcntl(ctx context.Context, descriptor uint64, cmd ui
 	if descriptor > math.MaxUint32 {
 		return 0, errno.Wrap(errno.BadHandle, "描述符编号超出表示范围")
 	}
-	table, ok := p.Table.(*fd.Table)
-	if !ok {
-		return 0, errno.Wrap(errno.NotSupported, "描述符表不支持 fcntl")
-	}
+	// FD_CLOEXEC 与复制能力经 Installer 端口(作用域包装器实现),
+	// 不再断言具体表类型——经执行器装配的作用域表同样可达。
+	installer, hasInstaller := p.Table.(fd.Installer)
+	creator, hasCreator := p.Table.(fd.Creator)
 	switch cmd {
 	case fGetFD: // F_GETFD
-		cloexec, err := table.Cloexec(p.PID, uint32(descriptor))
+		if !hasInstaller {
+			return 0, errno.Wrap(errno.NotSupported, "描述符表不支持 fcntl")
+		}
+		cloexec, err := installer.Cloexec(p.PID, uint32(descriptor))
 		if err != nil {
 			return 0, err
 		}
@@ -113,19 +116,30 @@ func (p ProcessDescriptors) Fcntl(ctx context.Context, descriptor uint64, cmd ui
 		}
 		return 0, nil
 	case fSetFD: // F_SETFD
-		if err := table.SetCloexec(p.PID, uint32(descriptor), arg&1 != 0); err != nil {
+		if !hasInstaller {
+			return 0, errno.Wrap(errno.NotSupported, "描述符表不支持 fcntl")
+		}
+		if err := installer.SetCloexec(p.PID, uint32(descriptor), arg&1 != 0); err != nil {
 			return 0, err
 		}
 		return 0, nil
 	case fDupFD: // F_DUPFD
-		return p.dupAt(ctx, table, descriptor, arg)
+		if !hasCreator {
+			return 0, errno.Wrap(errno.NotSupported, "描述符表不支持 fcntl")
+		}
+		return p.dupAt(ctx, creator, descriptor, arg)
 	case fDupFDCloexec: // F_DUPFD_CLOEXEC
-		id, err := p.dupAt(ctx, table, descriptor, arg)
+		if !hasCreator {
+			return 0, errno.Wrap(errno.NotSupported, "描述符表不支持 fcntl")
+		}
+		id, err := p.dupAt(ctx, creator, descriptor, arg)
 		if err != nil {
 			return 0, err
 		}
-		if err := table.SetCloexec(p.PID, uint32(id), true); err != nil {
-			return 0, err
+		if hasInstaller {
+			if err := installer.SetCloexec(p.PID, uint32(id), true); err != nil {
+				return 0, err
+			}
 		}
 		return id, nil
 	case fGetFL: // F_GETFL
@@ -149,7 +163,8 @@ func (p ProcessDescriptors) Fcntl(ctx context.Context, descriptor uint64, cmd ui
 		}
 		setter, ok := handle.(statusFlagSetter)
 		if !ok {
-			// 管道/eventfd 的非阻塞切换未纳入兼容配置,明确拒绝。
+			// eventfd 的非阻塞切换未纳入兼容配置,明确拒绝;
+			// 管道已支持 O_NONBLOCK 切换(I15)。
 			return 0, errno.Wrap(errno.NotSupported, "描述符不支持状态标志设置")
 		}
 		if err := setter.SetStatusFlags(uint32(arg)); err != nil {

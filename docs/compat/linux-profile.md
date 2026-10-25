@@ -53,7 +53,7 @@ ENOSYS 清单,归 L/I/H 组后续任务。
 | ftruncate / fsync / fdatasync / utimensat | I12;`TestUtimensatAndFtruncate*` |
 | faccessat | G 组;`TestFaccessat*` |
 | fcntl / dup / dup3 | F_DUPFD、F_DUPFD_CLOEXEC、F_GETFL、F_SETFL;I05;`TestDupAndFcntlFlags*` |
-| pipe / pipe2 | vm/pipe;`TestKernel*` 管道用例 |
+| pipe2 | I15;EOF/EPIPE/SIGPIPE/PIPE_BUF 原子写/O_NONBLOCK;vm/pipe、`TestPipeProbeSemanticsMatchLinux`、`TestPipeNonBlockingModeViaFcntl` |
 | poll / ppoll | L05;`TestPoll*`、`TestPpoll*` |
 | eventfd2 | L09;`TestEventfd2ValidatesAndDelegates` |
 | signalfd4 | L11;被进程屏蔽且命中掩码的信号经 fd 队列读取,KILL/STOP 位登记时剥离;`TestSignalfd4ValidatesAndDelegates`、`TestKernelSignalfdRoutesMaskedSignals`、`TestSignalfdProbeRunsOnKernel` |
