@@ -900,10 +900,12 @@ func (s Syscalls) sleepOnce(ctx context.Context, nanoseconds uint64) error {
 	return nil
 }
 
+// sleepRelative 执行相对等待。相对期限一律以单调时钟计量(L01):
+// 系统时间调整既不会让等待时长漂移,也不会让单调时间回退。
 func (s Syscalls) sleepRelative(ctx context.Context, call Call, clockID uint64, duration int64) Reply {
 	remaining := duration
 	for {
-		started, err := s.clockNow(ctx, clockID)
+		started, err := s.clockNow(ctx, clockMonotonic)
 		if err != nil {
 			return Reply{Errno: errnoOf(err)}
 		}
@@ -913,11 +915,11 @@ func (s Syscalls) sleepRelative(ctx context.Context, call Call, clockID uint64, 
 		}
 		if !errors.Is(err, errno.Interrupted) || s.Interrupts == nil {
 			// 上下文取消或时钟故障:按已过时间回填剩余后报 EINTR。
-			return s.interrupted(call, clockID, duration, started)
+			return s.interrupted(call, clockMonotonic, duration, started)
 		}
 		// 信号唤醒:折算剩余;SA_RESTART 重启剩余时长,否则报
 		// EINTR 并回填剩余(处理器在返回后的指令边界投递)。
-		if now, e := s.clockNow(ctx, clockID); e == nil {
+		if now, e := s.clockNow(ctx, clockMonotonic); e == nil {
 			if elapsed := now - started; elapsed < remaining {
 				remaining -= elapsed
 			} else {

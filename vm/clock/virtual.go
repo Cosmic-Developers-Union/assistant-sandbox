@@ -18,15 +18,36 @@ const maxNanoseconds = uint64(1)<<63 - 1
 type Virtual struct {
 	mu      sync.Mutex
 	elapsed uint64
-	seq     uint64
-	closed  bool
-	timers  []timer
-	wake    wait.Queue
+	// wallOffset 是实时时钟相对单调时钟的偏移:系统时间调整只改
+	// 偏移,单调时钟与相对等待期限不受影响(L01)。
+	wallOffset int64
+	seq        uint64
+	closed     bool
+	timers     []timer
+	wake       wait.Queue
 }
 
+// Wall 返回实时时钟读数:等于单调时钟加系统时间偏移。系统时间被
+// 调整时只有偏移变化,单调时钟不受影响。
 func (v *Virtual) Wall(ctx context.Context) (int64, error) {
-	value, err := v.Monotonic(ctx)
-	return int64(value), err
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return int64(v.elapsed) + v.wallOffset, nil
+}
+
+// SetWallTo 调整系统时间(实时时钟)到指定纳秒读数:只改实时钟偏移,
+// 单调时钟与相对等待期限保持不变(L01)。
+func (v *Virtual) SetWallTo(nanoseconds int64) error {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.closed {
+		return errno.Cancelled
+	}
+	v.wallOffset = nanoseconds - int64(v.elapsed)
+	return nil
 }
 
 func (v *Virtual) Monotonic(ctx context.Context) (uint64, error) {

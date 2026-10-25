@@ -3220,3 +3220,31 @@ func TestSyscallTraceRecordsCallResultAndDuration(t *testing.T) {
 		t.Fatalf("getpid: %+v", reply)
 	}
 }
+
+// TestClockNanosleepRelativeIgnoresWallClockJump 验证 L01:相对等待一律
+// 以单调时钟计量——系统时间(实时钟)回退不改变剩余时间,也不会让
+// 等待时长漂移。
+func TestClockNanosleepRelativeIgnoresWallClockJump(t *testing.T) {
+	ctx := context.Background()
+	source := &fakeClock{wall: 1_000_000, monotonic: 0}
+	sleeper := &fakeSleeper{onSleep: func(ns uint64) {
+		source.monotonic += ns
+		// 等待期间系统时间被回退:实时钟跳到很早的时点。
+		source.wall = -1_000_000
+	}}
+	syscalls := Syscalls{Memory: newFakeMemory(), Clock: source, Sleeper: sleeper}
+
+	request := make([]byte, 16)
+	binary.LittleEndian.PutUint64(request[0:], 0)
+	binary.LittleEndian.PutUint64(request[8:], 2_000_000) // 2ms
+	if err := syscalls.Memory.Write(ctx, 0x2000, request); err != nil {
+		t.Fatal(err)
+	}
+	reply := syscalls.Handle(ctx, Call{Syscall: SysClockNanosleep, Args: [6]uint64{clockRealtime, 0, 0x2000}})
+	if reply.Errno != "" {
+		t.Fatalf("相对等待应完成: %+v", reply)
+	}
+	if source.monotonic != 2_000_000 {
+		t.Fatalf("单调推进=%d want 2000000(相对期限以单调时钟计量)", source.monotonic)
+	}
+}
