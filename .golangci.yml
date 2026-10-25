@@ -292,7 +292,7 @@ linters:
       # ---- B07:启用 gosec 后的整合豁免(理由见各条) ----
       # G115:ABI/CPU/ELF 编码层的位级截断转换是规范本身(asm-generic
       # 结构布局、RISC-V 指令编码、ELF 字段),值域由编码测试锁定。
-      - path: '^(abi/linux/|executor/cpu/riscv64/|executor/elf/|loader/elf/|filesystem/memfs/|vm/)'
+      - path: '^(abi/linux/|executor/cpu/riscv64/|executor/elf/|loader/elf/|filesystem/memfs/|vm/|internal/guest/)'
         linters: [gosec]
         text: 'G115:'
       # G204/G304/G703/G306:构建器、差分执行器与 POSIX 开发测试以
