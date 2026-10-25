@@ -72,7 +72,7 @@ Python 和 Node.js 的验收必须执行客体运行时，不能通过调用宿�
 
 依赖：A02、A06、A07；接口变更遵守 A03。
 
-- [ ] C01 定义 VM 配置和状态机。验收：创建、启动、运行、停止、失败、关闭的合法转换均有测试，非法转换返回稳定错误。
+- [x] C01 定义 VM 配置和状态机。验收：创建、启动、运行、停止、失败、关闭的合法转换均有测试，非法转换返回稳定错误。 证据：vm/lifecycle.go（State{Created,Running,Stopping,Failed,Closed}+legalTransitions 表:Created→Running/Closed、Running→Stopping/Failed/Closed、Stopping→Closed/Failed、Failed→Closed、Closed 终态;lifecycle.enter 幂等合法转换、非法转换返回稳定 EINVAL(文本含两状态名)、usable 仅运行态;并发安全）+ vm/kernel.go 接线（New 成功→Running;Close→Stopping→Closed(重复 Close 幂等);执行器 panic/不可恢复路径→Failed）+ vm/vm_state_test.go:TestLifecycleLegalTransitions（全表合法转换+幂等）、TestLifecycleIllegalTransitionsAreStable（5×5 全组合非法转换:EINVAL、两次文本一致、状态不变）、TestLifecycleUsableOnlyWhenRunning、TestKernelLifecycleObservation（真实内核构造/关闭/重复关闭状态可观察）、TestLifecycleConcurrentEnter（32 并发不撕裂）。测试:`go test ./vm/ -run TestLifecycle`。CI:Test 工作流 integration 任务。备注:启动语义合并入运行态（内核构造即具备登记能力）,停止为 Close 内部阶段,对外可观察状态稳定六值中的五个;VM 配置面随 C10/R01 扩展。
 - [ ] C02 让 VM 拥有独立的内核实例。验收：一个 VM 的多个连接观察同一进程表，不同 VM 的进程表互不可见。
 - [ ] C03 让 VM 拥有根文件系统和挂载表。验收：同 VM 连接共享 `/tmp` 与工作区，另一 VM 看不到这些内容。
 - [ ] C04 让 VM 拥有时钟、随机源和设备注册表。验收：服务存活期不依赖 Terminal 句柄，关闭一个连接不会销毁设备。

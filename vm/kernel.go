@@ -77,6 +77,8 @@ type Kernel struct {
 	failed    bool
 	closed    bool
 
+	life lifecycle
+
 	children  wait.Queue
 	instances map[proc.PID]executable.Instance
 	resolver  *executable.Resolver
@@ -174,6 +176,9 @@ func New(services Services, maxProcesses int) (*Kernel, error) {
 		}
 		k.resolver = resolver
 	}
+	if err := k.life.enter(StateRunning); err != nil {
+		return nil, err
+	}
 	return k, nil
 }
 
@@ -242,6 +247,8 @@ func (k *Kernel) Exec(ctx context.Context, name string, args []string) (proc.Pro
 		k.executing = false
 		if r := recover(); r != nil {
 			k.failed = true
+			_ = k.life.enter(StateFailed)
+			_ = k.life.enter(StateFailed)
 			panic(r)
 		}
 	}()
@@ -1116,6 +1123,7 @@ func (k *Kernel) RunRegistered(ctx context.Context, p proc.Proc) (ExitStatus, er
 
 		k.mu.Lock()
 		k.failed = true
+		_ = k.life.enter(StateFailed)
 		k.mu.Unlock()
 		runErr = waitErr
 	case result.Reason == executable.Quota:
@@ -1196,6 +1204,7 @@ func (k *Kernel) Close(ctx context.Context) error {
 		return nil
 	}
 	k.closed = true
+	_ = k.life.enter(StateStopping)
 	instances := make([]executable.Instance, 0, len(k.instances))
 	for _, instance := range k.instances {
 		instances = append(instances, instance)
@@ -1206,6 +1215,7 @@ func (k *Kernel) Close(ctx context.Context) error {
 		_ = instance.Interrupt(signal.TERM)
 	}
 	k.children.Close()
+	_ = k.life.enter(StateClosed)
 	return ctx.Err()
 }
 
@@ -1334,6 +1344,8 @@ func (k *Kernel) emitLocked(kind string, pid proc.PID, detail string) {
 	if k.sequencer != nil {
 		if k.sequencer.Append(uint64(pid), kind, detail) == 0 {
 			k.failed = true
+			_ = k.life.enter(StateFailed)
+			_ = k.life.enter(StateFailed)
 			return
 		}
 	}
@@ -1350,6 +1362,7 @@ func (k *Kernel) emitLocked(kind string, pid proc.PID, detail string) {
 	})
 	if err != nil {
 		k.failed = true
+		_ = k.life.enter(StateFailed)
 	}
 }
 
@@ -1387,12 +1400,15 @@ func (k *Kernel) Replace(ctx context.Context, target proc.PID, name string, args
 
 			if _, _, rollbackErr := k.table.Replace(target, before.Program, before.Args, before.Dir, before.Env); rollbackErr != nil {
 				k.failed = true
+				_ = k.life.enter(StateFailed)
+				_ = k.life.enter(StateFailed)
 			}
 			return proc.Proc{}, err
 		}
 	}
 	if err := k.signals.ResetForExec(uint64(target)); err != nil {
 		k.failed = true
+		_ = k.life.enter(StateFailed)
 		return proc.Proc{}, err
 	}
 
