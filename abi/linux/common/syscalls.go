@@ -11,6 +11,7 @@ import (
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/executor/cpu"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/clock"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/epoll"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 	vmfs "github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fs"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/memory"
@@ -47,6 +48,12 @@ type Descriptors interface {
 
 	// UpdateSignalFD 更新已存在 signalfd 的掩码与选项。
 	UpdateSignalFD(ctx context.Context, descriptor, mask, flags uint64) error
+
+	// Epoll 创建新的 epoll 实例(L07);EpollInstance 取已存在实例
+	// (epoll_ctl/epoll_pwait 用)。
+	Epoll(ctx context.Context, flags uint64) (uint64, error)
+
+	EpollInstance(ctx context.Context, descriptor uint64) (*epoll.FD, error)
 
 	Dup2(ctx context.Context, oldfd, newfd uint64, cloexec bool) error
 
@@ -474,6 +481,12 @@ func (s Syscalls) dispatch(ctx context.Context, call Call) Reply {
 		return s.getdents64(ctx, call)
 	case SysPselect6:
 		return s.pselect6(ctx, call)
+	case SysEpollCreate1:
+		return s.epollCreate1(ctx, call)
+	case SysEpollCtl:
+		return s.epollCtl(ctx, call)
+	case SysEpollPwait:
+		return s.epollPwait(ctx, call)
 	case SysPoll, SysPpoll:
 		return s.poll(ctx, call)
 	case SysFstat:

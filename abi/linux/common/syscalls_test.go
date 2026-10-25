@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/epoll"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fd"
 	vmfs "github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fs"
@@ -64,6 +65,9 @@ type fakeDescriptors struct {
 	signalfd       [][2]uint64
 	signalfdUpdate [3]uint64
 	signalfdErr    error
+	epollFlags     uint64
+	epollErr       error
+	epollInstance  *epoll.FD
 	get            any
 }
 
@@ -94,6 +98,21 @@ func (d *fakeDescriptors) EventFD(ctx context.Context, initialValue, flags uint6
 func (d *fakeDescriptors) SignalFD(_ context.Context, mask, flags uint64) (uint64, error) {
 	d.signalfd = append(d.signalfd, [2]uint64{mask, flags})
 	return 34, d.signalfdErr
+}
+
+func (d *fakeDescriptors) Epoll(_ context.Context, flags uint64) (uint64, error) {
+	d.epollFlags = flags
+	return 35, d.epollErr
+}
+
+func (d *fakeDescriptors) EpollInstance(_ context.Context, descriptor uint64) (*epoll.FD, error) {
+	if d.epollErr != nil {
+		return nil, d.epollErr
+	}
+	if d.epollInstance == nil {
+		return nil, errno.Wrap(errno.BadHandle, "描述符不是 epoll 实例")
+	}
+	return d.epollInstance, nil
 }
 
 func (d *fakeDescriptors) UpdateSignalFD(_ context.Context, descriptor, mask, flags uint64) error {

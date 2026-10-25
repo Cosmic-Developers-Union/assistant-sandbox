@@ -8,6 +8,7 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/bridge"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/clock"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/entropy"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/epoll"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/eventfd"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fd"
@@ -183,6 +184,22 @@ func (s scopedFDs) SignalFDAt(_ uint64, id uint32) (*signalfd.FD, error) {
 		return creator.SignalFDAt(s.pid, id)
 	}
 	return nil, errno.Wrap(errno.NotSupported, "描述符表不支持 signalfd")
+}
+
+// Epoll 实现 fd.Creator:以作用域绑定的进程创建 epoll 实例。
+func (s scopedFDs) Epoll(uint64) (uint32, error) {
+	if creator, ok := s.base.(fd.Creator); ok {
+		return creator.Epoll(s.pid)
+	}
+	return 0, errno.Wrap(errno.NotSupported, "描述符表不支持 epoll")
+}
+
+// EpollAt 实现 fd.Creator:取作用域绑定进程的 epoll 实例。
+func (s scopedFDs) EpollAt(_ uint64, id uint32) (*epoll.FD, error) {
+	if creator, ok := s.base.(fd.Creator); ok {
+		return creator.EpollAt(s.pid, id)
+	}
+	return nil, errno.Wrap(errno.NotSupported, "描述符表不支持 epoll")
 }
 
 // DupAt 实现 fd.Creator:以作用域绑定的进程复制到 ≥min 的最低空闲编号。

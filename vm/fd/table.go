@@ -9,6 +9,7 @@ import (
 	"slices"
 	"sync"
 
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/epoll"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/eventfd"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/pipe"
@@ -300,6 +301,44 @@ func (t *Table) SignalFD(pid uint64, mask uint64, options signalfd.Options) (uin
 		}
 	}
 	return 0, errno.Limit
+}
+
+// Epoll 创建并安装一个 epoll 实例(L07)。
+func (t *Table) Epoll(pid uint64) (uint32, error) {
+	handle := epoll.New()
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	table := t.entries[pid]
+	if table == nil {
+		return 0, errno.NoProcess
+	}
+	for id := uint32(3); id < ^uint32(0); id++ {
+		if _, taken := table[id]; !taken {
+			table[id] = newEntry(handle, true)
+			return id, nil
+		}
+	}
+	return 0, errno.Limit
+}
+
+// EpollAt 取已存在描述符上的 epoll 实例(epoll_ctl/epoll_pwait 用);
+// 描述符不存在报 EBADF,不是 epoll 实例报 EINVAL。
+func (t *Table) EpollAt(pid uint64, id uint32) (*epoll.FD, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	table := t.entries[pid]
+	if table == nil {
+		return nil, errno.NoProcess
+	}
+	e := table[id]
+	if e == nil {
+		return nil, errno.BadHandle
+	}
+	handle, ok := e.ref.handle.(*epoll.FD)
+	if !ok {
+		return nil, errno.Invalid
+	}
+	return handle, nil
 }
 
 // SignalFDAt 取已存在描述符上的 signalfd(signalfd4 更新掩码用);

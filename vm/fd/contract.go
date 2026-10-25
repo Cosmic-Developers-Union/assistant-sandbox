@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/epoll"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/eventfd"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/signalfd"
 )
@@ -26,6 +27,12 @@ type Creator interface {
 
 	// SignalFDAt 取已存在描述符上的 signalfd(更新掩码用)。
 	SignalFDAt(pid uint64, id uint32) (*signalfd.FD, error)
+
+	// Epoll 创建并安装一个 epoll 实例;EpollAt 取已存在实例
+	// (epoll_ctl/epoll_pwait 用,L07)。
+	Epoll(pid uint64) (uint32, error)
+
+	EpollAt(pid uint64, id uint32) (*epoll.FD, error)
 
 	DupAt(ctx context.Context, pid, from, min uint64) (uint32, error)
 }

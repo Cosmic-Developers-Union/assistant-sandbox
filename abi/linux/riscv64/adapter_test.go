@@ -581,7 +581,7 @@ func TestRegistryMatchesAdapterMapping(t *testing.T) {
 	// 必须同时实现或显式进入本清单,防止伪成功)。
 	unimplemented := map[string]bool{
 		"accept4": true, "acct": true, "chroot": true, "close_range": true,
-		"clone3": true, "epoll_create1": true, "epoll_ctl": true, "epoll_pwait": true,
+		"clone3":     true,
 		"faccessat2": true, "fadvise64": true, "fallocate": true, "inotify_add_watch": true,
 		"inotify_init1": true, "inotify_rm_watch": true, "kexec_load": true, "memfd_create": true,
 		"mount": true, "openat2": true, "perf_event_open": true, "pidfd_getfd": true,
