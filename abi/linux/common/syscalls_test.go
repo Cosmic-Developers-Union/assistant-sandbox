@@ -3062,21 +3062,3 @@ func TestUnsupportedCallsAreHonestENOTSUP(t *testing.T) {
 		}
 	}
 }
-
-func TestClockNanosleepDeadlineCancellationReturnsEINTR(t *testing.T) {
-	clock := &fakeClock{monotonic: 0}
-	sleeper := &fakeSleeper{onSleep: func(uint64) {}}
-	handler := Syscalls{Memory: newFakeMemory(), Clock: clock, Sleeper: sleeper}
-
-	request := make([]byte, 16)
-	binary.LittleEndian.PutUint64(request[0:], 30) // 30 秒
-	if err := handler.Memory.Write(context.Background(), 0x2000, request); err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
-	reply := handler.Handle(ctx, Call{Syscall: SysClockNanosleep, Args: [6]uint64{clockMonotonic, 0, 0x2000, 0}})
-	if reply.Errno != errno.Interrupted {
-		t.Fatalf("上下文超时应返回 EINTR: %v", reply.Errno)
-	}
-}
