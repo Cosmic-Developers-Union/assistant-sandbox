@@ -63,6 +63,16 @@ func (c *Core) WordSize() cpu.WordSize {
 	return cpu.WordSize{Bits: 64, Bytes: 8, LittleEndian: true}
 }
 
+// Attach 换绑任务的地址空间:任务切换时把核心指向另一个任务的内存,
+// 取指权限检查随之切换(D10)。机器状态由调用方用 Reset 恢复。
+func (c *Core) Attach(memory cpu.Memory) {
+	c.memory = memory
+	c.exec = nil
+	if checker, ok := memory.(cpu.ExecutableChecker); ok {
+		c.exec = checker
+	}
+}
+
 func (c *Core) Reset(ctx context.Context, machine cpu.Machine) error {
 	if err := ctx.Err(); err != nil {
 		return err

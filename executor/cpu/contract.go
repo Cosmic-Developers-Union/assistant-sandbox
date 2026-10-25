@@ -135,6 +135,13 @@ type FloatRegisterFile interface {
 	WriteFCSR(value uint32) error
 }
 
+// Attacher 是可换绑地址空间的执行端口能力:任务切换时把核心指向
+// 另一个任务的内存(执行权限检查随之切换),机器状态由调用方另行
+// 保存与恢复。
+type Attacher interface {
+	Attach(Memory)
+}
+
 // ExecutableChecker 由带权限位的内存实现提供;不可执行页取指报错。
 // Core 通过类型断言发现该能力,缺失时不做取指权限检查。
 type ExecutableChecker interface {

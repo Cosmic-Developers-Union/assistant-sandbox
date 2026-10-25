@@ -565,19 +565,33 @@ type Config struct {
 
 	// Boundary 在每条指令边界被调用(信号投递点);返回错误中止执行。
 	Boundary func(context.Context) error
+
+	// Switcher 是任务切换端口(D10/D11):时间片用尽时切换到另一个
+	// 任务,实现保存/恢复完整 CPU 状态;未装配时单任务直跑到底。
+	Switcher Switcher
+}
+
+// Switcher 是任务切换端口(D10/D11)。
+type Switcher interface {
+	// Tick 记一次指令执行;返回 true 表示时间片已用尽,应当切换。
+	Tick() bool
+
+	// Switch 保存当前任务状态并切换到下一个任务;返回是否切换。
+	Switch(context.Context) (bool, error)
 }
 
 type Runner struct {
 	core       cpu.Port
 	dispatcher Dispatcher
 	boundary   func(context.Context) error
+	switcher   Switcher
 }
 
 func NewRunner(config Config) (*Runner, error) {
 	if config.Core == nil || config.Dispatcher == nil {
 		return nil, errno.Wrap(errno.Invalid, "Runner 需要执行端口与 trap 分发器")
 	}
-	return &Runner{core: config.Core, dispatcher: config.Dispatcher, boundary: config.Boundary}, nil
+	return &Runner{core: config.Core, dispatcher: config.Dispatcher, boundary: config.Boundary, switcher: config.Switcher}, nil
 }
 
 func (r *Runner) Run(ctx context.Context) (uint64, error) {
@@ -604,6 +618,15 @@ func (r *Runner) Run(ctx context.Context) (uint64, error) {
 				return exit.Code, nil
 			}
 			continue
+		}
+		if r.switcher != nil && r.switcher.Tick() {
+			switched, err := r.switcher.Switch(ctx)
+			if err != nil {
+				return 0, err
+			}
+			if switched {
+				continue
+			}
 		}
 		switch outcome {
 		case cpu.Continued:
