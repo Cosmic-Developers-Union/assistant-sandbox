@@ -9,6 +9,7 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/clock"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/entropy"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/eventfd"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fd"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fs"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/identity"
@@ -19,6 +20,7 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/net"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/replay"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/resources"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/signalfd"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/storage"
 )
 
@@ -149,6 +151,46 @@ func (s scopedFDs) Close(ctx context.Context, _ uint64, id uint32) error {
 
 func (s scopedFDs) Terminal(ctx context.Context, _ uint64, id uint32) (fd.Terminal, error) {
 	return s.base.Terminal(ctx, s.pid, id)
+}
+
+// Pipe 实现 fd.Creator:以作用域绑定的进程创建管道描述符。
+func (s scopedFDs) Pipe(uint64) (uint32, uint32, error) {
+	if creator, ok := s.base.(fd.Creator); ok {
+		return creator.Pipe(s.pid)
+	}
+	return 0, 0, errno.Wrap(errno.NotSupported, "描述符表不支持管道")
+}
+
+// EventFD 实现 fd.Creator:以作用域绑定的进程创建 eventfd。
+func (s scopedFDs) EventFD(_ uint64, initialValue uint64, options eventfd.Options) (uint32, error) {
+	if creator, ok := s.base.(fd.Creator); ok {
+		return creator.EventFD(s.pid, initialValue, options)
+	}
+	return 0, errno.Wrap(errno.NotSupported, "描述符表不支持 eventfd")
+}
+
+// SignalFD 实现 fd.Creator:以作用域绑定的进程创建 signalfd。
+func (s scopedFDs) SignalFD(_ uint64, mask uint64, options signalfd.Options) (uint32, error) {
+	if creator, ok := s.base.(fd.Creator); ok {
+		return creator.SignalFD(s.pid, mask, options)
+	}
+	return 0, errno.Wrap(errno.NotSupported, "描述符表不支持 signalfd")
+}
+
+// SignalFDAt 实现 fd.Creator:取作用域绑定进程的 signalfd。
+func (s scopedFDs) SignalFDAt(_ uint64, id uint32) (*signalfd.FD, error) {
+	if creator, ok := s.base.(fd.Creator); ok {
+		return creator.SignalFDAt(s.pid, id)
+	}
+	return nil, errno.Wrap(errno.NotSupported, "描述符表不支持 signalfd")
+}
+
+// DupAt 实现 fd.Creator:以作用域绑定的进程复制到 ≥min 的最低空闲编号。
+func (s scopedFDs) DupAt(ctx context.Context, _, from, min uint64) (uint32, error) {
+	if creator, ok := s.base.(fd.Creator); ok {
+		return creator.DupAt(ctx, s.pid, from, min)
+	}
+	return 0, errno.Wrap(errno.NotSupported, "描述符表不支持 dup")
 }
 
 type scopedInstaller struct {

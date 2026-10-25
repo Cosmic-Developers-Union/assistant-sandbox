@@ -50,18 +50,21 @@ func (m *fakeMemory) Write(_ context.Context, address uint64, buffer []byte) err
 }
 
 type fakeDescriptors struct {
-	written    []byte
-	input      []byte
-	writeErr   error
-	readErr    error
-	closeErr   error
-	closed     bool
-	offset     int64
-	seeks      int
-	seekErr    error
-	eventfd    [][2]uint64
-	eventfdErr error
-	get        any
+	written        []byte
+	input          []byte
+	writeErr       error
+	readErr        error
+	closeErr       error
+	closed         bool
+	offset         int64
+	seeks          int
+	seekErr        error
+	eventfd        [][2]uint64
+	eventfdErr     error
+	signalfd       [][2]uint64
+	signalfdUpdate [3]uint64
+	signalfdErr    error
+	get            any
 }
 
 func (d *fakeDescriptors) Write(_ context.Context, _ uint64, buffer []byte) (int, error) {
@@ -86,6 +89,16 @@ func (d *fakeDescriptors) DupFrom(_ context.Context, descriptor uint64) (uint64,
 func (d *fakeDescriptors) EventFD(ctx context.Context, initialValue, flags uint64) (uint64, error) {
 	d.eventfd = append(d.eventfd, [2]uint64{initialValue, flags})
 	return 33, d.eventfdErr
+}
+
+func (d *fakeDescriptors) SignalFD(_ context.Context, mask, flags uint64) (uint64, error) {
+	d.signalfd = append(d.signalfd, [2]uint64{mask, flags})
+	return 34, d.signalfdErr
+}
+
+func (d *fakeDescriptors) UpdateSignalFD(_ context.Context, descriptor, mask, flags uint64) error {
+	d.signalfdUpdate = [3]uint64{descriptor, mask, flags}
+	return d.signalfdErr
 }
 
 func (d *fakeDescriptors) Pipe(_ context.Context) (uint64, uint64, error) {
@@ -3290,5 +3303,95 @@ func TestSignalMaskHowMatchesAsmGeneric(t *testing.T) {
 	// 非法 how 报 EINVAL。
 	if reply := handler.Handle(ctx, Call{Syscall: SysRtSigprocmask, Args: [6]uint64{3, 0x1000, 0, sigsetSize}}); reply.Errno != errno.Invalid {
 		t.Fatalf("非法 how: %+v want EINVAL", reply)
+	}
+}
+
+func TestSignalfd4ValidatesAndDelegates(t *testing.T) {
+	ctx := context.Background()
+	memory := newFakeMemory()
+	descriptors := &fakeDescriptors{}
+	handler := Syscalls{Memory: memory, Descriptors: descriptors}
+
+	// sigset 指针:阻塞 SIGUSR1(位 9)与 SIGUSR2(位 11)。
+	const sigsetAddress = 0x5000
+	usrMask := uint64(1)<<9 | uint64(1)<<11
+	var raw [8]byte
+	binary.LittleEndian.PutUint64(raw[:], usrMask)
+	if err := memory.Write(ctx, sigsetAddress, raw[:]); err != nil {
+		t.Fatal(err)
+	}
+	// 只含 KILL/STOP 的掩码:剥离后为空。
+	const killOnly = 0x6000
+	binary.LittleEndian.PutUint64(raw[:], uint64(1)<<8|uint64(1)<<18)
+	if err := memory.Write(ctx, killOnly, raw[:]); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		label string
+		args  [6]uint64
+		want  errno.Code
+	}{
+		{"sizemask 错误", [6]uint64{^uint64(0), sigsetAddress, 4, 0}, errno.Invalid},
+		{"未知标志", [6]uint64{^uint64(0), sigsetAddress, 8, sfdFlagMask + 1}, errno.Invalid},
+		{"空掩码", [6]uint64{^uint64(0), 0x20, 8, 0}, errno.Invalid},
+		{"剥离后为空", [6]uint64{^uint64(0), killOnly, 8, 0}, errno.Invalid},
+		{"坏指针", [6]uint64{^uint64(0), 0x10, 8, 0}, errno.Fault},
+	} {
+		// 空掩码场景需要真实写入 0;坏指针场景注入读取故障。
+		if tc.label == "坏指针" {
+			memory.readErr = errno.Fault
+		}
+		if tc.label == "空掩码" {
+			binary.LittleEndian.PutUint64(raw[:], 0)
+			if err := memory.Write(ctx, 0x20, raw[:]); err != nil {
+				t.Fatal(err)
+			}
+		}
+		reply := handler.Handle(ctx, Call{Syscall: SysSignalfd4, Args: tc.args})
+		memory.readErr = nil
+		if reply.Errno != tc.want {
+			t.Errorf("%s: err=%v want %v", tc.label, reply.Errno, tc.want)
+		}
+		if len(descriptors.signalfd) != 0 {
+			t.Errorf("%s: 被拒绝的调用不得触达描述符表", tc.label)
+		}
+	}
+
+	reply := handler.Handle(ctx, Call{Syscall: SysSignalfd4, Args: [6]uint64{^uint64(0), sigsetAddress, 8, sfdNonBlock | sfdCloexec}})
+	if reply.Errno != "" || reply.Value != 34 {
+		t.Fatalf("正常创建: %+v", reply)
+	}
+	if len(descriptors.signalfd) != 1 || descriptors.signalfd[0] != [2]uint64{usrMask, sfdNonBlock | sfdCloexec} {
+		t.Fatalf("掩码与标志应透传: %+v", descriptors.signalfd)
+	}
+
+	// 更新已存在描述符的掩码。
+	if reply := handler.Handle(ctx, Call{Syscall: SysSignalfd4, Args: [6]uint64{7, sigsetAddress, 8, sfdNonBlock}}); reply.Errno != "" || reply.Value != 7 {
+		t.Fatalf("更新: %+v", reply)
+	}
+	if descriptors.signalfdUpdate != [3]uint64{7, usrMask, sfdNonBlock} {
+		t.Fatalf("更新参数: %+v", descriptors.signalfdUpdate)
+	}
+
+	// KILL/STOP 位在透传前被剥离。
+	binary.LittleEndian.PutUint64(raw[:], usrMask|uint64(1)<<8|uint64(1)<<18)
+	if err := memory.Write(ctx, sigsetAddress, raw[:]); err != nil {
+		t.Fatal(err)
+	}
+	if reply := handler.Handle(ctx, Call{Syscall: SysSignalfd4, Args: [6]uint64{^uint64(0), sigsetAddress, 8, 0}}); reply.Errno != "" {
+		t.Fatalf("含 KILL/STOP 的掩码应成功: %v", reply.Errno)
+	}
+	if got := descriptors.signalfd[len(descriptors.signalfd)-1]; got[0] != usrMask {
+		t.Fatalf("KILL/STOP 位应被剥离: %x", got[0])
+	}
+
+	if reply := (Syscalls{}).Handle(ctx, Call{Syscall: SysSignalfd4}); reply.Errno != errno.NotImplemented {
+		t.Fatalf("未装配端口应报 ENOSYS: %v", reply.Errno)
+	}
+
+	descriptors.signalfdErr = errno.Limit
+	if reply := handler.Handle(ctx, Call{Syscall: SysSignalfd4, Args: [6]uint64{^uint64(0), sigsetAddress, 8, 0}}); reply.Errno != errno.Limit {
+		t.Fatalf("实现层错误应透传: %v", reply.Errno)
 	}
 }

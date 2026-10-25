@@ -14,6 +14,7 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 	vmfs "github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fs"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/memory"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/signalfd"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/trace"
 )
 
@@ -39,6 +40,13 @@ type Descriptors interface {
 	Pipe(ctx context.Context) (uint64, uint64, error)
 
 	EventFD(ctx context.Context, initialValue, flags uint64) (uint64, error)
+
+	// SignalFD 创建新的 signalfd;mask 为客体信号位图(已剥离
+	// SIGKILL/SIGSTOP 位)。
+	SignalFD(ctx context.Context, mask, flags uint64) (uint64, error)
+
+	// UpdateSignalFD 更新已存在 signalfd 的掩码与选项。
+	UpdateSignalFD(ctx context.Context, descriptor, mask, flags uint64) error
 
 	Dup2(ctx context.Context, oldfd, newfd uint64, cloexec bool) error
 
@@ -458,6 +466,8 @@ func (s Syscalls) dispatch(ctx context.Context, call Call) Reply {
 		return s.pipe(ctx, call, true)
 	case SysEventfd2:
 		return s.eventfd2(ctx, call)
+	case SysSignalfd4:
+		return s.signalfd4(ctx, call)
 	case SysDup:
 		return s.dup(ctx, call)
 	case SysDup3:
@@ -3014,6 +3024,59 @@ func (s Syscalls) eventfd2(ctx context.Context, call Call) Reply {
 		return Reply{Errno: errnoOf(err)}
 	}
 	return Reply{Value: descriptor}
+}
+
+// asm-generic 的 signalfd4 标志位与掩码剥离规则。
+const (
+	sfdNonBlock = 0o4000
+	sfdCloexec  = 0o2000000
+	sfdFlagMask = sfdNonBlock | sfdCloexec
+
+	// SIGKILL=9 与 SIGSTOP=19 不可捕获,Linux 在登记掩码时静默剥离。
+	sfdKillBit = uint64(1) << 8
+	sfdStopBit = uint64(1) << 18
+)
+
+// signalfd4(ufd, mask, sizemask, flags):ufd==-1 时创建新的
+// signalfd,否则更新已存在描述符的掩码。被进程屏蔽且命中掩码的
+// 信号由内核路由进入 fd 队列,读取即消费,不再进入处理器与
+// 默认处置路径(L11)。
+func (s Syscalls) signalfd4(ctx context.Context, call Call) Reply {
+	if s.Memory == nil || s.Descriptors == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	if call.Args[2] != signalfd.SigsetSize {
+		return Reply{Errno: errno.Invalid}
+	}
+	if call.Args[3]&^sfdFlagMask != 0 {
+		return Reply{Errno: errno.Invalid}
+	}
+	var raw [signalfd.SigsetSize]byte
+	if err := s.Memory.Read(ctx, call.Args[1], raw[:]); err != nil {
+		return Reply{Errno: errno.Fault}
+	}
+	mask, err := signalfd.ParseSigset(raw[:])
+	if err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	mask &^= sfdKillBit | sfdStopBit
+	if mask == 0 {
+		return Reply{Errno: errno.Invalid}
+	}
+	if call.Args[0] == ^uint64(0) {
+		descriptor, err := s.Descriptors.SignalFD(ctx, mask, call.Args[3])
+		if err != nil {
+			return Reply{Errno: errnoOf(err)}
+		}
+		return Reply{Value: descriptor}
+	}
+	if call.Args[0] > math.MaxUint32 {
+		return Reply{Errno: errno.BadHandle}
+	}
+	if err := s.Descriptors.UpdateSignalFD(ctx, call.Args[0], mask, call.Args[3]); err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	return Reply{Value: call.Args[0]}
 }
 
 // dup(f) 复制到最低空闲编号,共享文件偏移与状态。

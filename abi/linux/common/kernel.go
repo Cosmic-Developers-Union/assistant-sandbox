@@ -11,6 +11,7 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/eventfd"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fd"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fs"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/signalfd"
 )
 
 type ProcessDescriptors struct {
@@ -160,11 +161,11 @@ func (p ProcessDescriptors) Fcntl(ctx context.Context, descriptor uint64, cmd ui
 	}
 }
 
-func (p ProcessDescriptors) dupAt(ctx context.Context, table *fd.Table, descriptor, minID uint64) (uint64, error) {
+func (p ProcessDescriptors) dupAt(ctx context.Context, creator fd.Creator, descriptor, minID uint64) (uint64, error) {
 	if minID > math.MaxUint32 {
 		return 0, errno.Wrap(errno.Invalid, "起始描述符超出表示范围")
 	}
-	id, err := table.DupAt(ctx, p.PID, descriptor, minID)
+	id, err := creator.DupAt(ctx, p.PID, descriptor, minID)
 	return uint64(id), err
 }
 
@@ -175,22 +176,22 @@ func (p ProcessDescriptors) DupFrom(ctx context.Context, descriptor uint64) (uin
 	if descriptor > math.MaxUint32 {
 		return 0, errno.Wrap(errno.BadHandle, "描述符编号超出表示范围")
 	}
-	table, ok := p.Table.(*fd.Table)
+	creator, ok := p.Table.(fd.Creator)
 	if !ok {
 		return 0, errno.Wrap(errno.NotSupported, "描述符表不支持 dup")
 	}
-	return p.dupAt(ctx, table, descriptor, 0)
+	return p.dupAt(ctx, creator, descriptor, 0)
 }
 
 func (p ProcessDescriptors) Pipe(ctx context.Context) (uint64, uint64, error) {
 	if p.Table == nil {
 		return 0, 0, errno.Wrap(errno.NotImplemented, "描述符端口未装配")
 	}
-	table, ok := p.Table.(*fd.Table)
+	creator, ok := p.Table.(fd.Creator)
 	if !ok {
 		return 0, 0, errno.Wrap(errno.NotSupported, "描述符表不支持 pipe")
 	}
-	r, w, err := table.Pipe(p.PID)
+	r, w, err := creator.Pipe(p.PID)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -201,11 +202,11 @@ func (p ProcessDescriptors) EventFD(ctx context.Context, initialValue, flags uin
 	if p.Table == nil {
 		return 0, errno.Wrap(errno.NotImplemented, "描述符端口未装配")
 	}
-	table, ok := p.Table.(*fd.Table)
+	creator, ok := p.Table.(fd.Creator)
 	if !ok {
 		return 0, errno.Wrap(errno.NotSupported, "描述符表不支持 eventfd")
 	}
-	descriptor, err := table.EventFD(p.PID, initialValue, eventfd.Options{
+	descriptor, err := creator.EventFD(p.PID, initialValue, eventfd.Options{
 		Semaphore: flags&efdSemaphore != 0,
 		NonBlock:  flags&efdNonBlock != 0,
 	})
@@ -213,11 +214,59 @@ func (p ProcessDescriptors) EventFD(ctx context.Context, initialValue, flags uin
 		return 0, err
 	}
 	if flags&efdCloexec != 0 {
-		if err := table.SetCloexec(p.PID, descriptor, true); err != nil {
-			return uint64(descriptor), err
+		if installer, ok := p.Table.(fd.Installer); ok {
+			if err := installer.SetCloexec(p.PID, descriptor, true); err != nil {
+				return uint64(descriptor), err
+			}
 		}
 	}
 	return uint64(descriptor), nil
+}
+
+func (p ProcessDescriptors) SignalFD(ctx context.Context, mask, flags uint64) (uint64, error) {
+	if p.Table == nil {
+		return 0, errno.Wrap(errno.NotImplemented, "描述符端口未装配")
+	}
+	creator, ok := p.Table.(fd.Creator)
+	if !ok {
+		return 0, errno.Wrap(errno.NotSupported, "描述符表不支持 signalfd")
+	}
+	descriptor, err := creator.SignalFD(p.PID, mask, signalfd.Options{
+		NonBlock: flags&sfdNonBlock != 0,
+	})
+	if err != nil {
+		return 0, err
+	}
+	if flags&sfdCloexec != 0 {
+		if installer, ok := p.Table.(fd.Installer); ok {
+			if err := installer.SetCloexec(p.PID, descriptor, true); err != nil {
+				return uint64(descriptor), err
+			}
+		}
+	}
+	return uint64(descriptor), nil
+}
+
+func (p ProcessDescriptors) UpdateSignalFD(ctx context.Context, descriptor, mask, flags uint64) error {
+	if p.Table == nil {
+		return errno.Wrap(errno.NotImplemented, "描述符端口未装配")
+	}
+	creator, ok := p.Table.(fd.Creator)
+	if !ok {
+		return errno.Wrap(errno.NotSupported, "描述符表不支持 signalfd")
+	}
+	if descriptor > math.MaxUint32 {
+		return errno.Wrap(errno.BadHandle, "描述符编号超出表示范围")
+	}
+	handle, err := creator.SignalFDAt(p.PID, uint32(descriptor))
+	if err != nil {
+		return err
+	}
+	if err := handle.SetMask(mask); err != nil {
+		return err
+	}
+	handle.SetNonBlock(flags&sfdNonBlock != 0)
+	return nil
 }
 
 func (p ProcessDescriptors) Dup2(ctx context.Context, oldfd, newfd uint64, cloexec bool) error {
@@ -227,15 +276,13 @@ func (p ProcessDescriptors) Dup2(ctx context.Context, oldfd, newfd uint64, cloex
 	if oldfd > math.MaxUint32 || newfd > math.MaxUint32 {
 		return errno.Wrap(errno.BadHandle, "描述符编号超出表示范围")
 	}
-	table, ok := p.Table.(*fd.Table)
-	if !ok {
-		return errno.Wrap(errno.NotSupported, "描述符表不支持 dup")
-	}
-	if err := table.Dup(ctx, p.PID, uint32(oldfd), uint32(newfd)); err != nil {
+	if err := p.Table.Dup(ctx, p.PID, uint32(oldfd), uint32(newfd)); err != nil {
 		return err
 	}
 	if cloexec {
-		_ = table.SetCloexec(p.PID, uint32(newfd), true)
+		if installer, ok := p.Table.(fd.Installer); ok {
+			_ = installer.SetCloexec(p.PID, uint32(newfd), true)
+		}
 	}
 	return nil
 }

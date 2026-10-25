@@ -27,14 +27,14 @@
 ## 2. 系统调用
 
 编号与名称一一对应由 G01 的 `TestRegistryMatchesAdapterMapping` 锁定;
-适配器认识但未实现的 33 个编号(epoll_create1、inotify_*、memfd_create、
-pselect6、timerfd_*、signalfd4、clone3、openat2、faccessat2、
+适配器认识但未实现的 32 个编号(epoll_create1、inotify_*、memfd_create、
+pselect6、timerfd_*、clone3、openat2、faccessat2、
 ptrace、chroot、mount、umount2、sync、acct、reboot、kexec_load、
 syslog、pivot_root、perf_event_open、pidfd_open、pidfd_getfd、
 close_range、fadvise64、fallocate、userfaultfd、accept4)固定登记为
 ENOSYS 清单,归 L/I/H 组后续任务。
 
-### 已交付语义(67 项)
+### 已交付语义(68 项)
 
 | 调用 | 语义来源(任务/测试) |
 | --- | --- |
@@ -56,6 +56,7 @@ ENOSYS 清单,归 L/I/H 组后续任务。
 | pipe / pipe2 | vm/pipe;`TestKernel*` 管道用例 |
 | poll / ppoll | L05;`TestPoll*`、`TestPpoll*` |
 | eventfd2 | L09;`TestEventfd2ValidatesAndDelegates` |
+| signalfd4 | L11;被进程屏蔽且命中掩码的信号经 fd 队列读取,KILL/STOP 位登记时剥离;`TestSignalfd4ValidatesAndDelegates`、`TestKernelSignalfdRoutesMaskedSignals`、`TestSignalfdProbeRunsOnKernel` |
 | brk / mmap / munmap / mprotect / mremap / madvise | mmap 仅匿名私有映射,文件映射 ENOTSUP;E03/E06/E07/E11/E12;`TestMmap*`、`TestBrk*` |
 | rt_sigaction / rt_sigprocmask / rt_sigreturn / sigaltstack | J02/J04;`TestRtSig*`、`TestSigaltstack*` |
 | kill / tgkill | J05;`TestKillSignalDispatchSemantics` |

@@ -27,6 +27,7 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/resources"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/scheduler"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/signal"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/signalfd"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/trace"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/wait"
 )
@@ -784,6 +785,11 @@ func (k *Kernel) Signal(target proc.PID, n signal.Number) error {
 
 		return nil
 	}
+	// 被屏蔽且命中 signalfd 掩码的信号转入 fd 队列,不再进入
+	// 处理器与默认处置路径(L11);读取 fd 即消费该信号。
+	if k.routeSignalfd(target, n) {
+		return nil
+	}
 	// 登记了客户态处理器的信号保持挂起,由执行器在指令边界
 	// 经信号帧投递(J03/J04);默认处置仍走终止/忽略路径。
 	// 唤醒阻塞等待(wait* 等)重新检查条件与信号(J09);此处
@@ -823,6 +829,34 @@ func (k *Kernel) Signal(target proc.PID, n signal.Number) error {
 	default:
 		return errno.NotSupported
 	}
+}
+
+// routeSignalfd 把被目标进程屏蔽且命中其 signalfd 掩码的信号转入
+// fd 队列并从挂起集中消费(L11):读取 fd 即取得 siginfo,该信号不再
+// 进入处理器与默认处置路径。ssi_pid/ssi_uid 记为 0(内核来源;
+// 当前投递路径不携带发送者身份)。调用方不得持有 k.mu——Deliver
+// 会唤醒等待者并触发就绪回调。
+func (k *Kernel) routeSignalfd(target proc.PID, n signal.Number) bool {
+	if n == 0 || n > 64 {
+		return false
+	}
+	masked, err := k.signals.Mask(uint64(target))
+	if err != nil || masked&(uint64(1)<<uint(n-1)) == 0 {
+		return false
+	}
+	routed := false
+	for _, f := range k.fds.SignalFDs(uint64(target)) {
+		if !f.Masked(uint32(n)) {
+			continue
+		}
+		if err := f.Deliver(signalfd.Signal{Signo: uint32(n), Code: signalfd.CodeUser}); err == nil {
+			routed = true
+		}
+	}
+	if routed {
+		k.signals.Consume(uint64(target), n)
+	}
+	return routed
 }
 
 // SignalAll 向除 except 外的全部进程发送信号(kill(-1) 语义)。

@@ -101,6 +101,7 @@ var handled = map[Syscall]bool{
 	SysSetuid:           true,
 	SysShutdown:         true,
 	SysSigaltstack:      true,
+	SysSignalfd4:        true,
 	SysSocket:           true,
 	SysSocketpair:       true,
 	SysStatfs:           true,

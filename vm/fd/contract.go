@@ -3,12 +3,31 @@ package fd
 import (
 	"context"
 	"io"
+
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/eventfd"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/signalfd"
 )
 
 type Stream interface {
 	io.Reader
 	io.Writer
 	io.Closer
+}
+
+// Creator 是描述符表创建内核对象描述符的能力(管道、eventfd、
+// signalfd、按最低空闲编号复制)。作用域包装器实现本接口时以自己
+// 绑定的 pid 强制调用方身份,忽略传入的 pid。
+type Creator interface {
+	Pipe(pid uint64) (read, write uint32, err error)
+
+	EventFD(pid uint64, initialValue uint64, options eventfd.Options) (uint32, error)
+
+	SignalFD(pid uint64, mask uint64, options signalfd.Options) (uint32, error)
+
+	// SignalFDAt 取已存在描述符上的 signalfd(更新掩码用)。
+	SignalFDAt(pid uint64, id uint32) (*signalfd.FD, error)
+
+	DupAt(ctx context.Context, pid, from, min uint64) (uint32, error)
 }
 
 type Terminal struct {

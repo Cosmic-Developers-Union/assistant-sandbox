@@ -11,6 +11,7 @@ import (
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/eventfd"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/signalfd"
 )
 
 type Streams struct {
@@ -274,6 +275,62 @@ func (t *Table) EventFD(pid uint64, initialValue uint64, options eventfd.Options
 		}
 	}
 	return 0, errno.Limit
+}
+
+// SignalFD 创建并安装一个 signalfd,语义与 signalfd4 一致。
+// mask 是信号掩码位图(位 n-1 对应信号 n),为空由 signalfd.New 拒绝。
+func (t *Table) SignalFD(pid uint64, mask uint64, options signalfd.Options) (uint32, error) {
+	handle, err := signalfd.New(mask, options)
+	if err != nil {
+		return 0, err
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	table := t.entries[pid]
+	if table == nil {
+		return 0, errno.NoProcess
+	}
+	for id := uint32(3); id < ^uint32(0); id++ {
+		if _, taken := table[id]; !taken {
+			table[id] = newEntry(handle, true)
+			return id, nil
+		}
+	}
+	return 0, errno.Limit
+}
+
+// SignalFDAt 取已存在描述符上的 signalfd(signalfd4 更新掩码用);
+// 描述符不存在报 errno.BadHandle,不是 signalfd 报 errno.Invalid。
+func (t *Table) SignalFDAt(pid uint64, id uint32) (*signalfd.FD, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	table := t.entries[pid]
+	if table == nil {
+		return nil, errno.NoProcess
+	}
+	e := table[id]
+	if e == nil {
+		return nil, errno.BadHandle
+	}
+	handle, ok := e.ref.handle.(*signalfd.FD)
+	if !ok {
+		return nil, errno.Invalid
+	}
+	return handle, nil
+}
+
+// SignalFDs 返回进程当前持有的全部 signalfd,供内核把被屏蔽
+// 信号路由到 fd 队列(L11)。
+func (t *Table) SignalFDs(pid uint64) []*signalfd.FD {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	var out []*signalfd.FD
+	for _, e := range t.entries[pid] {
+		if handle, ok := e.ref.handle.(*signalfd.FD); ok {
+			out = append(out, handle)
+		}
+	}
+	return out
 }
 
 func (t *Table) Close(ctx context.Context, pid uint64, id uint32) error {

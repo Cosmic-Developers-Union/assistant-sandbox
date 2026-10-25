@@ -9,6 +9,7 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fd"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/poll"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/signalfd"
 )
 
 // plainHandle 是不报告就绪状态的普通文件句柄。
@@ -166,4 +167,47 @@ func TestPollRejectsInvalidArguments(t *testing.T) {
 		t.Fatalf("poll: %+v want 1 个 POLLNVAL 事件", reply)
 	}
 	_ = time.Millisecond
+}
+
+// TestPollWaitsForSignalfdReadiness 验证 L11:signalfd 的就绪状态接入
+// poll——空队列超时返回 0,被屏蔽信号投递后报 POLLIN。
+func TestPollWaitsForSignalfdReadiness(t *testing.T) {
+	ctx := context.Background()
+	space := newFakeMemory()
+	table := fd.New()
+	const pid = 65
+	table.Attach(pid, fd.Streams{})
+	descriptor, err := table.SignalFD(pid, uint64(1)<<10, signalfd.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle, err := table.SignalFDAt(pid, descriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clk := &fakeClock{monotonic: 0}
+	sleeper := &fakeSleeper{onSleep: func(ns uint64) { clk.monotonic += ns }}
+	handler := Syscalls{Memory: space, Descriptors: ProcessDescriptors{Table: table, PID: pid}, Clock: clk, Sleeper: sleeper}
+	writePollfd(t, space, 0x2300, descriptor, pollIn)
+
+	// 队列为空:超时返回 0,不产生就绪事件。
+	reply := handler.Handle(ctx, Call{Syscall: SysPoll, Args: [6]uint64{0x2300, 1, 10}})
+	if reply.Errno != "" {
+		t.Fatalf("poll: %+v", reply)
+	}
+	if reply.Value != 0 {
+		t.Fatalf("空队列超时返回=%d want 0", reply.Value)
+	}
+
+	// 投递被屏蔽信号:立即 POLLIN。
+	if err := handle.Deliver(signalfd.Signal{Signo: 11, PID: 1, UID: 0, Code: signalfd.CodeUser}); err != nil {
+		t.Fatal(err)
+	}
+	reply = handler.Handle(ctx, Call{Syscall: SysPoll, Args: [6]uint64{0x2300, 1, 0}})
+	if reply.Errno != "" || reply.Value != 1 {
+		t.Fatalf("poll: %+v want 1 个就绪", reply)
+	}
+	if revents := readPollfd(t, space, 0x2300); revents&pollIn == 0 {
+		t.Fatalf("revents=%#x want POLLIN", revents)
+	}
 }

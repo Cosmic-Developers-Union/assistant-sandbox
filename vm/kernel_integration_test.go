@@ -3,6 +3,7 @@ package vm
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"io"
 	stdfs "io/fs"
@@ -24,6 +25,7 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/resources"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/scheduler"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/signal"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/signalfd"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/storage"
 )
 
@@ -1628,5 +1630,98 @@ func TestKernelWaitOnReapedTargetEndsWithECHILD(t *testing.T) {
 	defer cancel()
 	if _, err := kernel.Wait(waitCtx, kernel.Init(), child.ID); !errors.Is(err, errno.NoChild) {
 		t.Fatalf("等待已回收的目标 err=%v want ECHILD", err)
+	}
+}
+
+// TestKernelSignalfdRoutesMaskedSignals 验证 L11:被进程屏蔽且命中
+// signalfd 掩码的信号转入 fd 队列,进程不被默认处置终止,读取 fd
+// 即取得 siginfo 并消费;掩码外信号仍走默认处置路径。
+func TestKernelSignalfdRoutesMaskedSignals(t *testing.T) {
+	registry, err := executable.New(map[string]executable.Program{"long": longProgram()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	table := fd.New()
+	kernel, err := New(Services{Set: capability.Set{FD: table}, Programs: registry}, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := kernel.Begin(0, "long", nil, "/", nil, fd.Streams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	results := make(chan ExitStatus, 1)
+	runErr := make(chan error, 1)
+	go func() {
+		status, err := kernel.RunRegistered(t.Context(), child)
+		results <- status
+		runErr <- err
+	}()
+
+	// 屏蔽 SIGUSR1 并创建同掩码的 signalfd。
+	if _, err := kernel.signals.ApplyMask(uint64(child.ID), signal.MaskSetMask, uint64(1)<<9); err != nil {
+		t.Fatal(err)
+	}
+	descriptor, err := table.SignalFD(uint64(child.ID), uint64(1)<<9, signalfd.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle, err := table.SignalFDAt(uint64(child.ID), descriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 即使登记了客户态处理器,被屏蔽且命中 signalfd 掩码的信号也由
+	// fd 承接(处理器路径会把信号留在挂起集,此处断言挂起集为空即
+	// 证明没有走处理器路径)。
+	if err := kernel.signals.SetAction(uint64(child.ID), signal.USR1, signal.ActionConfig{Handler: 0xCAFE, Flags: 0x04000004}); err != nil {
+		t.Fatal(err)
+	}
+
+	// SIGUSR1 默认处置本应终止进程;被 signalfd 承接后不终止。
+	if err := kernel.Signal(child.ID, signal.USR1); err != nil {
+		t.Fatal(err)
+	}
+	if handle.Pending() != 1 {
+		t.Fatalf("fd 队列 pending=%d want 1", handle.Pending())
+	}
+	if pending, err := kernel.signals.Pending(uint64(child.ID)); err != nil || len(pending) != 0 {
+		t.Fatalf("信号应从挂起集转入 fd 队列: pending=%v err=%v", pending, err)
+	}
+	select {
+	case <-results:
+		t.Fatal("被 signalfd 承接的信号不得终止进程")
+	default:
+	}
+
+	// 读取 fd:128 字节 siginfo,首字段是信号号;读取后队列清空。
+	record := make([]byte, signalfd.RecordSize)
+	loaded, err := handle.Read(record)
+	if err != nil || loaded != signalfd.RecordSize {
+		t.Fatalf("read: n=%d err=%v", loaded, err)
+	}
+	if signo := binary.LittleEndian.Uint32(record[0:4]); signo != uint32(signal.USR1) {
+		t.Fatalf("ssi_signo=%d want %d", signo, signal.USR1)
+	}
+	if handle.Pending() != 0 {
+		t.Fatalf("读取后 pending=%d want 0", handle.Pending())
+	}
+
+	// 掩码外的 USR2 不经 fd,仍走默认终止处置。
+	if err := kernel.Signal(child.ID, signal.USR2); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case status := <-results:
+		if status.Signal != signal.USR2 {
+			t.Fatalf("status=%+v want SIGUSR2", status)
+		}
+		if err := <-runErr; err != nil {
+			t.Fatalf("被信号终止不应报错: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("未屏蔽信号未走默认处置")
+	}
+	if err := kernel.Close(t.Context()); err != nil {
+		t.Fatal(err)
 	}
 }
