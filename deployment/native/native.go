@@ -37,6 +37,10 @@ type Options struct {
 	Session resources.Limits
 
 	Process resources.Limits
+
+	// RealClock 为真时使用宿主生产时钟(真实时间流逝);默认使用虚拟
+	// 时钟,便于确定性测试与重放。
+	RealClock bool
 }
 
 const (
@@ -51,14 +55,20 @@ type Runtime struct {
 	Kernel    *vm.Kernel
 	FS        *memfs.FS
 	Store     *storage.Memory
-	Clock     *clock.Virtual
+	Clock     clock.Source
 	Entropy   *entropy.Seeded
 	Sequencer *scheduler.Sequencer
 	Meters    *resources.Meters
+
+	// Parent 是常驻客体会话(Bash):控制台与连接的子进程都挂在它下面。
+	Parent proc.Proc
 }
 
 func New(ctx context.Context, opts Options) (*Runtime, error) {
-	clk := &clock.Virtual{}
+	var clk clock.Source = &clock.Virtual{}
+	if opts.RealClock {
+		clk = clock.NewReal()
+	}
 	filesystem, err := memfs.New(clk, memfs.Options{})
 	if err != nil {
 		return nil, err
@@ -125,10 +135,11 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err = kernel.Begin(0, "bash", nil, workRoot, map[string]string{"HOME": workRoot, "TMPDIR": workRoot}, fd.Streams{}); err != nil {
+	parent, err = kernel.Begin(0, "bash", nil, workRoot, map[string]string{"HOME": workRoot, "TMPDIR": workRoot}, fd.Streams{})
+	if err != nil {
 		return nil, err
 	}
-	return &Runtime{Kernel: kernel, FS: filesystem, Store: store, Clock: clk, Entropy: seeded, Sequencer: sequencer, Meters: meters}, nil
+	return &Runtime{Kernel: kernel, FS: filesystem, Store: store, Clock: clk, Entropy: seeded, Sequencer: sequencer, Meters: meters, Parent: parent}, nil
 }
 
 func (r *Runtime) Session() contract.Session {

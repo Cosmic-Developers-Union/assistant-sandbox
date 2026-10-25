@@ -131,6 +131,35 @@ func NewRunner(kernel *vm.Kernel, parent proc.Proc, dir string, environment []st
 			}
 			return system.ReadDir(ctx, name)
 		}),
+		// 访问检查按客体文件系统的权限位判定:解释器的默认实现查
+		// 宿主文件系统,会让客体的 cd 等操作按宿主路径误判(目录缺少
+		// 宿主可执行位时报"permission denied")。
+		interp.AccessHandler(func(ctx context.Context, name string, mode interp.AccessMode) error {
+			system, err := fileSystem(ctx)
+			if err != nil {
+				return err
+			}
+			info, err := system.Stat(ctx, name)
+			if err != nil {
+				return err
+			}
+			need := fs.FileMode(mode) & 0o7
+			if need == 0 {
+				return nil
+			}
+			// 客体为单身份模型:属主、属组与其他三类权限位任一满足
+			// 即视为允许(身份细分随 O01 落地)。
+			perm := info.Mode().Perm()
+			// 权限位布局:属主在高位(0o700)、属组居中(0o070)、
+			// 其他在低位(0o007);任一类权限位满足全部需要即放行。
+			for _, shift := range []uint{6, 3, 0} {
+				granted := (perm >> shift) & 0o7
+				if need&^granted == 0 {
+					return nil
+				}
+			}
+			return fs.ErrPermission
+		}),
 		interp.CallHandler(func(ctx context.Context, args []string) ([]string, error) {
 			if len(args) == 0 {
 				return args, nil
@@ -285,11 +314,7 @@ func parse(source string) (*syntax.File, error) {
 		return nil, err
 	}
 	syntax.Walk(tree, func(node syntax.Node) bool {
-		switch n := node.(type) {
-		case *syntax.Stmt:
-			if n.Background {
-				err = errors.New("VM 暂不支持后台任务")
-			}
+		switch node.(type) {
 		case *syntax.ProcSubst:
 			err = errors.New("VM 不支持 IPC 进程替换")
 		case *syntax.TimeClause:

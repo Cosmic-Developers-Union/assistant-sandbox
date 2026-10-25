@@ -40,7 +40,9 @@ func TestDynamicScriptsAndUnavailableShellCapabilities(t *testing.T) {
 		{`eval 'if'`, false}, {`eval 'cat <(printf value)'`, false},
 		{`source good`, true}, {`source bad`, false}, {`source missing`, false}, {`source too-big`, false},
 		{`pwd -P`, false}, {`read -t 1 value`, false},
-		{`cat <(printf value)`, false}, {`time true`, false}, {`echo value &`, false},
+		{`cat <(printf value)`, false}, {`time true`, false},
+		// 后台语句已可用(P13 移除旧禁用逻辑):`&` 的作业在后台执行。
+		{`echo value &`, true},
 	} {
 		t.Run(tc.script, func(t *testing.T) {
 			var out bytes.Buffer

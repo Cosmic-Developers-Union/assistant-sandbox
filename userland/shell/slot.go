@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"sort"
 	"sync"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/proc"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/resources"
 	"mvdan.cc/sh/v3/interp"
+	"mvdan.cc/sh/v3/syntax"
 )
 
 const LanguageID = "bash"
@@ -36,11 +38,18 @@ type Slot struct {
 }
 
 func NewSlot(kernel *vm.Kernel, parent proc.Proc, dir string, environment []string) (*Slot, error) {
+	return NewSlotWithOutput(kernel, parent, dir, environment, nil)
+}
+
+// NewSlotWithOutput 建立槽位并把持续输出(命令返回后仍在写入的后台
+// 进程输出)同时送往 output;output 为 nil 时只保留逐步骤的捕获。
+func NewSlotWithOutput(kernel *vm.Kernel, parent proc.Proc, dir string, environment []string, output io.Writer) (*Slot, error) {
 	if kernel == nil {
 		return nil, errno.Wrap(errno.Invalid, "缺少内核")
 	}
 
 	sink := &mutableSink{}
+	sink.setPersistent(output)
 	session, err := newSessionWithKernel(kernel, parent, dir, environment, nil, sink, sink)
 	if err != nil {
 		return nil, err
@@ -84,12 +93,52 @@ func (s *Slot) Step(ctx context.Context, source []byte) (language.Output, error)
 
 		return language.Output{Data: []byte(err.Error()), Status: 2, Done: false}, nil
 	}
-	runErr := s.session.runner.Run(proc.WithContext(ctx, s.parent), tree)
+	// 顶层后台语句独立执行:后台任务不随前台命令的上下文取消而结束
+	// (与 Linux 的后台作业一致)。
+	foreground, background := splitBackground(tree)
+	if background != nil {
+		s.runBackground(ctx, background)
+	}
+	runErr := s.session.runner.Run(proc.WithContext(ctx, s.parent), foreground)
 	status, done := exitStatus(runErr)
 	s.dir = s.session.runner.Dir
 
 	_ = s.kernel.RunDueJobs(ctx)
 	return language.Output{Data: append([]byte(nil), buffer.Bytes()...), Status: status, Done: done}, nil
+}
+
+// splitBackground 把顶层语句按后台标记拆成前台与后台两部分:后台
+// 语句由独立的解释器执行,输出仍写入同一个汇聚点。
+func splitBackground(tree *syntax.File) (foreground, background *syntax.File) {
+	if tree == nil {
+		return nil, nil
+	}
+	front := &syntax.File{Name: tree.Name}
+	back := &syntax.File{Name: tree.Name}
+	for _, statement := range tree.Stmts {
+		if statement.Background {
+			back.Stmts = append(back.Stmts, statement)
+			continue
+		}
+		front.Stmts = append(front.Stmts, statement)
+	}
+	if len(back.Stmts) == 0 {
+		return tree, nil
+	}
+	return front, back
+}
+
+// runBackground 在独立解释器里执行后台语句:上下文与前台命令解耦,
+// 前台返回后后台继续运行。
+func (s *Slot) runBackground(ctx context.Context, tree *syntax.File) {
+	output := s.sink.persistentWriter()
+	runner, err := NewRunner(s.kernel, s.parent, s.dir, s.env, nil, output, output)
+	if err != nil {
+		return
+	}
+	go func() {
+		_ = runner.Run(proc.WithContext(context.WithoutCancel(ctx), s.parent), tree)
+	}()
 }
 
 func exitStatus(err error) (int, bool) {
