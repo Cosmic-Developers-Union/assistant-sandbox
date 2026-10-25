@@ -382,6 +382,9 @@ func syscalls(ctx context.Context, process proc.Proc, space *memory.Table, plan 
 	if killer, ok := process.Control.(proc.SignalKillControl); ok {
 		handler.Kills = processKiller{control: killer}
 	}
+	if sessions, ok := process.Control.(proc.SessionControl); ok {
+		handler.Sessions = processSessions{control: sessions}
+	}
 	if forker, ok := process.Control.(proc.ForkControl); ok {
 		handler.Spawner = processForker{
 			parent: process, space: space, plan: plan, core: core,
@@ -1080,6 +1083,27 @@ func (p processKiller) Kill(ctx context.Context, pid int64, number uint64) error
 		return errno.Invalid
 	}
 	return p.control.KillSignal(pid, signal.Number(number))
+}
+
+// processSessions 适配 setsid/setpgid/getpgid/getsid 的会话端口(H11)。
+type processSessions struct {
+	control proc.SessionControl
+}
+
+func (p processSessions) SetPGID(pid int64, pgid int64) error {
+	return p.control.SetPGID(pid, pgid)
+}
+
+func (p processSessions) SetSID() error {
+	return p.control.SetSID()
+}
+
+func (p processSessions) GetPGID(pid int64) (uint64, error) {
+	return p.control.GetPGID(pid)
+}
+
+func (p processSessions) GetSID(pid int64) (uint64, error) {
+	return p.control.GetSID(pid)
 }
 
 // isDynamicImage 报告映像头是否为 ET_DYN(e_type=3)。

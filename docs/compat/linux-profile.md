@@ -34,7 +34,7 @@ syslog、pivot_root、perf_event_open、pidfd_open、pidfd_getfd、
 close_range、fadvise64、fallocate、userfaultfd、accept4)固定登记为
 ENOSYS 清单,归 L/I/H 组后续任务。
 
-### 已交付语义(61 项)
+### 已交付语义(65 项)
 
 | 调用 | 语义来源(任务/测试) |
 | --- | --- |
@@ -66,27 +66,26 @@ ENOSYS 清单,归 L/I/H 组后续任务。
 | sched_getaffinity / sched_setaffinity / getcpu | L12;`TestAffinityAndTopology*` |
 | getcwd | G 组;`vm` 内核用例 |
 | getuid / geteuid / getgid / getegid | G 组单身份查询(O01 前固定客体身份) |
+| getpgid / getsid / setpgid / setsid | H11;`TestKernelProcessGroupsAndSessions`、`TestSessionProbeErrnosMatchLinuxSemantics` |
 
-### 明确 ENOTSUP(33 项:在册、语义未交付)
+### 明确 ENOTSUP(31 项:在册、语义未交付)
 
 | 调用 | 承接任务 |
 | --- | --- |
 | socket / bind / listen / accept / connect / socketpair / sendto / recvfrom / shutdown / setsockopt / getsockopt / getsockname / getpeername | M02–M08 |
-| setpgid / setsid | H11(进程组与会话) |
 | getitimer / setitimer | 未纳入配置(需要时立任务) |
 | getpriority / setpriority | 未纳入配置(需要时立任务) |
 | mlock / munlock / mlockall / munlockall / mincore | E15(映射/物理页预算) |
 | umask | I13(权限/umask/所有权) |
 | setuid / setgid / setreuid / setregid / setresuid / setresgid / setfsuid / setfsgid | O01(客体身份) |
 
-### 声明语义(6 项:返回值即配置,不是缺陷)
+### 声明语义(4 项:返回值即配置,不是缺陷)
 
 | 调用 | 声明 | 复核任务 |
 | --- | --- | --- |
 | sched_yield | 顺序解释器无抢占,让出为成功空操作 | H02 落地后复核 |
 | times / getrusage | 结构体全零写入 | T03 资源指标 |
 | getgroups | 无补充组:返回 0 | 单身份模型声明(O01 后复核) |
-| getpgid / getsid | 返回调用方 PID(每进程自成组,J05 组播依赖此不变量) | H11 落地后改真实查询 |
 
 ## 3. 文件、路径与地址空间
 
@@ -106,6 +105,11 @@ ENOSYS 清单,归 L/I/H 组后续任务。
 
 - 进程:Begin/Run/Finish 生命周期、fork、execve、waitid(P_PID/P_ALL +
   WEXITED/WNOHANG)、孤儿收养与僵尸回收(H10);进程上限与会话计量。
+- 进程组与会话(H11):子进程默认继承父进程的进程组与会话;setpgid 仅能
+  调整调用方自身或其子进程,跨会话与组长目标报 EPERM,目标进程或进程组
+  不存在报 ESRCH;已是组长时 setsid 报 EPERM;组信号按组内成员投递。
+  getpgid/getsid 对负 pid 与不存在进程同样报 ESRCH(与 Linux 内核一致;
+  glibc 包装层另行返回 EINVAL)。
 - 不支持:vfork(H12)、clone 线程标志(K 组)、ptrace、procfs 查询(N06/N07)。
 - 信号:标准信号投递、掩码/处置/备用栈、信号帧与 rt_sigreturn、
   kill/tgkill/进程组播、同步故障转换、STOP/CONT/KILL、SIGCHLD 通知、

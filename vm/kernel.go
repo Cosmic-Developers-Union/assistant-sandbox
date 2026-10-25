@@ -825,6 +825,40 @@ func (k *Kernel) SetSID(id proc.PID) error {
 	return k.table.SetSID(id)
 }
 
+// GetPGID 返回目标进程的进程组号(H11);target=0 表示调用进程自身。
+func (k *Kernel) GetPGID(caller, target proc.PID) (proc.PID, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.closed {
+		return 0, errno.Cancelled
+	}
+	if target == 0 {
+		target = caller
+	}
+	p, err := k.table.Get(target)
+	if err != nil {
+		return 0, err
+	}
+	return p.PGID, nil
+}
+
+// GetSID 返回目标进程的会话号(H11);target=0 表示调用进程自身。
+func (k *Kernel) GetSID(caller, target proc.PID) (proc.PID, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.closed {
+		return 0, errno.Cancelled
+	}
+	if target == 0 {
+		target = caller
+	}
+	p, err := k.table.Get(target)
+	if err != nil {
+		return 0, err
+	}
+	return p.SID, nil
+}
+
 type BudgetFunc func(process proc.Proc) resources.Limits
 
 func (k *Kernel) SetBudget(budget BudgetFunc) {
@@ -1519,6 +1553,68 @@ func (c procControl) Fork() (proc.Proc, *memory.Table, error) {
 		return proc.Proc{}, nil, errno.NoProcess
 	}
 	return c.k.Fork(c.self)
+}
+
+// SetPGID 按 setpgid(2) 语义把目标进程移入进程组(H11):pid=0 表示
+// 调用方自身,pgid=0 表示以目标进程号作为组号;负值 EINVAL。
+func (c procControl) SetPGID(pid int64, pgid int64) error {
+	if c.self == 0 {
+		return errno.NoProcess
+	}
+	if pid < 0 || pgid < 0 {
+		return errno.Invalid
+	}
+	target := c.self
+	if pid != 0 {
+		target = proc.PID(pid)
+	}
+	group := target
+	if pgid != 0 {
+		group = proc.PID(pgid)
+	}
+	return c.k.SetPGID(c.self, target, group)
+}
+
+// SetSID 按 setsid(2) 为调用方建立新会话:调用方成为会话与进程组组长。
+func (c procControl) SetSID() error {
+	if c.self == 0 {
+		return errno.NoProcess
+	}
+	return c.k.SetSID(c.self)
+}
+
+// GetPGID 返回目标进程的进程组号;pid=0 表示调用方自身。
+// 负 pid 与不存在的进程一样按 ESRCH 应答(Linux 内核语义)。
+func (c procControl) GetPGID(pid int64) (uint64, error) {
+	if c.self == 0 {
+		return 0, errno.NoProcess
+	}
+	target := c.self
+	if pid != 0 {
+		target = proc.PID(pid)
+	}
+	value, err := c.k.GetPGID(c.self, target)
+	if err != nil {
+		return 0, err
+	}
+	return uint64(value), nil
+}
+
+// GetSID 返回目标进程的会话号;pid=0 表示调用方自身。
+// 负 pid 与不存在的进程一样按 ESRCH 应答(Linux 内核语义)。
+func (c procControl) GetSID(pid int64) (uint64, error) {
+	if c.self == 0 {
+		return 0, errno.NoProcess
+	}
+	target := c.self
+	if pid != 0 {
+		target = proc.PID(pid)
+	}
+	value, err := c.k.GetSID(c.self, target)
+	if err != nil {
+		return 0, err
+	}
+	return uint64(value), nil
 }
 
 func (c procControl) KillSignal(pid int64, n signal.Number) error {

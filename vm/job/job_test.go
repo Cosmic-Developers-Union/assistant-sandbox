@@ -91,7 +91,7 @@ func TestSessionMembers(t *testing.T) {
 	if err := table.SetPGID(init, third.ID, third.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := table.SetSID(third.ID); !errors.Is(err, errno.Permission) {
+	if err := table.SetSID(third.ID); !errors.Is(err, errno.NotPermitted) {
 		t.Fatalf("err=%v", err)
 	}
 }

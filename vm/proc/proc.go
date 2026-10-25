@@ -295,17 +295,37 @@ func (t *Table) HasChildren(parent PID) bool {
 	return false
 }
 
+// SetPGID 按 setpgid(2) 的 Linux 权限规则调整进程组(H11):
+//   - 目标必须是调用方自身或其子进程,否则 EPERM;
+//   - 目标与调用方必须同会话,否则 EPERM;
+//   - 目标是会话组长时 EPERM;
+//   - 已 execve 的子进程报 EACCES(Linux:子进程已 exec 后不可改组);
+//   - 指定进程组必须是同会话中已存在的组,否则 EPERM。
+//
+// pgid=0 表示以目标进程号作为组号。
 func (t *Table) SetPGID(caller, target, pgid PID) error {
+	callerProc, ok := t.entries[caller]
+	if !ok {
+		return errno.NoProcess
+	}
 	p, ok := t.entries[target]
 	if !ok {
 		return errno.NoProcess
 	}
-	if caller != target && p.Parent != caller {
-		return errno.Permission
+	if target != caller {
+		if p.Parent != caller {
+			return errno.NotPermitted
+		}
+		if p.Generation > 1 {
+			return errno.Permission
+		}
 	}
-	if p.SID == target {
-
-		return errno.Permission
+	if p.SID != callerProc.SID {
+		return errno.NotPermitted
+	}
+	if p.SID == p.ID {
+		// 会话组长不能被移出其会话。
+		return errno.NotPermitted
 	}
 	if pgid == 0 {
 		pgid = target
@@ -313,10 +333,11 @@ func (t *Table) SetPGID(caller, target, pgid PID) error {
 	if pgid != target {
 		group, ok := t.entries[pgid]
 		if !ok {
-			return errno.Permission
+			// 进程组不存在:Linux 报 ESRCH。
+			return errno.NoProcess
 		}
-		if group.PGID != pgid || group.SID != p.SID {
-			return errno.Permission
+		if group.PGID != pgid || group.SID != callerProc.SID {
+			return errno.NotPermitted
 		}
 	}
 	p.PGID = pgid
@@ -324,13 +345,15 @@ func (t *Table) SetPGID(caller, target, pgid PID) error {
 	return nil
 }
 
+// SetSID 按 setsid(2) 建立新会话:调用方成为会话组长与进程组组长。
+// 调用方已是进程组组长时 Linux 报 EPERM。
 func (t *Table) SetSID(id PID) error {
 	p, ok := t.entries[id]
 	if !ok {
 		return errno.NoProcess
 	}
 	if p.PGID == id {
-		return errno.Permission
+		return errno.NotPermitted
 	}
 	p.SID = id
 	p.PGID = id

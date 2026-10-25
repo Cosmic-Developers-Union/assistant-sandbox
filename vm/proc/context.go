@@ -112,6 +112,23 @@ type SignalKillControl interface {
 	KillSignal(pid int64, number signal.Number) error
 }
 
+// SessionControl 是 setsid/setpgid/getpgid/getsid 的会话与进程组端口
+// (H11):pid=0 表示调用方自身,负值非法;实现按 Linux 权限规则校验
+// (目标必须是调用方或其子进程、同会话、非会话组长)。
+type SessionControl interface {
+	// SetPGID 把目标进程移入进程组;pgid=0 表示以目标进程号为组号。
+	SetPGID(pid int64, pgid int64) error
+
+	// SetSID 为调用方建立新会话(调用方成为组长)。
+	SetSID() error
+
+	// GetPGID 返回目标进程的进程组号。
+	GetPGID(pid int64) (uint64, error)
+
+	// GetSID 返回目标进程的会话号。
+	GetSID(pid int64) (uint64, error)
+}
+
 // SignalDispositionControl 是 rt_sigaction/rt_sigprocmask 的登记端口。
 type SignalDispositionControl interface {
 	SetSignalAction(signal.Number, signal.ActionConfig) error

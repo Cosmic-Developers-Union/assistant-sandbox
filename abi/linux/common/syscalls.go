@@ -212,12 +212,32 @@ type Syscalls struct {
 	Spawner Spawner
 
 	Kills SignalSender
+
+	// Sessions 是 setsid/setpgid/getpgid/getsid 的会话端口(H11);
+	// 未装配时这四个调用明确 ENOTSUP。
+	Sessions SessionControl
 }
 
 // SignalSender 是 kill/tgkill 的发送端口;实现经内核投递,
 // 自定义处理器经 J03/J04 的边界投递执行。
 type SignalSender interface {
 	Kill(ctx context.Context, pid int64, number uint64) error
+}
+
+// SessionControl 是 setsid/setpgid/getpgid/getsid 的会话与进程组端口
+// (H11):pid=0 表示调用方自身,负值非法;实现按 Linux 权限规则校验。
+type SessionControl interface {
+	// SetPGID 按 setpgid(2) 语义把目标进程移入进程组。
+	SetPGID(pid int64, pgid int64) error
+
+	// SetSID 按 setsid(2) 语义为调用方建立新会话。
+	SetSID() error
+
+	// GetPGID 返回目标进程的进程组号。
+	GetPGID(pid int64) (uint64, error)
+
+	// GetSID 返回目标进程的会话号。
+	GetSID(pid int64) (uint64, error)
 }
 
 // Spawner 是 clone(SIGCHLD) 的进程复制端口;实现复制地址空间、
@@ -324,17 +344,19 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 	case SysSysinfo:
 		return s.sysinfo(ctx, call)
 	case SysGetpgid, SysGetsid:
-		return s.identity(call)
+		return s.sessionQuery(call)
+	case SysSetpgid:
+		return s.setpgid(call)
+	case SysSetsid:
+		return s.setsid(call)
 	case SysTimes:
 		return s.times(ctx, call)
 	case SysGetgroups:
 		return s.getgroups(ctx, call)
 	// 以下调用按兼容配置 linux-rv64gc-1(A03)声明为不支持:
-	// 会话/组管理、itimer、nice、锁定、mincore、umask 与身份变更的
-	// 真实语义分别由 H11、T03、E15、I13、O01 承接;在此之前明确
-	// ENOTSUP,不以无操作成功伪装完成。
-	case SysSetpgid, SysSetsid:
-		return Reply{Errno: errno.NotSupported}
+	// itimer、nice、锁定、mincore、umask 与身份变更的真实语义分别
+	// 由 T03、E15、I13、O01 承接;在此之前明确 ENOTSUP,不以无操作
+	// 成功伪装完成。
 	case SysSchedYield:
 		return Reply{}
 	case SysPrlimit64:
@@ -605,7 +627,7 @@ func (s Syscalls) identity(call Call) Reply {
 		return Reply{Errno: errno.NotImplemented}
 	}
 	switch call.Syscall {
-	case SysGetPID, SysGetTID, SysGetpgid, SysGetsid:
+	case SysGetPID, SysGetTID:
 		return Reply{Value: s.Identity.PID}
 	case SysGetPPID:
 		return Reply{Value: s.Identity.PPID}
@@ -616,6 +638,60 @@ func (s Syscalls) identity(call Call) Reply {
 	default:
 		return Reply{Errno: errno.NotImplemented}
 	}
+}
+
+// sessionQuery 处理 getpgid/getsid:pid=0 表示调用方自身。会话端口
+// 未装配时明确 ENOTSUP,不以调用方 PID 冒充。负 pid 不在此处拒绝:
+// Linux 内核对 getpgid/getsid 的负 pid 返回 ESRCH(进程不存在),
+// 由端口按真实查找结果应答。
+func (s Syscalls) sessionQuery(call Call) Reply {
+	if s.Sessions == nil {
+		return Reply{Errno: errno.NotSupported}
+	}
+	pid := int64(call.Args[0])
+	var value uint64
+	var err error
+	switch call.Syscall {
+	case SysGetpgid:
+		value, err = s.Sessions.GetPGID(pid)
+	case SysGetsid:
+		value, err = s.Sessions.GetSID(pid)
+	default:
+		return Reply{Errno: errno.Invalid}
+	}
+	if err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	return Reply{Value: value}
+}
+
+// setpgid 处理 setpgid(2):pid=0 表示调用方自身,pgid=0 表示以目标
+// 进程号作为进程组号;负值非法(Linux 内核返回 EINVAL)。
+func (s Syscalls) setpgid(call Call) Reply {
+	if s.Sessions == nil {
+		return Reply{Errno: errno.NotSupported}
+	}
+	pid := int64(call.Args[0])
+	pgid := int64(call.Args[1])
+	if pid < 0 || pgid < 0 {
+		return Reply{Errno: errno.Invalid}
+	}
+	if err := s.Sessions.SetPGID(pid, pgid); err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	return Reply{}
+}
+
+// setsid 处理 setsid(2):调用方脱离原会话并成为新会话与进程组的组长;
+// 调用方已是组长时由内核按 EPERM 拒绝。
+func (s Syscalls) setsid(call Call) Reply {
+	if s.Sessions == nil {
+		return Reply{Errno: errno.NotSupported}
+	}
+	if err := s.Sessions.SetSID(); err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	return Reply{}
 }
 
 func (s Syscalls) clockGettime(ctx context.Context, call Call) Reply {

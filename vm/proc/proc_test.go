@@ -250,10 +250,10 @@ func TestProcessGroupAndSession(t *testing.T) {
 		t.Error(err)
 	}
 
-	if err := table.SetPGID(init.ID, init.ID, 0); !errors.Is(err, errno.Permission) {
+	if err := table.SetPGID(init.ID, init.ID, 0); !errors.Is(err, errno.NotPermitted) {
 		t.Fatal(err)
 	}
-	if err := table.SetSID(init.ID); !errors.Is(err, errno.Permission) {
+	if err := table.SetSID(init.ID); !errors.Is(err, errno.NotPermitted) {
 		t.Fatal(err)
 	}
 	worker, _ := table.Create(init.ID, "worker", nil, "/", nil)
@@ -284,15 +284,15 @@ func TestProcessGroupAndSession(t *testing.T) {
 	if err := table.SetSID(other.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := table.SetPGID(other.ID, member.ID, member.ID); !errors.Is(err, errno.Permission) {
+	if err := table.SetPGID(other.ID, member.ID, member.ID); !errors.Is(err, errno.NotPermitted) {
 		t.Fatalf("err=%v", err)
 	}
 
-	if err := table.SetPGID(member.ID, worker.ID, worker.ID); !errors.Is(err, errno.Permission) {
+	if err := table.SetPGID(member.ID, worker.ID, worker.ID); !errors.Is(err, errno.NotPermitted) {
 		t.Fatal(err)
 	}
 
-	if err := table.SetPGID(init.ID, member.ID, 99); !errors.Is(err, errno.Permission) {
+	if err := table.SetPGID(init.ID, member.ID, 99); !errors.Is(err, errno.NoProcess) {
 		t.Fatal(err)
 	}
 

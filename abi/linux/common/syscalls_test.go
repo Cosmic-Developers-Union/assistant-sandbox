@@ -3044,10 +3044,9 @@ func TestClockNanosleepAbsoluteNotInterruptedBySignal(t *testing.T) {
 }
 
 // TestUnsupportedCallsAreHonestENOTSUP 锁定 A03 兼容配置:未交付语义的
-// 已登记调用明确 ENOTSUP,不以无操作成功伪装完成(H11/T03/E15/I13/O01)。
+// 已登记调用明确 ENOTSUP,不以无操作成功伪装完成(T03/E15/I13/O01)。
 func TestUnsupportedCallsAreHonestENOTSUP(t *testing.T) {
 	unsupported := []Syscall{
-		SysSetpgid, SysSetsid,
 		SysGetitimer, SysSetitimer,
 		SysGetpriority, SysSetpriority,
 		SysMlock, SysMunlock, SysMlockall, SysMunlockall,
@@ -3060,5 +3059,103 @@ func TestUnsupportedCallsAreHonestENOTSUP(t *testing.T) {
 		if reply := syscalls.Handle(context.Background(), Call{Syscall: call}); reply.Errno != errno.NotSupported {
 			t.Fatalf("%v: reply=%+v want ENOTSUP", call, reply)
 		}
+	}
+}
+
+// fakeSessions 记录会话端口调用并按需返回错误。
+type fakeSessions struct {
+	pgid   uint64
+	sid    uint64
+	err    error
+	setPID int64
+	setGID int64
+	setSID bool
+}
+
+func (f *fakeSessions) SetPGID(pid int64, pgid int64) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.setPID, f.setGID, f.setSID = pid, pgid, true
+	return nil
+}
+
+func (f *fakeSessions) SetSID() error {
+	if f.err != nil {
+		return f.err
+	}
+	f.setSID = true
+	return nil
+}
+
+func (f *fakeSessions) GetPGID(pid int64) (uint64, error) {
+	if f.err != nil {
+		return 0, f.err
+	}
+	return f.pgid, nil
+}
+
+func (f *fakeSessions) GetSID(pid int64) (uint64, error) {
+	if f.err != nil {
+		return 0, f.err
+	}
+	return f.sid, nil
+}
+
+// TestSessionSyscallsValidateAndDelegate 验证 H11:会话端口未装配时
+// 明确 ENOTSUP;装配后 getpgid/getsid/setpgid/setsid 按 Linux 参数
+// 规则委托——负 pid/pgid 报 EINVAL,端口错误原样透传。
+func TestSessionSyscallsValidateAndDelegate(t *testing.T) {
+	ctx := context.Background()
+	// 未装配端口:明确 ENOTSUP,不再以调用方 PID 冒充。
+	for _, call := range []Syscall{SysGetpgid, SysGetsid, SysSetpgid, SysSetsid} {
+		if reply := (Syscalls{}).Handle(ctx, Call{Syscall: call}); reply.Errno != errno.NotSupported {
+			t.Fatalf("%v: %+v want ENOTSUP", call, reply)
+		}
+	}
+
+	sessions := &fakeSessions{pgid: 7, sid: 3}
+	handler := Syscalls{Memory: newFakeMemory(), Identity: &Identity{PID: 1}, Sessions: sessions}
+	if reply := handler.Handle(ctx, Call{Syscall: SysGetpgid}); reply.Errno != "" || reply.Value != 7 {
+		t.Fatalf("getpgid: %+v", reply)
+	}
+	if reply := handler.Handle(ctx, Call{Syscall: SysGetsid}); reply.Errno != "" || reply.Value != 3 {
+		t.Fatalf("getsid: %+v", reply)
+	}
+	if reply := handler.Handle(ctx, Call{Syscall: SysSetpgid, Args: [6]uint64{11, 22}}); reply.Errno != "" {
+		t.Fatalf("setpgid: %+v", reply)
+	}
+	if sessions.setPID != 11 || sessions.setGID != 22 {
+		t.Fatalf("setpgid 参数=%d/%d", sessions.setPID, sessions.setGID)
+	}
+	if reply := handler.Handle(ctx, Call{Syscall: SysSetsid}); reply.Errno != "" {
+		t.Fatalf("setsid: %+v", reply)
+	}
+	// setpgid 的负 pid/pgid:EINVAL,不经端口(Linux 内核显式检查)。
+	for _, call := range []Call{
+		{Syscall: SysSetpgid, Args: [6]uint64{^uint64(0), 0}},
+		{Syscall: SysSetpgid, Args: [6]uint64{0, ^uint64(0)}},
+	} {
+		if reply := handler.Handle(ctx, call); reply.Errno != errno.Invalid {
+			t.Fatalf("%v: %+v want EINVAL", call.Syscall, reply)
+		}
+	}
+	// getpgid/getsid 的负 pid 交由端口按查找结果应答(Linux 内核报
+	// ESRCH,glibc 包装层另行返回 EINVAL)。
+	negative := &fakeSessions{pgid: 7, sid: 3}
+	passthrough := Syscalls{Memory: newFakeMemory(), Sessions: negative}
+	if reply := passthrough.Handle(ctx, Call{Syscall: SysGetpgid, Args: [6]uint64{^uint64(0)}}); reply.Errno != "" {
+		t.Fatalf("负 pid 应交端口应答: %+v", reply)
+	}
+	if reply := passthrough.Handle(ctx, Call{Syscall: SysGetsid, Args: [6]uint64{^uint64(0)}}); reply.Errno != "" {
+		t.Fatalf("负 pid 应交端口应答: %+v", reply)
+	}
+	// 端口错误原样透传(EPERM/ESRCH)。
+	failing := Syscalls{Memory: newFakeMemory(), Sessions: &fakeSessions{err: errno.NotPermitted}}
+	if reply := failing.Handle(ctx, Call{Syscall: SysSetsid}); reply.Errno != errno.NotPermitted {
+		t.Fatalf("setsid EPERM: %+v", reply)
+	}
+	if reply := failing.Handle(ctx, Call{Syscall: SysGetpgid}); reply.Errno != errno.NotPermitted {
+		t.Fatalf("getpgid EPERM: %+v", reply)
 	}
 }

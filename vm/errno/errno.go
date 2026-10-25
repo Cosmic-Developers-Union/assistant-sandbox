@@ -19,6 +19,7 @@ const (
 	NotFound           Code = "ENOENT：可执行程序不存在"
 
 	Permission   Code = "EACCES：权限不足"
+	NotPermitted Code = "EPERM：操作不被允许"
 	Exist        Code = "EEXIST：目标已存在"
 	NotDirectory Code = "ENOTDIR：路径前缀不是目录"
 	IsDirectory  Code = "EISDIR：目标是目录"
@@ -53,7 +54,7 @@ const (
 
 var declared = []Code{
 	NotImplemented, NotSupported, NetworkUnreachable, Invalid, NoProcess, NoChild, Busy, Limit, NotFound,
-	Permission, Exist, NotDirectory, IsDirectory, NotEmpty, BadHandle, BrokenPipe, NameTooLong, ReadOnlyFS,
+	Permission, NotPermitted, Exist, NotDirectory, IsDirectory, NotEmpty, BadHandle, BrokenPipe, NameTooLong, ReadOnlyFS,
 	LinkLoop, NoDevice, NoSpace, NoMemory, CrossDevice, Cancelled, Interrupted, WouldBlock, Range, Overflow,
 	TimedOut, NoExec, Version, Fault, IO, Seek, TooBig,
 }
@@ -75,6 +76,7 @@ var wasiNumbers = map[Code]uint16{
 	NotSupported:       58,
 	NetworkUnreachable: 40,
 	Permission:         2,
+	NotPermitted:       63,
 	Exist:              20,
 	NotDirectory:       54,
 	IsDirectory:        31,
@@ -115,6 +117,7 @@ const linuxABIVersion = "abi-linux-asm-generic"
 var linuxNumbers = map[Code]int32{
 	Fault:              14,
 	Permission:         13,
+	NotPermitted:       1,
 	NotFound:           2,
 	NoProcess:          3,
 	Interrupted:        4,
