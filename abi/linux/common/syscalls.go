@@ -472,6 +472,8 @@ func (s Syscalls) dispatch(ctx context.Context, call Call) Reply {
 		return s.dup3(ctx, call)
 	case SysGetdents64:
 		return s.getdents64(ctx, call)
+	case SysPselect6:
+		return s.pselect6(ctx, call)
 	case SysPoll, SysPpoll:
 		return s.poll(ctx, call)
 	case SysFstat:

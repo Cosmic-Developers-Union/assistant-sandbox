@@ -70,6 +70,7 @@ var handled = map[Syscall]bool{
 	SysPipe2:            true,
 	SysPoll:             true,
 	SysPpoll:            true,
+	SysPselect6:         true,
 	SysPrlimit64:        true,
 	SysRead:             true,
 	SysReadlinkat:       true,
