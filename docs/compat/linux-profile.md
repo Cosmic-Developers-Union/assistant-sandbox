@@ -58,7 +58,7 @@ ENOSYS 清单,归 L/I/H 组后续任务。
 | pselect6 | L06;fd_set 位图、坏描述符 EBADF、空集合纯睡眠、sigmask 结构;`TestPselect6*` |
 | epoll_create1 / epoll_ctl / epoll_pwait / epoll_pwait2 | L07/L08;水平/边缘触发(EPOLLET)与一次性(EPOLLONESHOT),增删改与重复登记、关闭语义、maxevents 截断不丢边沿;`TestEpoll*`、`TestEpollProbeSemanticsMatchLinux` |
 | eventfd2 | L09;`TestEventfd2ValidatesAndDelegates` |
-| futex | K05;WAIT 值校验+阻塞(不匹配 EAGAIN、超时 ETIMEDOUT、信号 EINTR)、WAKE 计数唤醒、FUTEX_PRIVATE_FLAG、4 字节对齐;vm/futex、`TestFutex*`、`TestFutexProbe*` |
+| futex | K05/K06;WAIT/WAKE 值校验与计数唤醒、REQUEUE/CMP_REQUEUE(原子迁移,CMP 值校验 EAGAIN)、WAIT_BITSET/WAKE_BITSET(绝对超时按单调/实时钟、位集交集匹配)、FUTEX_PRIVATE_FLAG、4 字节对齐;vm/futex、`TestFutex*`、`TestFutexProbe*` |
 | signalfd4 | L11;被进程屏蔽且命中掩码的信号经 fd 队列读取,KILL/STOP 位登记时剥离;`TestSignalfd4ValidatesAndDelegates`、`TestKernelSignalfdRoutesMaskedSignals`、`TestSignalfdProbeRunsOnKernel` |
 | brk / mmap / munmap / mprotect / mremap / madvise | 匿名私有(E03)与文件私有/共享映射(E08/E09:私有=映射时快照不写回,共享=经 chargeFile 随机访问直通、越尾零页、fork 后仍共享);msync 校验覆盖性;E03/E06/E07/E08/E09/E11/E12;`TestMmap*`、`TestMapperFile*`、`TestBrk*`、`TestMmapProbe*` |
 | set_tid_address | K03;登记 clear_child_tid 返回调用方 TID、重复登记覆盖、exec 复位/fork 不继承;退出清算写零并 futex 唤醒等待者(每线程退出随 K02 移交);`TestSetTidAddress*`、`TestClearTid*`、`TestTidAddressProbe*` |

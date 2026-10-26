@@ -195,3 +195,111 @@ func TestFutexNoLostWakeupUnderRace(t *testing.T) {
 		}
 	}
 }
+
+// TestFutexWakeBitsetSelectivity 验证 K06:WAKE_BITSET 只唤醒位集
+// 有交集的等待者;任意位集(普通 WAKE)唤醒全部。
+func TestFutexWakeBitsetSelectivity(t *testing.T) {
+	table := New()
+	key := Key{Owner: 7, Address: 0x7000}
+	f := &word{}
+	// 三个等待者:位集 1、2、1|2。
+	bitsets := []uint32{1, 2, 3}
+	done := make(chan error, len(bitsets))
+	for _, bitset := range bitsets {
+		go func(bs uint32) {
+			done <- table.WaitBitset(context.Background(), key, 0, f.load, bs)
+		}(bitset)
+	}
+	time.Sleep(30 * time.Millisecond)
+	// 位集 1:唤醒等待者 0 与 2。
+	if got := table.WakeBitset(key, 4, 1); got != 2 {
+		t.Fatalf("位集 1 唤醒=%d want 2", got)
+	}
+	deadline := time.After(testTimeout)
+	for i := 0; i < 2; i++ {
+		select {
+		case <-done:
+		case <-deadline:
+			t.Fatal("位集唤醒未生效")
+		}
+	}
+	select {
+	case extra := <-done:
+		t.Fatalf("位集不匹配的等待者被唤醒 err=%v", extra)
+	case <-time.After(50 * time.Millisecond):
+	}
+	// 任意位集唤醒剩余。
+	if got := table.WakeBitset(key, 4, BitsetMatchAny); got != 1 {
+		t.Fatalf("任意位集唤醒=%d want 1", got)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("剩余等待者 err=%v", err)
+		}
+	case <-time.After(testTimeout):
+		t.Fatal("任意位集未唤醒剩余等待者")
+	}
+	// 位集 0 的 WAKE:EINVAL 语义在调用层,核心按无匹配处理。
+	if got := table.WakeBitset(key, 4, 0); got != 0 {
+		t.Fatalf("零位集唤醒=%d want 0", got)
+	}
+}
+
+// TestFutexRequeueMovesWaiters 验证 K06:REQUEUE 唤醒前 N 个、迁移
+// 其余到目标键;迁移后的等待者被目标键的 WAKE 唤醒;同键 requeue
+// 只唤醒。
+func TestFutexRequeueMovesWaiters(t *testing.T) {
+	table := New()
+	src := Key{Owner: 7, Address: 0x8000}
+	dst := Key{Owner: 7, Address: 0x9000}
+	f := &word{}
+	done := make(chan error, 5)
+	for i := 0; i < 5; i++ {
+		go func() {
+			done <- table.Wait(context.Background(), src, 0, f.load)
+		}()
+	}
+	time.Sleep(30 * time.Millisecond)
+	outcome := table.Requeue(src, dst, 2, 2)
+	if outcome.Woken != 2 || outcome.Requeued != 2 {
+		t.Fatalf("requeue=%+v want 2/2", outcome)
+	}
+	// 两个被唤醒。
+	for i := 0; i < 2; i++ {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("被唤醒 err=%v", err)
+			}
+		case <-time.After(testTimeout):
+			t.Fatal("requeue 唤醒未生效")
+		}
+	}
+	// 目标键 WAKE 唤醒迁移的两个。
+	if got := table.Wake(dst, 4); got != 2 {
+		t.Fatalf("目标键唤醒=%d want 2", got)
+	}
+	for i := 0; i < 2; i++ {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("迁移等待者 err=%v", err)
+			}
+		case <-time.After(testTimeout):
+			t.Fatal("迁移后目标键未唤醒")
+		}
+	}
+	// 剩余 1 个留在源键。
+	if got := table.Wake(src, 4); got != 1 {
+		t.Fatalf("源键剩余=%d want 1", got)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("剩余等待者 err=%v", err)
+		}
+	case <-time.After(testTimeout):
+		t.Fatal("源键剩余未唤醒")
+	}
+}

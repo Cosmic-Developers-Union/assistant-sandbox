@@ -1,7 +1,7 @@
 package guest
 
 // FutexProbeImageSHA256 锁定 FutexProbe() 产物摘要。
-const FutexProbeImageSHA256 = "a051df1bdb6e8561cbe16b666882eec4982421454a1f9e4c3c215138bc398e68"
+const FutexProbeImageSHA256 = "1d844f8e9ad999ede2b7188ca0095be868ed2d9ee5f6c016a1b61fcf5cbd12f5"
 
 // futexCode 是 K05 的 futex WAIT/WAKE 差分探针程序:值不匹配的
 // WAIT 立即返回 EAGAIN;值匹配且 1ms 超时返回 ETIMEDOUT;WAKE 无
@@ -75,9 +75,9 @@ func futexCode() []byte {
 		epAddi(regA7, regZero, sysFutex),
 		0x00000073,
 		epSb(regA0, regSP, 20), // r4:-EINVAL
-		// 未知操作(REQUEUE=3,K06 前 EINVAL)。
+		// 未知操作(LOCK_PI=6,K07 登记前 EINVAL)。
 		epAddi(regA0, regSP, 32),
-		epAddi(regA1, regZero, 3),
+		epAddi(regA1, regZero, 6),
 		epAddi(regA2, regZero, 0),
 		epAddi(regA3, regZero, 0),
 		epAddi(regA7, regZero, sysFutex),

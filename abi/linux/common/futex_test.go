@@ -55,8 +55,8 @@ func TestFutexWaitValueMismatchValidatesArgs(t *testing.T) {
 	if r := wait([6]uint64{0x3001, futexOpWait, 0, 0, 0, 0}); r.Errno != errno.Invalid {
 		t.Fatalf("未对齐: %+v want EINVAL", r)
 	}
-	// 未知操作(requeue 等 K06 前按 EINVAL)。
-	if r := wait([6]uint64{0x3000, 3, 0, 0, 0, 0}); r.Errno != errno.Invalid {
+	// 未知操作(PI 族/waitv 等随 K07 登记前 EINVAL)。
+	if r := wait([6]uint64{0x3000, 0x20, 0, 0, 0, 0}); r.Errno != errno.Invalid {
 		t.Fatalf("未知操作: %+v want EINVAL", r)
 	}
 	// FUTEX_CLOCK_REALTIME 与 WAIT/WAKE 不兼容。
@@ -194,4 +194,83 @@ func TestFutexOwnerKeysIsolate(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("同进程唤醒未结束等待")
 	}
+}
+
+// TestFutexRequeueAndBitsetThroughSyscalls 验证 K06:REQUEUE 唤醒并
+// 迁移(CMP 变体值校验 EAGAIN)、WAIT_BITSET 超时与位集 0 EINVAL、
+// WAKE_BITSET 计数返回。
+func TestFutexRequeueAndBitsetThroughSyscalls(t *testing.T) {
+	ctx := context.Background()
+	handler, table := futexHandler(t, 0)
+	const address = 0x3000
+
+	// 三个等待者登记在 address。
+	done := make(chan Reply, 3)
+	for i := 0; i < 3; i++ {
+		go func() {
+			done <- handler.Handle(ctx, Call{Syscall: SysFutex, Args: [6]uint64{address, futexOpWait, 0, 0, 0, 0}})
+		}()
+	}
+	time.Sleep(30 * time.Millisecond)
+	// CMP_REQUEUE 值不匹配:字为 0,期望 1 → EAGAIN。
+	writeFutexWord(t, handler, address, 0)
+	if r := handler.Handle(ctx, Call{Syscall: SysFutex, Args: [6]uint64{address, futexOpCmpRequeue, 1, 2, 0x3100, 1}}); r.Errno != errno.WouldBlock {
+		t.Fatalf("CMP 不匹配: %+v want EAGAIN", r)
+	}
+	// CMP_REQUEUE 匹配:唤醒 1,迁移 2 到 0x3100。
+	writeFutexWord(t, handler, address, 0)
+	if r := handler.Handle(ctx, Call{Syscall: SysFutex, Args: [6]uint64{address, futexOpCmpRequeue, 1, 2, 0x3100, 0}}); r.Errno != "" || r.Value != 3 {
+		t.Fatalf("CMP requeue: %+v want 3", r)
+	}
+	select {
+	case got := <-done:
+		if got.Errno != "" {
+			t.Fatalf("被唤醒: %+v", got)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("requeue 唤醒未生效")
+	}
+	// 迁移等待者由目标键 WAKE 唤醒(2 个)。
+	if r := handler.Handle(ctx, Call{Syscall: SysFutex, Args: [6]uint64{0x3100, futexOpWake, 2, 0, 0, 0}}); r.Errno != "" || r.Value != 2 {
+		t.Fatalf("目标键唤醒: %+v want 2", r)
+	}
+	for i := 0; i < 2; i++ {
+		select {
+		case got := <-done:
+			if got.Errno != "" {
+				t.Fatalf("迁移等待者: %+v", got)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("目标键唤醒未生效")
+		}
+	}
+	// WAIT_BITSET:位集 0 EINVAL;超时已过期立即 ETIMEDOUT;
+	// 正常绝对超时到期 ETIMEDOUT。
+	if r := handler.Handle(ctx, Call{Syscall: SysFutex, Args: [6]uint64{address, futexOpWaitBitset, 0, 0, 0, 0}}); r.Errno != errno.Invalid {
+		t.Fatalf("零位集: %+v want EINVAL", r)
+	}
+	if r := handler.Handle(ctx, Call{Syscall: SysFutex, Args: [6]uint64{address, futexOpWaitBitset | futexClockRealtime, 0, 0, 0xFFFFFFFF, 0}}); r.Errno != errno.Invalid {
+		t.Fatalf("实时钟位集: %+v want EINVAL", r)
+	}
+	// 位集超时基于单调钟:把假钟拨到 1s,避免 now-1 下溢。
+	handler.Clock.(*fakeClock).monotonic = 1_000_000_000
+	now, _ := handler.Clock.Monotonic(ctx)
+	past := now - 1
+	writeTimespec(t, handler, 0x4000, int64(past/1_000_000_000), int64(past%1_000_000_000))
+	if r := handler.Handle(ctx, Call{Syscall: SysFutex, Args: [6]uint64{address, futexOpWaitBitset, 0, 0x4000, 0xFFFFFFFF, 0}}); r.Errno != errno.TimedOut {
+		t.Fatalf("过去绝对时刻: %+v want ETIMEDOUT", r)
+	}
+	future := now + 2_000_000
+	writeTimespec(t, handler, 0x4000, int64(future/1_000_000_000), int64(future%1_000_000_000))
+	if r := handler.Handle(ctx, Call{Syscall: SysFutex, Args: [6]uint64{address, futexOpWaitBitset, 0, 0x4000, 0xFFFFFFFF, 0}}); r.Errno != errno.TimedOut {
+		t.Fatalf("2ms 绝对超时: %+v want ETIMEDOUT", r)
+	}
+	// WAKE_BITSET 无等待者返回 0;值不匹配的 WAIT_BITSET EAGAIN。
+	if r := handler.Handle(ctx, Call{Syscall: SysFutex, Args: [6]uint64{address, futexOpWakeBitset, 1, 0, 0xFFFFFFFF, 0}}); r.Errno != "" || r.Value != 0 {
+		t.Fatalf("空唤醒: %+v want 0", r)
+	}
+	if r := handler.Handle(ctx, Call{Syscall: SysFutex, Args: [6]uint64{address, futexOpWaitBitset, 1, 0, 0xFFFFFFFF, 0}}); r.Errno != errno.WouldBlock {
+		t.Fatalf("位集值不匹配: %+v want EAGAIN", r)
+	}
+	_ = table
 }

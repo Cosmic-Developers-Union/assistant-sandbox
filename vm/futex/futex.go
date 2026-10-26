@@ -23,9 +23,15 @@ type Key struct {
 	Address uint64
 }
 
-// waiter 是一个阻塞中的等待者;ch 关闭即被唤醒。
+// BitsetMatchAny 与内核 FUTEX_BITSET_MATCH_ANY 一致:普通 WAIT/WAKE
+// 与任意位集匹配。
+const BitsetMatchAny = ^uint32(0)
+
+// waiter 是一个阻塞中的等待者;wake 关闭即被唤醒;bitset 是
+// WAIT_BITSET 登记的位集(唤醒方按位交集匹配)。
 type waiter struct {
-	wake chan struct{}
+	wake   chan struct{}
+	bitset uint32
 }
 
 // entry 是一个键上的等待者队列(先进先出,与 Linux 唤醒顺序一致)。
@@ -50,6 +56,12 @@ func New() *Table {
 // 调用方转换为 EFAULT。阻塞直到 WAKE 唤醒(返回 nil)或上下文
 // 结束(errno.Interrupted);已被唤醒的取消仍报告成功(唤醒优先)。
 func (t *Table) Wait(ctx context.Context, key Key, expected uint32, load func() (uint32, bool)) error {
+	return t.WaitBitset(ctx, key, expected, load, BitsetMatchAny)
+}
+
+// WaitBitset 是带位集的 WAIT(FUTEX_WAIT_BITSET):唤醒方以
+// WAKE_BITSET 的位集与登记位集按交集匹配。
+func (t *Table) WaitBitset(ctx context.Context, key Key, expected uint32, load func() (uint32, bool), bitset uint32) error {
 	t.mu.Lock()
 	if t.closed {
 		t.mu.Unlock()
@@ -65,7 +77,7 @@ func (t *Table) Wait(ctx context.Context, key Key, expected uint32, load func() 
 		t.mu.Unlock()
 		return errno.Wrap(errno.WouldBlock, "futex 值不匹配")
 	}
-	w := &waiter{wake: make(chan struct{})}
+	w := &waiter{wake: make(chan struct{}), bitset: bitset}
 	queue := t.keys[key]
 	if queue == nil {
 		queue = &entry{}
@@ -98,8 +110,14 @@ func (t *Table) Wait(ctx context.Context, key Key, expected uint32, load func() 
 // Wake 唤醒键上至多 count 个等待者(先进先出),返回实际唤醒数;
 // 表已关闭返回 0。
 func (t *Table) Wake(key Key, count int) int {
+	return t.WakeBitset(key, count, BitsetMatchAny)
+}
+
+// WakeBitset 是带位集的 WAKE(FUTEX_WAKE_BITSET):只唤醒位集与
+// bitset 有交集的等待者,跳过不匹配者(保持队序)。
+func (t *Table) WakeBitset(key Key, count int, bitset uint32) int {
 	t.mu.Lock()
-	if t.closed || count <= 0 {
+	if t.closed || count <= 0 || bitset == 0 {
 		t.mu.Unlock()
 		return 0
 	}
@@ -108,19 +126,71 @@ func (t *Table) Wake(key Key, count int) int {
 		t.mu.Unlock()
 		return 0
 	}
-	if count > len(queue.waiters) {
-		count = len(queue.waiters)
+	woken := 0
+	remaining := queue.waiters[:0]
+	for _, candidate := range queue.waiters {
+		if woken < count && candidate.bitset&bitset != 0 {
+			close(candidate.wake)
+			woken++
+			continue
+		}
+		remaining = append(remaining, candidate)
 	}
-	for i := 0; i < count; i++ {
-		w := queue.waiters[0]
-		queue.waiters = queue.waiters[1:]
-		close(w.wake)
-	}
+	queue.waiters = remaining
 	if len(queue.waiters) == 0 {
 		delete(t.keys, key)
 	}
 	t.mu.Unlock()
-	return count
+	return woken
+}
+
+// RequeueOutcome 是一次 requeue 的结果。
+type RequeueOutcome struct {
+	// Woken 是唤醒的等待者数。
+	Woken int
+	// Requeued 是迁移到目标键的等待者数。
+	Requeued int
+}
+
+// Requeue 把源键的等待队列前 wakeCount 个唤醒,其余至多 requeueCount
+// 个按先进先出迁移到目标键队尾(同一表锁内原子完成,不存在等待者
+// 在两键间丢失的窗口;Linux REQUEUE/CMP_REQUEUE 语义)。目标键与
+// 源键相同只唤醒不迁移。
+func (t *Table) Requeue(src, dst Key, wakeCount, requeueCount int) RequeueOutcome {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.closed || (wakeCount <= 0 && requeueCount <= 0) {
+		return RequeueOutcome{}
+	}
+	queue := t.keys[src]
+	if queue == nil {
+		return RequeueOutcome{}
+	}
+	outcome := RequeueOutcome{}
+	keep := queue.waiters[:0]
+	for _, candidate := range queue.waiters {
+		switch {
+		case outcome.Woken < wakeCount:
+			close(candidate.wake)
+			outcome.Woken++
+		case outcome.Requeued < requeueCount && src != dst:
+			target := t.keys[dst]
+			if target == nil {
+				target = &entry{}
+				t.keys[dst] = target
+			}
+			target.waiters = append(target.waiters, candidate)
+			outcome.Requeued++
+		default:
+			keep = append(keep, candidate)
+		}
+	}
+	if len(keep) == 0 {
+		delete(t.keys, src)
+	} else {
+		queue.waiters = keep
+	}
+	return outcome
 }
 
 // removeLocked 把等待者移出队列(取消路径);已被取走返回 false。
