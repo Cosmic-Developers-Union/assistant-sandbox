@@ -446,12 +446,12 @@ func (k *Kernel) Fork(parent proc.PID) (proc.Proc, *memory.Table, error) {
 	if k.meters != nil {
 		if err := k.meters.Spawn(uint64(child.ID), requested); err != nil {
 			_ = k.table.Exit(child.ID, 125, 0)
-			_, _ = k.table.Reap(source.Parent, child.ID)
+			_, _ = k.table.Reap(parent, child.ID)
 			return proc.Proc{}, nil, err
 		}
 		if err := k.meters.Charge(context.Background(), uint64(child.ID), spawnWorkUnits); err != nil {
 			_ = k.table.Exit(child.ID, 125, 0)
-			_, _ = k.table.Reap(source.Parent, child.ID)
+			_, _ = k.table.Reap(parent, child.ID)
 			return proc.Proc{}, nil, err
 		}
 	}
@@ -467,7 +467,7 @@ func (k *Kernel) Fork(parent proc.PID) (proc.Proc, *memory.Table, error) {
 		if k.meters != nil && count > 0 {
 			if err := k.meters.ChargeKind(context.Background(), uint64(child.ID), resources.KindDescriptors, uint64(count)); err != nil {
 				_ = k.table.Exit(child.ID, 125, 0)
-				_, _ = k.table.Reap(source.Parent, child.ID)
+				_, _ = k.table.Reap(parent, child.ID)
 				return proc.Proc{}, nil, err
 			}
 		}
@@ -489,6 +489,17 @@ func (k *Kernel) Fork(parent proc.PID) (proc.Proc, *memory.Table, error) {
 	})
 	if err != nil {
 		return proc.Proc{}, nil, err
+	}
+	// E15:fork 为子进程的私有页副本计费(物理页口径——文件共享
+	// 映射直通后备不落页表,不重复扣费);预算不足 fork 失败且
+	// 子进程回收。
+	if private := cloned.PrivateBytes(); k.meters != nil && private > 0 {
+		if err := k.meters.ChargeKind(context.Background(), uint64(child.ID), resources.KindMemory, private); err != nil {
+			delete(k.spaces, child.ID)
+			_ = k.table.Exit(child.ID, 125, 0)
+			_, _ = k.table.Reap(parent, child.ID)
+			return proc.Proc{}, nil, err
+		}
 	}
 	k.spaces[child.ID] = cloned
 	child.State = proc.Running

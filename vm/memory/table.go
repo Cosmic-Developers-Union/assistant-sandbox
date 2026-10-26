@@ -358,6 +358,15 @@ func (t *Table) Regions(ctx context.Context) ([]Region, error) {
 	return t.copyLocked(), nil
 }
 
+// PrivateBytes 返回私有页字节总量(物理页计费口径,E15):内容落
+// 本表页表的字节;文件共享映射区间直通后备不落页表,不计入——
+// 共享数据只在创建映射的地址空间计费一次,fork 克隆不重复扣费。
+func (t *Table) PrivateBytes() uint64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return uint64(len(t.pages)) * PageSize
+}
+
 func (t *Table) Account(ctx context.Context) (Account, error) {
 	if err := ctx.Err(); err != nil {
 		return Account{}, err

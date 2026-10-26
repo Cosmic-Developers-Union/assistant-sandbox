@@ -94,6 +94,9 @@ func (g *Guard) Regions(ctx context.Context) ([]Region, error) { return g.inner.
 
 func (g *Guard) Account(ctx context.Context) (Account, error) { return g.inner.Account(ctx) }
 
+// PrivateBytes 报告守卫下地址空间的私有页字节(E15)。
+func (g *Guard) PrivateBytes() uint64 { return g.inner.PrivateBytes() }
+
 func (g *Guard) existingAt(ctx context.Context, address uint64) (Region, bool) {
 	regions, err := g.inner.Regions(ctx)
 	if err != nil {
