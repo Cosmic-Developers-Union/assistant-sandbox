@@ -72,6 +72,7 @@ var handled = map[Syscall]bool{
 	SysPpoll:            true,
 	SysPselect6:         true,
 	SysFutex:            true,
+	SysMsync:            true,
 	SysEpollCreate1:     true,
 	SysEpollCtl:         true,
 	SysEpollPwait:       true,

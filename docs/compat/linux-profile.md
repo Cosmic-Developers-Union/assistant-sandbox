@@ -34,7 +34,7 @@ syslog、pivot_root、perf_event_open、pidfd_open、pidfd_getfd、
 close_range、fadvise64、fallocate、userfaultfd、accept4)固定登记为
 ENOSYS 清单,归 L/I/H 组后续任务。
 
-### 已交付语义(74 项)
+### 已交付语义(75 项)
 
 | 调用 | 语义来源(任务/测试) |
 | --- | --- |
@@ -60,7 +60,8 @@ ENOSYS 清单,归 L/I/H 组后续任务。
 | eventfd2 | L09;`TestEventfd2ValidatesAndDelegates` |
 | futex | K05;WAIT 值校验+阻塞(不匹配 EAGAIN、超时 ETIMEDOUT、信号 EINTR)、WAKE 计数唤醒、FUTEX_PRIVATE_FLAG、4 字节对齐;vm/futex、`TestFutex*`、`TestFutexProbe*` |
 | signalfd4 | L11;被进程屏蔽且命中掩码的信号经 fd 队列读取,KILL/STOP 位登记时剥离;`TestSignalfd4ValidatesAndDelegates`、`TestKernelSignalfdRoutesMaskedSignals`、`TestSignalfdProbeRunsOnKernel` |
-| brk / mmap / munmap / mprotect / mremap / madvise | mmap 仅匿名私有映射,文件映射 ENOTSUP;E03/E06/E07/E11/E12;`TestMmap*`、`TestBrk*` |
+| brk / mmap / munmap / mprotect / mremap / madvise | 匿名私有(E03)与文件私有/共享映射(E08/E09:私有=映射时快照不写回,共享=经 chargeFile 随机访问直通、越尾零页、fork 后仍共享);msync 校验覆盖性;E03/E06/E07/E08/E09/E11/E12;`TestMmap*`、`TestMapperFile*`、`TestBrk*`、`TestMmapProbe*` |
+| msync | E09;MS_SYNC/MS_ASYNC 恰有其一(可叠加 MS_INVALIDATE),范围完整映射校验(空洞 ENOMEM);`TestMsyncValidatesAndDelegates` |
 | rt_sigaction / rt_sigprocmask / rt_sigreturn / sigaltstack | J02/J04;`TestRtSig*`、`TestSigaltstack*` |
 | kill / tgkill | J05;`TestKillSignalDispatchSemantics` |
 | clock_gettime / clock_getres / gettimeofday | L02;`TestClockGettime` |

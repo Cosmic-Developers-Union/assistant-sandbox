@@ -186,6 +186,8 @@ const (
 
 	SysFutex
 
+	SysMsync
+
 	SysEventfd2
 
 	SysTimerfdCreate
@@ -446,6 +448,8 @@ func (s Syscall) String() string {
 		return "pselect6"
 	case SysFutex:
 		return "futex"
+	case SysMsync:
+		return "msync"
 	case SysEventfd2:
 		return "eventfd2"
 	case SysTimerfdCreate:

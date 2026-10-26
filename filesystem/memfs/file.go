@@ -104,6 +104,88 @@ func (h *handle) Write(p []byte) (int, error) {
 	return n, nil
 }
 
+// ReadAt 在绝对偏移读取,不移动句柄游标(pread 语义;mmap 的文件
+// 映射后备也经此读取,E08/E09)。越过数据末端短读:返回已读字节,
+// 无错误;目录句柄报 EISDIR。
+func (h *handle) ReadAt(p []byte, off int64) (int, error) {
+	if off < 0 {
+		return 0, errno.Invalid
+	}
+	h.fs.mu.RLock()
+	defer h.fs.mu.RUnlock()
+	if h.node.kind == kindDir {
+		return 0, errno.IsDirectory
+	}
+	if off >= int64(len(h.node.data)) {
+		return 0, nil
+	}
+	return copy(p, h.node.data[off:]), nil
+}
+
+// WriteAt 在绝对偏移写入,不移动句柄游标(pwrite 语义;共享映射的
+// 写入经此直通并即时持久,E09)。预算规则与 Write 相同:按可用
+// 空间短写;越过现末端的写入以零扩展。只读句柄报 EBADF。
+func (h *handle) WriteAt(p []byte, off int64) (int, error) {
+	if off < 0 {
+		return 0, errno.Invalid
+	}
+	h.mu.Lock()
+	closed, writable := h.closed, h.writable
+	h.mu.Unlock()
+	if closed {
+		return 0, errno.BadHandle
+	}
+	if !writable {
+		return 0, errno.BadHandle
+	}
+	h.fs.mu.Lock()
+	defer h.fs.mu.Unlock()
+	if h.node.kind == kindDir {
+		return 0, errno.BadHandle
+	}
+	if len(p) == 0 {
+		return 0, nil
+	}
+	allowed := int64(len(p))
+	if limit := int64(h.fs.maxBytes) - off; limit < allowed {
+		allowed = limit
+	}
+	if h.fs.maxTotalBytes > 0 {
+		used := h.fs.usedBytes() - int64(len(h.node.data))
+		if limit := h.fs.maxTotalBytes - used - off; limit < allowed {
+			allowed = limit
+		}
+	}
+	if allowed <= 0 {
+		return 0, errno.NoSpace
+	}
+	end := off + allowed
+	if end > int64(len(h.node.data)) {
+		grown := make([]byte, end)
+		copy(grown, h.node.data)
+		h.node.data = grown
+	}
+	n := copy(h.node.data[off:], p[:allowed])
+	now := h.fs.now()
+	h.node.mtime = now
+	h.node.atime = now
+	return n, nil
+}
+
+// Readable 报告句柄是否以读方式打开。
+func (h *handle) Readable() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return !h.closed && h.accessMode != 1
+}
+
+// Writable 报告句柄是否以写方式打开。
+func (h *handle) Writable() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return !h.closed && h.writable
+}
+
 func (h *handle) Seek(offset int64, whence int) (int64, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()

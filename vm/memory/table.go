@@ -23,9 +23,8 @@ func New(limitBytes uint64) *Table { return &Table{limit: limitBytes} }
 
 // Clone 复制整个地址空间(fork 语义):区域列表与全部私有页深拷贝,
 // 父子此后对同一虚拟地址的写入互不可见;预算上限一并继承。
-// 当前地址空间仅含私有映射(MAP_SHARED 未纳入兼容配置,见 E03/E09),
-// 因此全量复制即满足"私有页互不影响";共享映射落地后改为
-// 共享区域按引用共享、私有区域复制。
+// 文件共享映射的区域持后备引用,浅拷贝后父子仍指向同一底层数据
+// (E09:fork 后共享映射仍共享);私有页(含文件私有映射快照)深拷贝。
 func (t *Table) Clone() (*Table, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -224,14 +223,21 @@ func (t *Table) Read(ctx context.Context, address uint64, buffer []byte) error {
 	}
 	clear(buffer)
 	for page := address / PageSize; page <= (address+length-1)/PageSize; page++ {
+		base := page * PageSize
+		start := max(address, base)
+		stop := min(address+length, base+PageSize)
+		slice := buffer[start-address : stop-address]
+		if region := t.regionAtLocked(start); region != nil && region.Backend != nil {
+			if err := region.Backend.ReadAt(region.FileBase+(start-region.Start), slice); err != nil {
+				return err
+			}
+			continue
+		}
 		stored := t.pages[page]
 		if stored == nil {
 			continue
 		}
-		base := page * PageSize
-		start := max(address, base)
-		stop := min(address+length, base+PageSize)
-		copy(buffer[start-address:stop-address], stored[start-base:stop-base])
+		copy(slice, stored[start-base:stop-base])
 	}
 	return nil
 }
@@ -254,15 +260,85 @@ func (t *Table) Write(ctx context.Context, address uint64, buffer []byte) error 
 	}
 	end := address + length
 	for page := address / PageSize; page <= (end-1)/PageSize; page++ {
+		base := page * PageSize
+		start := max(address, base)
+		stop := min(end, base+PageSize)
+		slice := buffer[start-address : stop-address]
+		if region := t.regionAtLocked(start); region != nil && region.Backend != nil {
+			if err := region.Backend.WriteAt(region.FileBase+(start-region.Start), slice); err != nil {
+				return err
+			}
+			continue
+		}
 		stored := t.pages[page]
 		if stored == nil {
 			stored = make([]byte, PageSize)
 			t.pages[page] = stored
 		}
+		copy(stored[start-base:stop-base], slice)
+	}
+	return nil
+}
+
+// regionAtLocked 返回包含地址的区间(区间按起始地址有序,二分);
+// 调用方必须持有锁。
+func (t *Table) regionAtLocked(address uint64) *Region {
+	index := sort.Search(len(t.regions), func(i int) bool {
+		return t.regions[i].End > address
+	})
+	if index < len(t.regions) && t.regions[index].Contains(address) {
+		return &t.regions[index]
+	}
+	return nil
+}
+
+// Load 无视保护位把内容写入页表(装载语义:文件私有映射的初始
+// 快照,E08);范围必须完整落在既有映射内。与 Write 不同,写只读
+// 映射的快照内容不是客体可见的写访问,不受保护位约束。
+func (t *Table) Load(ctx context.Context, address uint64, content []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if len(content) == 0 {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	length := uint64(len(content))
+	if !t.coversLocked(address, address+length) {
+		return faultError(FaultUnmapped, address, "装载范围未完整映射")
+	}
+	if t.pages == nil {
+		t.pages = make(map[uint64][]byte)
+	}
+	end := address + length
+	for page := address / PageSize; page <= (end-1)/PageSize; page++ {
 		base := page * PageSize
 		start := max(address, base)
 		stop := min(end, base+PageSize)
-		copy(stored[start-base:stop-base], buffer[start-address:stop-address])
+		stored := t.pages[page]
+		if stored == nil {
+			stored = make([]byte, PageSize)
+			t.pages[page] = stored
+		}
+		copy(stored[start-base:stop-base], content[start-address:stop-address])
+	}
+	return nil
+}
+
+// Sync 检查范围完整映射后返回(共享映射写入即时直通后备,没有
+// 待冲刷的脏页;私有映射本就不写回)。范围有空洞报 ENOMEM。
+func (t *Table) Sync(ctx context.Context, start, end uint64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := validateRange(start, end); err != nil {
+		return err
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.coversLocked(start, end) {
+		return errno.Wrap(errno.NoMemory, "范围未完整映射")
 	}
 	return nil
 }

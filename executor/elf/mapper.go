@@ -67,6 +67,105 @@ func (m *mapper) Anonymous(ctx context.Context, request common.MapRequest) (uint
 	return start, nil
 }
 
+// fileBackend 把常规文件句柄接到地址空间后备:共享映射直读直写
+// 底层数据(经由文件本身,跨地址空间一致),越文件尾读取零填充。
+type fileBackend struct{ file common.RandomFile }
+
+func (b fileBackend) ReadAt(offset uint64, buffer []byte) error {
+	if len(buffer) == 0 {
+		return nil
+	}
+	n, err := b.file.ReadAt(buffer, int64(offset))
+	if err != nil && n == 0 {
+		return err
+	}
+	// 短读(越过文件尾):剩余部分保持零(mmap 零页语义)。
+	return nil
+}
+
+func (b fileBackend) WriteAt(offset uint64, buffer []byte) error {
+	if len(buffer) == 0 {
+		return nil
+	}
+	n, err := b.file.WriteAt(buffer, int64(offset))
+	if err != nil {
+		return err
+	}
+	if n != len(buffer) {
+		return errno.NoSpace
+	}
+	return nil
+}
+
+// snapshotChunk 是私有文件映射快照装载的单次读取粒度。
+const snapshotChunk = 64 << 10
+
+// File 实现文件映射(E08 私有/E09 共享):共享映射挂直通后备,
+// 私有映射把文件内容装载为私有页(此后修改不写回)。
+func (m *mapper) File(ctx context.Context, request common.FileMapRequest) (uint64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	prot, err := protOf(request.Prot)
+	if err != nil {
+		return 0, err
+	}
+	var start uint64
+	if request.Fixed {
+		if request.Hint+request.Length <= request.Hint {
+			return 0, errno.Overflow
+		}
+		start = request.Hint
+	} else {
+		if start, err = m.place(ctx, request.Length, request.Hint); err != nil {
+			return 0, err
+		}
+	}
+	end := start + request.Length
+	region := memory.Region{
+		Start: start, End: end, Prot: prot, Name: "mmap-file",
+		FileBase: request.Offset,
+	}
+	if !request.Shared {
+		// 私有映射:快照文件内容为私有页(后备留空)。
+		if err := m.table.Replace(ctx, region, request.NoReplace); err != nil {
+			return 0, err
+		}
+		backend := fileBackend{file: request.File}
+		for offset := uint64(0); offset < request.Length; {
+			size := min(snapshotChunk, request.Length-offset)
+			buffer := make([]byte, size)
+			if err := backend.ReadAt(request.Offset+offset, buffer); err != nil {
+				// 回滚已建立的映射,不留半初始化区间。
+				_ = m.table.Unmap(ctx, start, end)
+				return 0, err
+			}
+			if err := m.table.Load(ctx, start+offset, buffer); err != nil {
+				_ = m.table.Unmap(ctx, start, end)
+				return 0, err
+			}
+			offset += size
+		}
+		m.charge(ctx, request.Length)
+		return start, nil
+	}
+	region.Backend = fileBackend{file: request.File}
+	replaced := m.overlapBytes(ctx, start, end)
+	if err := m.table.Replace(ctx, region, request.NoReplace); err != nil {
+		return 0, err
+	}
+	m.charge(ctx, end-start-replaced)
+	return start, nil
+}
+
+// Sync 实现 msync:共享映射写入即时直通文件,只需校验范围完整映射。
+func (m *mapper) Sync(ctx context.Context, start, end uint64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return m.table.Sync(ctx, start, end)
+}
+
 func (m *mapper) Unmap(ctx context.Context, start, end uint64) error {
 	if err := ctx.Err(); err != nil {
 		return err

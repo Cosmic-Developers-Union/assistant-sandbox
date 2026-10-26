@@ -49,6 +49,24 @@ type Region struct {
 	Prot  Prot
 
 	Name string
+
+	// Backend 非空时区间是文件共享映射:读写直通后备,不落本表
+	// 页表(E09);为空时区间是匿名或文件私有映射,内容在本表页表
+	// 中(私有文件映射的初始内容是映射时的文件快照,E08)。
+	Backend Backend
+
+	// FileBase 是区间首地址对应的后备偏移(mmap 的文件偏移)。
+	FileBase uint64
+}
+
+// Backend 是文件映射区间的页后备:共享映射经此直读直写底层数据。
+// 多个地址空间对同一文件区域的映射经由文件本身共享同一份数据,
+// 写入即时可见且即时持久;ReadAt 越过数据末端以零填充缓冲
+// (mmap 语义:越文件尾读取为零页)。
+type Backend interface {
+	ReadAt(offset uint64, buffer []byte) error
+
+	WriteAt(offset uint64, buffer []byte) error
 }
 
 func (r Region) Size() uint64 { return r.End - r.Start }

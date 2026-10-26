@@ -138,6 +138,7 @@ const (
 	numberEpollPwait       = 22
 	numberEpollPwait2      = 441
 	numberFutex            = 98
+	numberMsync            = 227
 	numberPselect6         = 72
 	numberEventfd2         = 19
 	numberTimerfdCreate    = 85
@@ -505,6 +506,8 @@ func syscallOf(number uint64) common.Syscall {
 		return common.SysEpollPwait2
 	case numberFutex:
 		return common.SysFutex
+	case numberMsync:
+		return common.SysMsync
 	case numberPselect6:
 		return common.SysPselect6
 	case numberEventfd2:

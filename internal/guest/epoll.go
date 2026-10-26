@@ -16,8 +16,11 @@ const (
 	regA2   = 12
 	regA3   = 13
 	regA4   = 14
+	regA5   = 15
 	regA7   = 17
 	regS2   = 18
+	regS3   = 19
+	regS4   = 20
 )
 
 // epAddi 等是探针用的指令编码器:立即数由表达式计算,避免手工
@@ -39,6 +42,14 @@ func epXori(rd, rs1, imm int) uint32 {
 
 func epAndi(rd, rs1, imm int) uint32 {
 	return uint32(imm)<<20 | uint32(rs1)<<15 | 7<<12 | uint32(rd)<<7 | 0x13
+}
+
+func epLui(rd, imm20 uint32) uint32 {
+	return imm20<<12 | rd<<7 | 0x37
+}
+
+func epLbu(rd, base, off int) uint32 {
+	return uint32(off)<<20 | uint32(base)<<15 | 4<<12 | uint32(rd)<<7 | 0x03
 }
 
 func epSlli(rd, rs1, shamt uint32) uint32 {

@@ -379,6 +379,8 @@ func (s Syscalls) dispatch(ctx context.Context, call Call) Reply {
 		return s.mremap(ctx, call)
 	case SysMadvise:
 		return s.madvise(ctx, call)
+	case SysMsync:
+		return s.msync(ctx, call)
 	case SysReadv:
 		return s.readv(ctx, call)
 	case SysWritev:
@@ -1146,6 +1148,11 @@ type Mappable interface {
 	// NoReplace 与 Fixed 组合时,重叠返回 EEXIST 且不改动任何映射。
 	Anonymous(ctx context.Context, request MapRequest) (uint64, error)
 
+	// File 映射文件区间(E08/E09):Shared 为真时读写直通文件
+	// (跨地址空间一致,修改即时持久);否则以映射时的文件内容为
+	// 初始快照,修改不写回。选址与替换语义同 Anonymous。
+	File(ctx context.Context, request FileMapRequest) (uint64, error)
+
 	// Unmap 解除页对齐范围;范围未被完整映射时报 ENOMEM 且不改动。
 	Unmap(ctx context.Context, start, end uint64) error
 
@@ -1161,6 +1168,10 @@ type Mappable interface {
 	// Madvise 对页对齐范围施加建议;只支持有明确语义的子集,
 	// 未支持的 advice 返回 ENOTSUP,范围未映射返回 ENOMEM。
 	Madvise(ctx context.Context, start, end uint64, advice uint64) error
+
+	// Sync 检查范围完整映射并确认修改已持久(msync;共享映射写入
+	// 即时直通,此处校验覆盖性)。范围有空洞报 ENOMEM。
+	Sync(ctx context.Context, start, end uint64) error
 }
 
 type MapRequest struct {
@@ -1170,6 +1181,28 @@ type MapRequest struct {
 	Fixed  bool
 	// NoReplace 对应 MAP_FIXED_NOREPLACE。
 	NoReplace bool
+}
+
+// FileMapRequest 是文件映射(E08/E09):Shared 区分 MAP_SHARED 与
+// MAP_PRIVATE;Offset 是文件偏移(已对齐校验)。
+type FileMapRequest struct {
+	MapRequest
+	File   RandomFile
+	Offset uint64
+	Shared bool
+}
+
+// RandomFile 是可随机访问的常规文件句柄(pread/pwrite 语义;
+// mmap 文件映射的后备,E08/E09)。
+type RandomFile interface {
+	ReadAt(p []byte, off int64) (int, error)
+
+	WriteAt(p []byte, off int64) (int, error)
+
+	// Readable/Writable 报告打开访问模式(PROT 校验用)。
+	Readable() bool
+
+	Writable() bool
 }
 
 // riscv64 采用 asm-generic 的 mmap 标志与保护位定义。
@@ -1197,11 +1230,18 @@ const (
 	MadvDontneed   = 4
 	madvSupported  = MadvNormal | MadvRandom | MadvSequential | MadvWillneed | MadvDontneed
 
+	mapShared         = 0x01
 	mapPrivate        = 0x02
 	mapFixed          = 0x10
 	mapAnonymous      = 0x20
 	mapFixedNoReplace = 0x100000
-	mapSupportedMask  = mapPrivate | mapFixed | mapAnonymous | mapFixedNoReplace
+	mapSupportedMask  = mapShared | mapPrivate | mapFixed | mapAnonymous | mapFixedNoReplace
+
+	// asm-generic 的 msync 标志:SYNC/ASYNC 必须恰有其一并仅可
+	// 与 INVALIDATE 组合。
+	msAsync      = 1
+	msInvalidate = 2
+	msSync       = 4
 )
 
 func (s Syscalls) mmap(ctx context.Context, call Call) Reply {
@@ -1216,15 +1256,10 @@ func (s Syscalls) mmap(ctx context.Context, call Call) Reply {
 	if flags&mapSupportedMask != flags {
 		return Reply{Errno: errno.Invalid}
 	}
-	if flags&mapPrivate == 0 {
-		// MAP_SHARED 匿名映射需要跨进程共享页,未纳入当前兼容配置,明确拒绝。
-		return Reply{Errno: errno.NotSupported}
-	}
-	if flags&mapAnonymous == 0 {
-		// 文件映射未纳入当前兼容配置(E09 未完成),明确拒绝而非伪成功。
-		return Reply{Errno: errno.NotSupported}
-	}
-	if call.Args[5] != 0 {
+	shared := flags&mapShared != 0
+	private := flags&mapPrivate != 0
+	if shared == private {
+		// MAP_SHARED 与 MAP_PRIVATE 必须恰有其一。
 		return Reply{Errno: errno.Invalid}
 	}
 	hint := call.Args[0]
@@ -1232,14 +1267,91 @@ func (s Syscalls) mmap(ctx context.Context, call Call) Reply {
 		return Reply{Errno: errno.Invalid}
 	}
 	length = alignPageUp(length)
-	start, err := s.Mapper.Anonymous(ctx, MapRequest{
+	request := MapRequest{
 		Length: length, Prot: call.Args[2], Hint: hint,
 		Fixed: flags&mapFixed != 0, NoReplace: flags&mapFixedNoReplace != 0,
+	}
+	if flags&mapAnonymous != 0 {
+		if shared {
+			// MAP_SHARED|MAP_ANONYMOUS 需要跨进程共享零页,未纳入
+			// 当前兼容配置,明确拒绝。
+			return Reply{Errno: errno.NotSupported}
+		}
+		if call.Args[5] != 0 {
+			return Reply{Errno: errno.Invalid}
+		}
+		start, err := s.Mapper.Anonymous(ctx, request)
+		if err != nil {
+			return Reply{Errno: errnoOf(err)}
+		}
+		return Reply{Value: start}
+	}
+	// 文件映射(E08 私有/E09 共享):描述符必须是可随机访问的
+	// 常规文件,偏移页对齐,访问模式与保护位一致。
+	if s.Descriptors == nil {
+		return Reply{Errno: errno.BadHandle}
+	}
+	if call.Args[4] > math.MaxUint32 {
+		return Reply{Errno: errno.BadHandle}
+	}
+	handle, err := s.Descriptors.Get(ctx, call.Args[4])
+	if err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	file, ok := handle.(RandomFile)
+	if !ok {
+		// 不可定位的描述符(管道/epoll 等)与 Linux 一致报 ENODEV。
+		return Reply{Errno: errno.NoDevice}
+	}
+	if call.Args[5]%memory.PageSize != 0 {
+		return Reply{Errno: errno.Invalid}
+	}
+	if call.Args[2]&ProtRead != 0 && !file.Readable() {
+		return Reply{Errno: errno.Permission}
+	}
+	if shared && call.Args[2]&ProtWrite != 0 && !file.Writable() {
+		return Reply{Errno: errno.Permission}
+	}
+	start, err := s.Mapper.File(ctx, FileMapRequest{
+		MapRequest: request, File: file, Offset: call.Args[5], Shared: shared,
 	})
 	if err != nil {
 		return Reply{Errno: errnoOf(err)}
 	}
 	return Reply{Value: start}
+}
+
+// msync(E09):共享映射写入即时直通文件,本调用校验范围完整映射
+// 后确认持久;SYNC/ASYNC 必须恰有其一,UNKNOWN 标志 EINVAL。
+func (s Syscalls) msync(ctx context.Context, call Call) Reply {
+	if s.Mapper == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	flags := call.Args[2]
+	if flags&^(msAsync|msInvalidate|msSync) != 0 {
+		return Reply{Errno: errno.Invalid}
+	}
+	if flags&msSync != 0 && flags&msAsync != 0 {
+		return Reply{Errno: errno.Invalid}
+	}
+	if flags&(msSync|msAsync) == 0 {
+		return Reply{Errno: errno.Invalid}
+	}
+	start := call.Args[0]
+	if start%memory.PageSize != 0 {
+		return Reply{Errno: errno.Invalid}
+	}
+	length := alignPageUp(call.Args[1])
+	if length == 0 {
+		return Reply{Errno: errno.Invalid}
+	}
+	if start+length <= start {
+		return Reply{Errno: errno.Overflow}
+	}
+	if err := s.Mapper.Sync(ctx, start, start+length); err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	return Reply{}
 }
 
 func (s Syscalls) munmap(ctx context.Context, call Call) Reply {

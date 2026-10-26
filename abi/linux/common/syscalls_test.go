@@ -872,6 +872,8 @@ func TestBrkQueryGrowAndFailure(t *testing.T) {
 }
 
 type fakeMapper struct {
+	files     []FileMapRequest
+	synced    [][2]uint64
 	mapped    []MapRequest
 	unmapped  [][2]uint64
 	protected [][3]uint64
@@ -887,6 +889,19 @@ func (m *fakeMapper) Anonymous(_ context.Context, request MapRequest) (uint64, e
 		return 0, m.err
 	}
 	return m.reply, nil
+}
+
+func (m *fakeMapper) File(_ context.Context, request FileMapRequest) (uint64, error) {
+	m.files = append(m.files, request)
+	if m.err != nil {
+		return 0, m.err
+	}
+	return m.reply, nil
+}
+
+func (m *fakeMapper) Sync(_ context.Context, start, end uint64) error {
+	m.synced = append(m.synced, [2]uint64{start, end})
+	return m.err
 }
 
 func (m *fakeMapper) Unmap(_ context.Context, start, end uint64) error {
@@ -929,8 +944,10 @@ func TestMmapValidatesAndDelegates(t *testing.T) {
 	}{
 		{"零长度", [6]uint64{0, 0, ProtRead, anon, ^uint64(0), 0}, errno.Invalid},
 		{"未知标志", [6]uint64{0, 4096, ProtRead, anon | 0x4000, ^uint64(0), 0}, errno.Invalid},
-		{"共享映射", [6]uint64{0, 4096, ProtRead, mapAnonymous, ^uint64(0), 0}, errno.NotSupported},
-		{"文件映射", [6]uint64{0, 4096, ProtRead, mapPrivate, 3, 0}, errno.NotSupported},
+		{"共享匿名映射", [6]uint64{0, 4096, ProtRead, mapShared | mapAnonymous, ^uint64(0), 0}, errno.NotSupported},
+		{"共享私有冲突", [6]uint64{0, 4096, ProtRead, mapShared | mapPrivate | mapAnonymous, ^uint64(0), 0}, errno.Invalid},
+		{"缺共享类型", [6]uint64{0, 4096, ProtRead, mapFixed, 3, 0}, errno.Invalid},
+		{"文件映射无描述符", [6]uint64{0, 4096, ProtRead, mapPrivate, 3, 0}, errno.BadHandle},
 		{"非零偏移", [6]uint64{0, 4096, ProtRead, anon, ^uint64(0), 4096}, errno.Invalid},
 		{"提示未对齐", [6]uint64{4097, 4096, ProtRead, anon, ^uint64(0), 0}, errno.Invalid},
 	} {

@@ -442,6 +442,54 @@ func (f *chargeFile) Close() error { return f.base.Close() }
 
 func (f *chargeFile) Stat() (stdfs.FileInfo, error) { return f.base.Stat() }
 
+// randomAccess 是底层句柄的随机访问能力(pread/pwrite 语义与
+// 打开访问模式查询);文件映射(E08/E09)经此直达底层数据。
+type randomAccess interface {
+	ReadAt(p []byte, off int64) (int, error)
+
+	WriteAt(p []byte, off int64) (int, error)
+
+	Readable() bool
+
+	Writable() bool
+}
+
+func (f *chargeFile) random() (randomAccess, bool) {
+	random, ok := f.base.(randomAccess)
+	return random, ok
+}
+
+func (f *chargeFile) ReadAt(p []byte, off int64) (int, error) {
+	random, ok := f.random()
+	if !ok {
+		return 0, errno.Seek
+	}
+	return random.ReadAt(p, off)
+}
+
+func (f *chargeFile) WriteAt(p []byte, off int64) (int, error) {
+	random, ok := f.random()
+	if !ok {
+		return 0, errno.Seek
+	}
+	// 计费口径与 Write 一致:按写入桶数。
+	buckets := uint64(len(p))/costWriteBucket + 1
+	if err := f.scope.charge(context.Background(), buckets); err != nil {
+		return 0, err
+	}
+	return random.WriteAt(p, off)
+}
+
+func (f *chargeFile) Readable() bool {
+	random, ok := f.random()
+	return ok && random.Readable()
+}
+
+func (f *chargeFile) Writable() bool {
+	random, ok := f.random()
+	return ok && random.Writable()
+}
+
 func (c chargeFS) SetTimes(ctx context.Context, name string, atime, mtime int64) error {
 	timestamps, ok := c.base.(fs.Timestamps)
 	if !ok {
