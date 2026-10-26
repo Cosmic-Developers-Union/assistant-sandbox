@@ -120,6 +120,18 @@ type FutexControl interface {
 	FutexTable() *futex.Table
 }
 
+// TidAddressControl 是 set_tid_address(K03)的登记端口与退出清算
+// 回调:SetTidAddress 登记 clear_child_tid 地址,TidAddress 查询,
+// ClearTidAtExit 由执行器在运行流终止时调用(写零回调由执行器
+// 注入,内核不持有客体地址空间)。
+type TidAddressControl interface {
+	SetTidAddress(address uint64) error
+
+	TidAddress() uint64
+
+	ClearTidAtExit(ctx context.Context, write func(context.Context, uint64, []byte) error)
+}
+
 // SessionControl 是 setsid/setpgid/getpgid/getsid 的会话与进程组端口
 // (H11):pid=0 表示调用方自身,负值非法;实现按 Linux 权限规则校验
 // (目标必须是调用方或其子进程、同会话、非会话组长)。

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	stdfs "io/fs"
+	"math"
 	"slices"
 	"sync"
 
@@ -99,6 +100,10 @@ type Kernel struct {
 	// futexes 是 futex 的等待表(K05):按 {所有者,客体地址} 键控。
 	futexes *futex.Table
 
+	// tidAddresses 是各进程登记的 clear_child_tid 地址(K03):线程/
+	// 进程退出时该处写零并唤醒 futex;fork 不继承,exec 复位。
+	tidAddresses map[proc.PID]uint64
+
 	// trace 收集受限的系统调用轨迹(G08):有界,不记录缓冲区内容。
 	trace *trace.Recorder
 }
@@ -175,6 +180,7 @@ func New(services Services, maxProcesses int) (*Kernel, error) {
 	k.instances = map[proc.PID]executable.Instance{}
 	k.queue = newRunQueue()
 	k.futexes = futex.New()
+	k.tidAddresses = map[proc.PID]uint64{}
 	k.init = root.ID
 	k.signals.Spawn(uint64(root.ID))
 	if fdt, ok := services.FD.(*fd.Table); ok {
@@ -1796,6 +1802,48 @@ func (c procControl) FutexTable() *futex.Table {
 	return c.k.futexes
 }
 
+// SetTidAddress 登记 clear_child_tid 地址(K03,set_tid_address);
+// 已有登记被覆盖,0 表示未登记。
+func (c procControl) SetTidAddress(address uint64) error {
+	c.k.mu.Lock()
+	defer c.k.mu.Unlock()
+	if c.k.closed {
+		return errno.Cancelled
+	}
+	if c.self == 0 {
+		return errno.NoProcess
+	}
+	c.k.tidAddresses[c.self] = address
+	return nil
+}
+
+// TidAddress 返回登记的 clear_child_tid 地址(K03);未登记为 0。
+func (c procControl) TidAddress() uint64 {
+	c.k.mu.Lock()
+	defer c.k.mu.Unlock()
+	return c.k.tidAddresses[c.self]
+}
+
+// ClearTidAtExit 在执行流终止时落实 K03 语义:登记地址写零(客体
+// 地址空间)并按 futex 语义唤醒该地址上的等待者。地址写不进(已
+// 解除映射)时仍执行唤醒——等待者条件由其自身复查。执行器在运行
+// 流返回后调用;线程化(K02)后移至线程退出路径。
+func (c procControl) ClearTidAtExit(ctx context.Context, write func(context.Context, uint64, []byte) error) {
+	address := c.TidAddress()
+	if address == 0 {
+		return
+	}
+	c.k.mu.Lock()
+	delete(c.k.tidAddresses, c.self)
+	c.k.mu.Unlock()
+	if write != nil {
+		_ = write(ctx, address, make([]byte, 8))
+	}
+	if futexes, ok := c.k.futexes, true; ok {
+		futexes.Wake(futex.Key{Owner: uint64(c.self), Address: address}, math.MaxInt32)
+	}
+}
+
 func (c procControl) KillSignal(pid int64, n signal.Number) error {
 	if n != 0 && !n.Valid() {
 		return errno.Invalid
@@ -1850,9 +1898,14 @@ func (c procControl) KillSignal(pid int64, n signal.Number) error {
 // 随新映像更新并发出 KindExec 事件,CLOEXEC 描述符关闭,信号处置/
 // 屏蔽/挂起复位。执行器先完成映像替换再调用;失败即 fail-closed。
 func (c procControl) ResetForExec(path string, args []string, env map[string]string) error {
+	// exec 复位 clear_child_tid 登记(与内核 clear_child_tid exec
+	// 语义一致)。
 	if c.self == 0 {
 		return errno.NoProcess
 	}
+	c.k.mu.Lock()
+	delete(c.k.tidAddresses, c.self)
+	c.k.mu.Unlock()
 	current, err := c.k.table.Get(c.self)
 	if err != nil {
 		return err

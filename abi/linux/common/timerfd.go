@@ -20,6 +20,30 @@ import (
 //   - read():8 字节过期计数(宿主序小端),读清零;无到期阻塞
 //     (非阻塞 EAGAIN);到期通知经 poll/epoll 就绪图(poll.Source)。
 
+// TidAddressControl 是 set_tid_address(K03)的登记端口。
+type TidAddressControl interface {
+	SetTidAddress(address uint64) error
+
+	TidAddress() uint64
+}
+
+// setTidAddress(K03):登记 clear_child_tid 地址并返回调用方 TID
+// (单线程模型下与 PID 相同)。地址 0 表示撤销登记。退出清零与
+// futex 唤醒在执行流终止时由内核落实(每线程退出随 K02 移交)。
+func (s Syscalls) setTidAddress(ctx context.Context, call Call) Reply {
+	if s.TidAddresses == nil || s.Identity == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	if err := s.TidAddresses.SetTidAddress(call.Args[0]); err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	tid := s.Identity.TID
+	if tid == 0 {
+		tid = s.Identity.PID
+	}
+	return Reply{Value: tid}
+}
+
 // asm-generic 的 timerfd 标志。
 const (
 	tfdNonBlock    = 0o4000

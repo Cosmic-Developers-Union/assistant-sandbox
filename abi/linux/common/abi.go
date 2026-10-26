@@ -186,6 +186,8 @@ const (
 
 	SysFutex
 
+	SysSetTidAddress
+
 	SysMsync
 
 	SysEventfd2
@@ -448,6 +450,8 @@ func (s Syscall) String() string {
 		return "pselect6"
 	case SysFutex:
 		return "futex"
+	case SysSetTidAddress:
+		return "set_tid_address"
 	case SysMsync:
 		return "msync"
 	case SysEventfd2:

@@ -241,6 +241,10 @@ type Syscalls struct {
 	// timerfd 族报 ENOSYS。
 	TimerSource TimerFDs
 
+	// TidAddresses 是 set_tid_address 的登记端口(K03);未装配时
+	// 报 ENOSYS。
+	TidAddresses TidAddressControl
+
 	// Core 供 rt_sigreturn 恢复完整机器状态;未装配时 rt_sigreturn 报 ENOSYS。
 	Core cpu.Port
 
@@ -493,6 +497,8 @@ func (s Syscalls) dispatch(ctx context.Context, call Call) Reply {
 		return s.pselect6(ctx, call)
 	case SysFutex:
 		return s.futex(ctx, call)
+	case SysSetTidAddress:
+		return s.setTidAddress(ctx, call)
 	case SysTimerfdCreate:
 		return s.timerfdCreate(ctx, call)
 	case SysTimerfdSettime:

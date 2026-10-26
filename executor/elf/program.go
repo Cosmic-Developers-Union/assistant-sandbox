@@ -114,6 +114,13 @@ func (p *program) Run(ctx context.Context, process proc.Proc) (uint8, error) {
 	if err != nil {
 		return 0, err
 	}
+	// K03:运行流终止,落实 clear_child_tid——登记地址写零并唤醒
+	// futex 等待者(线程化后随 K02 移至每线程退出路径)。
+	if tidControl, ok := process.Control.(proc.TidAddressControl); ok {
+		tidControl.ClearTidAtExit(ctx, func(ctx context.Context, address uint64, content []byte) error {
+			return space.Write(ctx, address, content)
+		})
+	}
 	// exit(2) 的状态按 Linux 截断为低 8 位(WEXITSTATUS);负数 errno
 	// 形态(如 openat 失败后的 -2)与参考 Linux 一致地成为 254,
 	// 而不是宿主侧错误(A09 差分发现)。
@@ -402,6 +409,10 @@ func syscalls(ctx context.Context, process proc.Proc, space *memory.Table, plan 
 	if futexes, ok := process.Control.(proc.FutexControl); ok {
 		// futex WAIT/WAKE 的同步表(K05):按 {进程,客体地址} 键控。
 		handler.Futexes = futexes.FutexTable()
+	}
+	if tidControl, ok := process.Control.(proc.TidAddressControl); ok {
+		// set_tid_address 的登记端口(K03)。
+		handler.TidAddresses = tidControl
 	}
 	if recorder, ok := process.Control.(proc.TraceRecorder); ok {
 		// 受限系统调用追踪(G08):只记录标识、调用编号、结果与耗时。
