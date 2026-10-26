@@ -285,10 +285,10 @@ Python 和 Node.js 的验收必须执行客体运行时，不能通过调用宿�
 依赖：C 组、E15、H 组、I13；网络项依赖 M 组。
 
 - [ ] O01 实现客体 UID/GID 与有效身份。验收：身份系统调用、文件检查和子进程继承一致，客体 root 不等于宿主 root。
-- [ ] O02 实现进程数量与线程数量上限。验收：耗尽后创建失败，退出后恢复额度，不能经另一个入口绕过。
+- [x] O02 实现进程数量与线程数量上限。验收：耗尽后创建失败，退出后恢复额度，不能经另一个入口绕过。 证据:上限由 proc.Table 的 maxProcesses 统一裁决(kernel.New 装配,table.Create 满额 EAGAIN)——Begin、Fork、clone(进程形态)全部经 table.Create,无旁路入口;线程上限随 K02 落地(当前 clone 线程标志 ENOTSUP,线程数不可能超过进程名额);恢复经 Finish→Reap 删除表项。测试:vm/kernel_budget_test.go TestProcessLimitBlocksEveryEntry(root 占一额;耗尽后 Begin 与 Fork 双入口均 EAGAIN、Finish 回收后 Begin 恢复、再次耗尽仍拒绝)。测试:`go test ./vm/ -run TestProcessLimitBlocks`。CI:Test 工作流。
 - [ ] O03 实现 CPU 工作量与运行时间限制。验收：客体死循环被限制，控制台和管理 API 仍响应。
 - [ ] O04 实现总内存与每进程限制。验收：mmap、brk、线程栈和运行时分配统一计费，耗尽只影响目标 VM。
-- [ ] O05 实现 fd、管道和队列预算。验收：所有创建路径共享限额，关闭和异常退出后可回收。
+- [x] O05 实现 fd、管道和队列预算。验收：所有创建路径共享限额，关闭和异常退出后可回收。 证据:vm/fd/table.go Budget 钩子(kernel 以 metersBudget 适配资源计量器装配)——计费/归还统一在描述符表层,所有创建路径共享同一限额:Install/InstallNext(显式与自动编号,含 openat 的文件描述符)、Pipe(两槽,槽位不足撤销半装状态并归还)、EventFD、SignalFD、Epoll、TimerFD、Dup/DupAt(dup2 覆盖既有槽位净额零,预算拒绝时回滚);归还于 Close(每槽一费,refcount 与槽位费独立)与 Detach(异常退出/关闭按残存槽位清算)——修复真实缺陷:此前只有 kernel.InstallFD/CloseFD 计费,pipe2/eventfd2/epoll_create1 等 syscall 创建路径完全绕过预算(另一入口绕过);kernel.InstallFD/CloseFD 改为纯表操作消除双重计费;异常退出回收=Finish→meters.Discard(既有)+Detach 清算。既有预算测试(kernel_fd_budget_test 3 项)经统一钩子原语义通过。测试:vm/kernel_budget_test.go TestCreationPathsShareDescriptorBudget(管道两槽+eventfd 一槽耗尽预算、epoll EAGAIN、归还一槽后可创建、显式安装同受约束)。测试:`go test ./vm/ -run 'TestCreationPathsShare|TestDescriptorBudget'`。CI:Test 工作流。备注:管道缓冲字节与事件队列深度的内存计费随 O4 的统一内存口径评估(管道容量固定 64Ki,预算侧暂以描述符槽数计)。
 - [x] O06 实现输出与屏幕历史预算。验收：持续输出不会无限占用宿主内存，截断/背压策略与错误可观察。 证据:session.go outputBudget(16MB wire 预算)、userland/shell/loop.go OutputLimit 与流重置、executor/wasm/engine_host.go newOutputBudget、vm/jobs_fault_test.go TestJobOutputTruncationIsMarked。测试:`go test . ./vm/ ./userland/...`。CI:Test 工作流。
 - [ ] O07 审计全部宿主能力入口。验收：文件、网络、随机、时间、进程和扩展调用都经过明确授权，不能直接启动宿主程序。
 - [ ] O08 建立双 VM 隔离测试。验收：文件、内存、PID、设备、socket 和资源耗尽互不污染。

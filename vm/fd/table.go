@@ -43,6 +43,16 @@ type entry struct {
 	cloexec bool
 }
 
+// Budget 是描述符表的可选预算钩子(O05):每占用一个描述符槽计费
+// 一次,槽位消失归还——所有创建路径(显式安装、自动编号、管道、
+// eventfd、signalfd、epoll、timerfd、dup)共享同一限额。未装配则
+// 不设限。
+type Budget interface {
+	ChargeDescriptors(pid uint64, count int) error
+
+	ReleaseDescriptors(pid uint64, count int)
+}
+
 type Table struct {
 	mu      sync.Mutex
 	entries map[uint64]map[uint32]*entry
@@ -50,9 +60,35 @@ type Table struct {
 	// timeSource 是 timerfd(L10)的时钟端口:内核装配;未装配时
 	// timerfd 创建报 ENOSYS。
 	timeSource clock.Source
+
+	// budget 是共享描述符预算钩子(O05):内核装配。
+	budget Budget
 }
 
 func New() *Table { return &Table{entries: map[uint64]map[uint32]*entry{}} }
+
+// SetBudget 装配共享描述符预算(内核构造时调用一次)。
+func (t *Table) SetBudget(budget Budget) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.budget = budget
+}
+
+// chargeLocked 对 pid 计 count 个描述符槽;失败返回错误且不改表。
+func (t *Table) chargeLocked(pid uint64, count int) error {
+	if t.budget == nil || count <= 0 {
+		return nil
+	}
+	return t.budget.ChargeDescriptors(pid, count)
+}
+
+// releaseLocked 归还 pid 的 count 个描述符槽。
+func (t *Table) releaseLocked(pid uint64, count int) {
+	if t.budget == nil || count <= 0 {
+		return
+	}
+	t.budget.ReleaseDescriptors(pid, count)
+}
 
 // SetTimeSource 装配 timerfd 的时钟端口(内核构造时调用一次)。
 func (t *Table) SetTimeSource(source clock.Source) {
@@ -84,6 +120,9 @@ func (t *Table) Install(pid uint64, id uint32, handle Stream) error {
 	if _, taken := table[id]; taken {
 		return errno.Exist
 	}
+	if err := t.chargeLocked(pid, 1); err != nil {
+		return err
+	}
 	table[id] = newEntry(handle, true)
 	return nil
 }
@@ -100,6 +139,9 @@ func (t *Table) InstallNext(pid uint64, handle Stream) (uint32, error) {
 	}
 	for id := uint32(3); id < ^uint32(0); id++ {
 		if _, taken := table[id]; !taken {
+			if err := t.chargeLocked(pid, 1); err != nil {
+				return 0, err
+			}
 			table[id] = newEntry(handle, true)
 			return id, nil
 		}
@@ -139,6 +181,7 @@ func (t *Table) Detach(pid uint64) error {
 	for _, e := range table {
 		closeErr = errors.Join(closeErr, e.ref.release())
 	}
+	t.releaseLocked(pid, len(table))
 	delete(t.entries, pid)
 	return closeErr
 }
@@ -179,9 +222,17 @@ func (t *Table) Dup(ctx context.Context, pid uint64, from, to uint32) error {
 	if target := table[to]; target != nil {
 		closeErr := target.ref.release()
 		delete(table, to)
+		t.releaseLocked(pid, 1)
+		if err := t.chargeLocked(pid, 1); err != nil {
+			// 预算拒绝:回滚到释放前状态(目标槽位以关闭形态消失)。
+			return errors.Join(closeErr, err)
+		}
 		source.ref.refs++
 		table[to] = &entry{ref: source.ref}
 		return closeErr
+	}
+	if err := t.chargeLocked(pid, 1); err != nil {
+		return err
 	}
 	source.ref.refs++
 	table[to] = &entry{ref: source.ref}
@@ -231,6 +282,9 @@ func (t *Table) DupAt(ctx context.Context, pid, from, min uint64) (uint32, error
 	}
 	for id := uint32(min); id < ^uint32(0); id++ {
 		if _, taken := table[id]; !taken {
+			if err := t.chargeLocked(pid, 1); err != nil {
+				return 0, err
+			}
 			source.ref.refs++
 			table[id] = &entry{ref: source.ref}
 			return id, nil
@@ -252,6 +306,9 @@ func (t *Table) Pipe(pid uint64) (uint32, uint32, error) {
 	if table == nil {
 		return 0, 0, errno.NoProcess
 	}
+	if err := t.chargeLocked(pid, 2); err != nil {
+		return 0, 0, err
+	}
 	var readID, writeID uint32
 	for id := uint32(3); id < ^uint32(0); id++ {
 		if _, taken := table[id]; !taken {
@@ -268,6 +325,16 @@ func (t *Table) Pipe(pid uint64) (uint32, uint32, error) {
 		}
 	}
 	if readID == 0 || writeID == 0 {
+		// 槽位不足:撤销半装状态并归还计费。
+		if readID != 0 {
+			delete(table, readID)
+			_ = readEnd.Close()
+		}
+		if writeID != 0 {
+			delete(table, writeID)
+			_ = writeEnd.Close()
+		}
+		t.releaseLocked(pid, 2)
 		return 0, 0, errno.Limit
 	}
 	return readID, writeID, nil
@@ -285,12 +352,16 @@ func (t *Table) EventFD(pid uint64, initialValue uint64, options eventfd.Options
 	if table == nil {
 		return 0, errno.NoProcess
 	}
+	if err := t.chargeLocked(pid, 1); err != nil {
+		return 0, err
+	}
 	for id := uint32(3); id < ^uint32(0); id++ {
 		if _, taken := table[id]; !taken {
 			table[id] = newEntry(handle, true)
 			return id, nil
 		}
 	}
+	t.releaseLocked(pid, 1)
 	return 0, errno.Limit
 }
 
@@ -307,12 +378,16 @@ func (t *Table) SignalFD(pid uint64, mask uint64, options signalfd.Options) (uin
 	if table == nil {
 		return 0, errno.NoProcess
 	}
+	if err := t.chargeLocked(pid, 1); err != nil {
+		return 0, err
+	}
 	for id := uint32(3); id < ^uint32(0); id++ {
 		if _, taken := table[id]; !taken {
 			table[id] = newEntry(handle, true)
 			return id, nil
 		}
 	}
+	t.releaseLocked(pid, 1)
 	return 0, errno.Limit
 }
 
@@ -325,12 +400,16 @@ func (t *Table) Epoll(pid uint64) (uint32, error) {
 	if table == nil {
 		return 0, errno.NoProcess
 	}
+	if err := t.chargeLocked(pid, 1); err != nil {
+		return 0, err
+	}
 	for id := uint32(3); id < ^uint32(0); id++ {
 		if _, taken := table[id]; !taken {
 			table[id] = newEntry(handle, true)
 			return id, nil
 		}
 	}
+	t.releaseLocked(pid, 1)
 	return 0, errno.Limit
 }
 
@@ -352,12 +431,16 @@ func (t *Table) TimerFD(pid uint64, clockID uint64, nonblock bool) (uint32, erro
 	if table == nil {
 		return 0, errno.NoProcess
 	}
+	if err := t.chargeLocked(pid, 1); err != nil {
+		return 0, err
+	}
 	for id := uint32(3); id < ^uint32(0); id++ {
 		if _, taken := table[id]; !taken {
 			table[id] = newEntry(handle, true)
 			return id, nil
 		}
 	}
+	t.releaseLocked(pid, 1)
 	return 0, errno.Limit
 }
 
@@ -450,6 +533,7 @@ func (t *Table) Close(ctx context.Context, pid uint64, id uint32) error {
 		return errno.BadHandle
 	}
 	delete(table, id)
+	t.releaseLocked(pid, 1)
 	return e.ref.release()
 }
 

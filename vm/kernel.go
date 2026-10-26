@@ -189,6 +189,10 @@ func New(services Services, maxProcesses int) (*Kernel, error) {
 		if clk, err := capability.Require(services.Clock); err == nil {
 			k.fds.SetTimeSource(clk)
 		}
+		// O05:全部描述符创建路径共享预算,由表内钩子计费/归还。
+		if k.meters != nil {
+			k.fds.SetBudget(metersBudget{meters: k.meters})
+		}
 	}
 
 	k.services.Spaces = kernelSpaces{kernel: k}
@@ -1010,6 +1014,17 @@ func (k *Kernel) BindAddressSpace(pid proc.PID, inner *memory.Table) (memory.Spa
 
 type kernelSpaces struct{ kernel *Kernel }
 
+// metersBudget 把资源计量器接到描述符表的预算钩子(O05)。
+type metersBudget struct{ meters resources.Meter }
+
+func (m metersBudget) ChargeDescriptors(pid uint64, count int) error {
+	return m.meters.ChargeKind(context.Background(), pid, resources.KindDescriptors, uint64(count))
+}
+
+func (m metersBudget) ReleaseDescriptors(pid uint64, count int) {
+	_ = m.meters.ReleaseKind(context.Background(), pid, resources.KindDescriptors, uint64(count))
+}
+
 func (s kernelSpaces) BindAddressSpace(pid uint64, inner *memory.Table) (memory.Space, error) {
 	return s.kernel.BindAddressSpace(proc.PID(pid), inner)
 }
@@ -1096,14 +1111,11 @@ func (k *Kernel) InstallFD(pid proc.PID, id uint32, handle fd.Stream) error {
 		return err
 	}
 
-	if k.meters != nil && !k.fds.IsOpen(uint64(pid), id) {
-		if err := k.meters.ChargeKind(context.Background(), uint64(pid), resources.KindDescriptors, 1); err != nil {
+	// 替换已占用槽位:表内预算钩子按"释放旧槽+占用新槽"净额零。
+	if k.fds.IsOpen(uint64(pid), id) {
+		if err := k.fds.Close(context.Background(), uint64(pid), id); err != nil {
 			return err
 		}
-	}
-
-	if err := k.fds.Close(context.Background(), uint64(pid), id); err != nil && !errors.Is(err, errno.BadHandle) {
-		return err
 	}
 	return k.fds.Install(uint64(pid), id, handle)
 }
@@ -1173,12 +1185,8 @@ func (k *Kernel) CloseFD(pid proc.PID, id uint32) error {
 		return err
 	}
 
-	opened := k.fds.IsOpen(uint64(pid), id)
-	err := k.fds.Close(context.Background(), uint64(pid), id)
-	if err == nil && opened && k.meters != nil {
-		_ = k.meters.ReleaseKind(context.Background(), uint64(pid), resources.KindDescriptors, 1)
-	}
-	return err
+	// 归还由表内预算钩子完成(O05:所有创建路径共享同一限额)。
+	return k.fds.Close(context.Background(), uint64(pid), id)
 }
 
 func (k *Kernel) Pipe(owner proc.PID, capacity int) (uint32, uint32, error) {
