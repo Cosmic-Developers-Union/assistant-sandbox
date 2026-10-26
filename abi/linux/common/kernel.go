@@ -13,6 +13,7 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fd"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fs"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/signalfd"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/timerfd"
 )
 
 type ProcessDescriptors struct {
@@ -331,6 +332,62 @@ func (p ProcessDescriptors) EpollInstance(ctx context.Context, descriptor uint64
 		return nil, errno.Wrap(errno.NotSupported, "描述符表不支持 epoll")
 	}
 	return creator.EpollAt(p.PID, uint32(descriptor))
+}
+
+func (p ProcessDescriptors) TimerFDCreate(ctx context.Context, clockID, flags uint64) (uint64, error) {
+	if p.Table == nil {
+		return 0, errno.Wrap(errno.NotImplemented, "描述符端口未装配")
+	}
+	creator, ok := p.Table.(fd.Creator)
+	if !ok {
+		return 0, errno.Wrap(errno.NotSupported, "描述符表不支持 timerfd")
+	}
+	descriptor, err := creator.TimerFD(p.PID, clockID, flags&tfdNonBlock != 0)
+	if err != nil {
+		return 0, err
+	}
+	if flags&tfdCloexec != 0 {
+		if installer, ok := p.Table.(fd.Installer); ok {
+			if err := installer.SetCloexec(p.PID, descriptor, true); err != nil {
+				return uint64(descriptor), err
+			}
+		}
+	}
+	return uint64(descriptor), nil
+}
+
+func (p ProcessDescriptors) TimerFDSetTime(ctx context.Context, descriptor, flags uint64, spec timerfd.Spec) (timerfd.Spec, error) {
+	at, err := p.TimerFDAt(ctx, descriptor)
+	if err != nil {
+		return timerfd.Spec{}, err
+	}
+	return at.Arm(ctx, flags&tfdAbstime != 0, spec)
+}
+
+func (p ProcessDescriptors) TimerFDGetTime(ctx context.Context, descriptor uint64) (*timerfd.Spec, error) {
+	at, err := p.TimerFDAt(ctx, descriptor)
+	if err != nil {
+		return nil, err
+	}
+	spec, err := at.GetTime(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &spec, nil
+}
+
+func (p ProcessDescriptors) TimerFDAt(ctx context.Context, descriptor uint64) (*timerfd.FD, error) {
+	if p.Table == nil {
+		return nil, errno.Wrap(errno.NotImplemented, "描述符端口未装配")
+	}
+	if descriptor > math.MaxUint32 {
+		return nil, errno.Wrap(errno.BadHandle, "描述符编号超出表示范围")
+	}
+	creator, ok := p.Table.(fd.Creator)
+	if !ok {
+		return nil, errno.Wrap(errno.NotSupported, "描述符表不支持 timerfd")
+	}
+	return creator.TimerFDAt(p.PID, uint32(descriptor))
 }
 
 func (p ProcessDescriptors) Dup2(ctx context.Context, oldfd, newfd uint64, cloexec bool) error {

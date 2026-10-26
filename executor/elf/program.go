@@ -361,6 +361,8 @@ func syscalls(ctx context.Context, process proc.Proc, space *memory.Table, plan 
 	}
 	if descriptors, err := process.Resources.Descriptors(); err == nil {
 		handler.Descriptors = common.ProcessDescriptors{Table: descriptors, PID: uint64(process.ID)}
+		// timerfd 的描述符端口(L10):创建/武装/查询经描述符表。
+		handler.TimerSource = common.ProcessDescriptors{Table: descriptors, PID: uint64(process.ID)}
 
 		if installer, ok := descriptors.(fd.Installer); ok {
 			if system, err := process.Resources.Filesystem(); err == nil {

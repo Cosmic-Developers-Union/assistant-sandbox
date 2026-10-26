@@ -179,6 +179,10 @@ func New(services Services, maxProcesses int) (*Kernel, error) {
 	k.signals.Spawn(uint64(root.ID))
 	if fdt, ok := services.FD.(*fd.Table); ok {
 		k.fds = fdt
+		// timerfd(L10)的时钟端口随描述符表装配。
+		if clk, err := capability.Require(services.Clock); err == nil {
+			k.fds.SetTimeSource(clk)
+		}
 	}
 
 	k.services.Spaces = kernelSpaces{kernel: k}

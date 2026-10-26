@@ -587,7 +587,7 @@ func TestRegistryMatchesAdapterMapping(t *testing.T) {
 		"mount": true, "openat2": true, "perf_event_open": true, "pidfd_getfd": true,
 		"pidfd_open": true, "pivot_root": true,
 		"ptrace": true, "reboot": true, "sync": true,
-		"syslog": true, "timerfd_create": true, "timerfd_gettime": true, "timerfd_settime": true,
+		"syslog":  true,
 		"umount2": true, "userfaultfd": true,
 	}
 	for call := range inverse {

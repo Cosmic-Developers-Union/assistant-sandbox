@@ -23,6 +23,7 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/resources"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/signalfd"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/storage"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/timerfd"
 )
 
 const (
@@ -184,6 +185,24 @@ func (s scopedFDs) SignalFDAt(_ uint64, id uint32) (*signalfd.FD, error) {
 		return creator.SignalFDAt(s.pid, id)
 	}
 	return nil, errno.Wrap(errno.NotSupported, "描述符表不支持 signalfd")
+}
+
+// TimerFD 实现 fd.Creator:以作用域绑定的进程创建 timerfd。
+func (s scopedFDs) TimerFD(_ uint64, clockID uint64, nonblock bool) (uint32, error) {
+	creator, ok := s.base.(fd.Creator)
+	if !ok {
+		return 0, errno.Wrap(errno.NotSupported, "描述符表不支持 timerfd")
+	}
+	return creator.TimerFD(s.pid, clockID, nonblock)
+}
+
+// TimerFDAt 实现 fd.Creator:取作用域绑定进程的 timerfd。
+func (s scopedFDs) TimerFDAt(_ uint64, id uint32) (*timerfd.FD, error) {
+	creator, ok := s.base.(fd.Creator)
+	if !ok {
+		return nil, errno.Wrap(errno.NotSupported, "描述符表不支持 timerfd")
+	}
+	return creator.TimerFDAt(s.pid, id)
 }
 
 // Epoll 实现 fd.Creator:以作用域绑定的进程创建 epoll 实例。

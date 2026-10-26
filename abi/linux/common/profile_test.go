@@ -42,7 +42,7 @@ func profileSections(t *testing.T) (delivered, unsupported, declared map[string]
 				continue
 			}
 			switch section {
-			case "已交付语义(75 项)":
+			case "已交付语义(76 项)":
 				delivered[name] = true
 			case "明确 ENOTSUP(31 项:在册、语义未交付)":
 				unsupported[name] = true

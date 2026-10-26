@@ -237,6 +237,10 @@ type Syscalls struct {
 	// futex 报 ENOSYS。
 	Futexes Futexes
 
+	// TimerSource 是 timerfd 的描述符端口(L10);未装配时
+	// timerfd 族报 ENOSYS。
+	TimerSource TimerFDs
+
 	// Core 供 rt_sigreturn 恢复完整机器状态;未装配时 rt_sigreturn 报 ENOSYS。
 	Core cpu.Port
 
@@ -489,6 +493,12 @@ func (s Syscalls) dispatch(ctx context.Context, call Call) Reply {
 		return s.pselect6(ctx, call)
 	case SysFutex:
 		return s.futex(ctx, call)
+	case SysTimerfdCreate:
+		return s.timerfdCreate(ctx, call)
+	case SysTimerfdSettime:
+		return s.timerfdSettime(ctx, call)
+	case SysTimerfdGettime:
+		return s.timerfdGettime(ctx, call)
 	case SysEpollCreate1:
 		return s.epollCreate1(ctx, call)
 	case SysEpollCtl:

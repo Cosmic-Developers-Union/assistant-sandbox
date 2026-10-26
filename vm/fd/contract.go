@@ -7,6 +7,7 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/epoll"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/eventfd"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/signalfd"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/timerfd"
 )
 
 type Stream interface {
@@ -33,6 +34,12 @@ type Creator interface {
 	Epoll(pid uint64) (uint32, error)
 
 	EpollAt(pid uint64, id uint32) (*epoll.FD, error)
+
+	// TimerFD 创建并安装一个 timerfd(L10);TimerFDAt 取已存在
+	// 实例(settime/gettime 用)。
+	TimerFD(pid uint64, clockID uint64, nonblock bool) (uint32, error)
+
+	TimerFDAt(pid uint64, id uint32) (*timerfd.FD, error)
 
 	DupAt(ctx context.Context, pid, from, min uint64) (uint32, error)
 }

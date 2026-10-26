@@ -9,11 +9,13 @@ import (
 	"slices"
 	"sync"
 
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/clock"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/epoll"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/eventfd"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/pipe"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/signalfd"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/timerfd"
 )
 
 type Streams struct {
@@ -44,9 +46,20 @@ type entry struct {
 type Table struct {
 	mu      sync.Mutex
 	entries map[uint64]map[uint32]*entry
+
+	// timeSource 是 timerfd(L10)的时钟端口:内核装配;未装配时
+	// timerfd 创建报 ENOSYS。
+	timeSource clock.Source
 }
 
 func New() *Table { return &Table{entries: map[uint64]map[uint32]*entry{}} }
+
+// SetTimeSource 装配 timerfd 的时钟端口(内核构造时调用一次)。
+func (t *Table) SetTimeSource(source clock.Source) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.timeSource = source
+}
 
 func (t *Table) Attach(pid uint64, s Streams) {
 	t.mu.Lock()
@@ -319,6 +332,53 @@ func (t *Table) Epoll(pid uint64) (uint32, error) {
 		}
 	}
 	return 0, errno.Limit
+}
+
+// TimerFD 创建并安装一个 timerfd(L10);时钟端口未装配报 ENOSYS。
+func (t *Table) TimerFD(pid uint64, clockID uint64, nonblock bool) (uint32, error) {
+	t.mu.Lock()
+	source := t.timeSource
+	t.mu.Unlock()
+	if source == nil {
+		return 0, errno.Wrap(errno.NotImplemented, "时钟端口未装配")
+	}
+	handle, err := timerfd.New(clockID, timerfd.Options{NonBlock: nonblock}, source)
+	if err != nil {
+		return 0, err
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	table := t.entries[pid]
+	if table == nil {
+		return 0, errno.NoProcess
+	}
+	for id := uint32(3); id < ^uint32(0); id++ {
+		if _, taken := table[id]; !taken {
+			table[id] = newEntry(handle, true)
+			return id, nil
+		}
+	}
+	return 0, errno.Limit
+}
+
+// TimerFDAt 取已存在描述符上的 timerfd(settime/gettime 用);
+// 描述符不存在报 EBADF,不是 timerfd 报 EINVAL。
+func (t *Table) TimerFDAt(pid uint64, id uint32) (*timerfd.FD, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	table := t.entries[pid]
+	if table == nil {
+		return nil, errno.NoProcess
+	}
+	e := table[id]
+	if e == nil {
+		return nil, errno.BadHandle
+	}
+	handle, ok := e.ref.handle.(*timerfd.FD)
+	if !ok {
+		return nil, errno.Invalid
+	}
+	return handle, nil
 }
 
 // EpollAt 取已存在描述符上的 epoll 实例(epoll_ctl/epoll_pwait 用);
