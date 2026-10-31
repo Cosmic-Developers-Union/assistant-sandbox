@@ -86,6 +86,18 @@ func sortedKeys(m map[string]string) []string {
 // qemu-riscv64(-static)用户态模拟;两者都不可用时返回错误而不是
 // 伪装成功。
 func ReferenceLinux(ctx context.Context, image []byte, stdin string) (Result, error) {
+	return referenceRun(ctx, image, stdin, "", nil)
+}
+
+// ReferenceLinuxWithRoot 以带根文件系统的参考执行运行动态程序(F07):
+// qemu -L 把 /lib/ld-musl-riscv64.so.1 等绝对路径重映射到 root 下,
+// LD_LIBRARY_PATH 供客体动态加载器定位 root 下的共享库。其余语义与
+// ReferenceLinux 一致;root 为空时等价于 ReferenceLinux。
+func ReferenceLinuxWithRoot(ctx context.Context, image []byte, stdin, root string) (Result, error) {
+	return referenceRun(ctx, image, stdin, root, nil)
+}
+
+func referenceRun(ctx context.Context, image []byte, stdin, root string, extraEnv []string) (Result, error) {
 	dir, err := os.MkdirTemp("", "diff-ref-")
 	if err != nil {
 		return Result{}, err
@@ -98,14 +110,25 @@ func ReferenceLinux(ctx context.Context, image []byte, stdin string) (Result, er
 	runCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	var command *exec.Cmd
-	if runtime.GOARCH == "riscv64" {
+	switch {
+	case root != "" && runtime.GOARCH != "riscv64":
+		interpreter := qemuInterpreter()
+		if interpreter == "" {
+			return Result{}, fmt.Errorf("参考 Linux 不可用:宿主 %s/%s 且 PATH 中无 qemu-riscv64(-static)", runtime.GOOS, runtime.GOARCH)
+		}
+		command = exec.CommandContext(runCtx, interpreter, "-L", root, path)
+	case runtime.GOARCH == "riscv64":
 		command = exec.CommandContext(runCtx, path)
-	} else if interpreter := qemuInterpreter(); interpreter != "" {
-		command = exec.CommandContext(runCtx, interpreter, path)
-	} else {
+	case qemuInterpreter() != "":
+		command = exec.CommandContext(runCtx, qemuInterpreter(), path)
+	default:
 		return Result{}, fmt.Errorf("参考 Linux 不可用:宿主 %s/%s 且 PATH 中无 qemu-riscv64(-static)", runtime.GOOS, runtime.GOARCH)
 	}
 	command.Dir = dir
+	command.Env = append(os.Environ(), extraEnv...)
+	if root != "" {
+		command.Env = append(command.Env, "LD_LIBRARY_PATH="+root)
+	}
 	command.Stdin = strings.NewReader(stdin)
 	var stdout, stderr bytes.Buffer
 	command.Stdout = &stdout

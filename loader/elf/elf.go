@@ -248,10 +248,11 @@ func collectSegments(r reader, head header, bias uint64) ([]Segment, string, err
 			}
 			interpreter = path
 			continue
-		case programDynamic:
-			return nil, "", notSupported("动态链接（PT_DYNAMIC）未实现")
-		case programTLS:
-			return nil, "", notSupported("线程局部存储（PT_TLS）未实现")
+		case programDynamic, programTLS:
+			// F07:动态段与 TLS 段是元数据,内容都在 PT_LOAD 内,
+			// 客体动态加载器(ld-musl)从映射内存自行读取;装载器
+			// 不需要额外动作,也不再整体拒绝真实动态程序。
+			continue
 		case programGNUStack:
 			if program.flags&flagExec != 0 {
 				return nil, "", invalid("映像请求可执行栈")
