@@ -101,6 +101,8 @@ const (
 	numberTgkill           = 131
 	numberTkill            = 130
 	numberWait4            = 260
+	numberSetRobustList    = 99
+	numberGetRobustList    = 100
 	numberSocket           = 198
 	numberBind             = 200
 	numberListen           = 201
@@ -438,6 +440,10 @@ func syscallOf(number uint64) common.Syscall {
 		return common.SysTkill
 	case numberWait4:
 		return common.SysWait4
+	case numberSetRobustList:
+		return common.SysSetRobustList
+	case numberGetRobustList:
+		return common.SysGetRobustList
 	case numberSocket:
 		return common.SysSocket
 	case numberBind:

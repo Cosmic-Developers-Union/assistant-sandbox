@@ -104,9 +104,29 @@ type Kernel struct {
 	// 进程退出时该处写零并唤醒 futex;fork 不继承,exec 复位。
 	tidAddresses map[proc.PID]uint64
 
+	// robustLists 是各线程登记的 robust futex 链表头与长度(K07):
+	// set_robust_list 登记,线程退出时清算;fork 不继承,exec 复位。
+	robustLists map[proc.PID]robustList
+
 	// trace 收集受限的系统调用轨迹(G08):有界,不记录缓冲区内容。
 	trace *trace.Recorder
 }
+
+// robustList 是 set_robust_list 登记的用户态链表描述(K07):
+// head 指向 linked list 节点(每节点含 next 指针与 futex 字),len
+// 为链表大小上界(本实现按节点遍历,不依赖 len 精确值)。
+type robustList struct {
+	head uint64
+	len  uint64
+}
+
+// futexTidMask/futexWaitersBit/futexOwnerDiedBit 是 Linux futex 字的
+// 常量(robust 清算语义)。
+const (
+	futexTidMask      = uint32(0x3fffffff)
+	futexWaitersBit   = uint32(1) << 31
+	futexOwnerDiedBit = uint32(1) << 30
+)
 
 func New(services Services, maxProcesses int) (*Kernel, error) {
 	if _, err := capability.Require(services.Programs); err != nil {
@@ -181,6 +201,7 @@ func New(services Services, maxProcesses int) (*Kernel, error) {
 	k.queue = newRunQueue()
 	k.futexes = futex.New()
 	k.tidAddresses = map[proc.PID]uint64{}
+	k.robustLists = map[proc.PID]robustList{}
 	k.init = root.ID
 	k.signals.Spawn(uint64(root.ID))
 	if fdt, ok := services.FD.(*fd.Table); ok {
@@ -2171,6 +2192,90 @@ func (c procControl) SetTidAddress(address uint64) error {
 }
 
 // TidAddress 返回登记的 clear_child_tid 地址(K03);未登记为 0。
+func (c procControl) SetRobustList(head, length uint64) error {
+	c.k.mu.Lock()
+	defer c.k.mu.Unlock()
+	if c.k.closed {
+		return errno.Cancelled
+	}
+	if c.self == 0 {
+		return errno.NoProcess
+	}
+	c.k.robustLists[c.self] = robustList{head: head, len: length}
+	return nil
+}
+
+func (c procControl) RobustList(head, length *uint64) error {
+	c.k.mu.Lock()
+	defer c.k.mu.Unlock()
+	entry, ok := c.k.robustLists[c.self]
+	if !ok {
+		return errno.NoProcess
+	}
+	*head = entry.head
+	*length = entry.len
+	return nil
+}
+
+// HandleRobustListAtExit 遍历登记的 robust list(K07):对每个仍由
+// 本线程持有的 futex 字(tid 匹配),或上 FUTEX_OWNER_DIED|WAITERS
+// 位并清 TID,再唤醒该地址等待者。遍历上限防环形/坏指针(fail-
+// closed 报告,不悬挂);读经 mem,写经 mem(执行器注入地址空间)。
+func (c procControl) HandleRobustListAtExit(ctx context.Context, mem proc.RobustMemory) error {
+	c.k.mu.Lock()
+	list, ok := c.k.robustLists[c.self]
+	tid := uint64(c.self)
+	delete(c.k.robustLists, c.self)
+	c.k.mu.Unlock()
+	if !ok || list.head == 0 {
+		return nil
+	}
+	futexes := c.k.futexes
+	// 唤醒键与 futexKey 的私有分域一致:按线程组(K02)。
+	owner := tid
+	if p, err := c.k.table.Get(c.self); err == nil {
+		owner = uint64(p.TGID)
+	}
+	const maxRobustEntries = 1024
+	address := list.head
+	for step := 0; step < maxRobustEntries; step++ {
+		if address == 0 {
+			return nil
+		}
+		var raw [8]byte
+		if err := mem.Read(ctx, address, raw[:]); err != nil {
+			return errno.Fault
+		}
+		next := uint64(0)
+		for i := 0; i < 8; i++ {
+			next |= uint64(raw[i]) << (8 * i)
+		}
+		var futexRaw [4]byte
+		if err := mem.Read(ctx, address+8, futexRaw[:]); err != nil {
+			return errno.Fault
+		}
+		word := uint32(futexRaw[0]) | uint32(futexRaw[1])<<8 | uint32(futexRaw[2])<<16 | uint32(futexRaw[3])<<24
+		if word&futexTidMask == uint32(tid) {
+			updated := word&futexWaitersBit | futexOwnerDiedBit
+			var out [4]byte
+			out[0] = byte(updated)
+			out[1] = byte(updated >> 8)
+			out[2] = byte(updated >> 16)
+			out[3] = byte(updated >> 24)
+			if err := mem.Write(ctx, address+8, out[:]); err != nil {
+				return errno.Fault
+			}
+			futexes.Wake(futex.Key{Owner: owner, Address: address + 8}, 1)
+		}
+		if next != 0 && next <= address {
+			// 环形或倒退链:停止遍历(fail-closed)。
+			return nil
+		}
+		address = next
+	}
+	return nil
+}
+
 func (c procControl) TidAddress() uint64 {
 	c.k.mu.Lock()
 	defer c.k.mu.Unlock()

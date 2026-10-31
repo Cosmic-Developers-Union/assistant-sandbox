@@ -240,6 +240,10 @@ type Syscalls struct {
 	// clone 报 ENOSYS 族。
 	Threader ThreadSpawner
 
+	// RobustLists 是 robust futex 登记端口(K07);未装配时
+	// set/get_robust_list 报 ENOSYS 族。
+	RobustLists RobustListPort
+
 	// LastExitGroup 记录最近一次 exit 族调用是否为 exit_group(H08):
 	// 线程运行器据此区分线程退出与整组退出。仅调用线程读写。
 	LastExitGroup bool
@@ -508,6 +512,10 @@ func (s Syscalls) dispatch(ctx context.Context, call Call) Reply {
 		return s.tkill(ctx, call)
 	case SysWait4:
 		return s.wait4(ctx, call)
+	case SysSetRobustList:
+		return s.setRobustList(ctx, call)
+	case SysGetRobustList:
+		return s.getRobustList(ctx, call)
 	case SysFstatfs:
 		return s.fstatfs(ctx, call)
 	case SysFcntl:
@@ -2830,7 +2838,6 @@ const (
 // waitid(idtype, id, infop, options) 支持 P_PID/P_ALL 与 WEXITED/
 // WNOHANG;停止/继续与 WNOWAIT 未纳入兼容配置,明确 ENOTSUP。
 func (s Syscalls) waitid(ctx context.Context, call Call) Reply {
-	println("DBGWAITID who=", call.Args[0], "id=", call.Args[1])
 	if s.Memory == nil || s.Waiter == nil {
 		return Reply{Errno: errno.NotImplemented}
 	}
@@ -3096,6 +3103,45 @@ const (
 	wait4WUntraced = 2
 )
 
+// set_robust_list(head, len)(K07):登记 robust futex 链表;线程
+// 退出时由内核清算(HandleRobustListAtExit)。
+func (s Syscalls) setRobustList(ctx context.Context, call Call) Reply {
+	if s.RobustLists == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	if err := s.RobustLists.SetRobustList(call.Args[0], call.Args[1]); err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	return Reply{}
+}
+
+// get_robust_list(pid, &head, &len)(K07):查询登记(按调用线程;
+// 跨进程查询兼容配置取本线程,未知 pid 报 ESRCH)。
+func (s Syscalls) getRobustList(ctx context.Context, call Call) Reply {
+	if s.RobustLists == nil || s.Memory == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	if call.Args[0] != 0 && call.Args[0] != s.identityPID() {
+		return Reply{Errno: errno.NoProcess}
+	}
+	var head, length uint64
+	if err := s.RobustLists.RobustList(&head, &length); err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	var headBuf, lenBuf [8]byte
+	for i := 0; i < 8; i++ {
+		headBuf[i] = byte(head >> (8 * i))
+		lenBuf[i] = byte(length >> (8 * i))
+	}
+	if err := s.Memory.Write(ctx, call.Args[1], headBuf[:]); err != nil {
+		return Reply{Errno: errno.Fault}
+	}
+	if err := s.Memory.Write(ctx, call.Args[2], lenBuf[:]); err != nil {
+		return Reply{Errno: errno.Fault}
+	}
+	return Reply{}
+}
+
 // tkill(tid, sig)(K08):线程定向信号,tid 必须存在;fatal 信号
 // 由内核升级为整组结束。musl 的 pthread_kill 走 tkill。
 func (s Syscalls) tkill(ctx context.Context, call Call) Reply {
@@ -3172,6 +3218,13 @@ type CloneRequest struct {
 // 共享地址空间/描述符/信号处置,并在子线程上下文完成续接执行。
 type ThreadSpawner interface {
 	CloneThread(ctx context.Context, request CloneRequest) (uint64, error)
+}
+
+// RobustListPort 是 robust futex 登记端口(K07)。
+type RobustListPort interface {
+	SetRobustList(head, length uint64) error
+
+	RobustList(head *uint64, length *uint64) error
 }
 
 // validateCloneFlags 按 Linux 语义校验 clone 标志(H05):未知位 EINVAL;

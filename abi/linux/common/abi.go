@@ -223,6 +223,8 @@ const (
 	SysTgkill
 	SysTkill
 	SysWait4
+	SysSetRobustList
+	SysGetRobustList
 	SysExecve
 )
 
@@ -512,6 +514,10 @@ func (s Syscall) String() string {
 		return "tkill"
 	case SysWait4:
 		return "wait4"
+	case SysSetRobustList:
+		return "set_robust_list"
+	case SysGetRobustList:
+		return "get_robust_list"
 	case SysExecve:
 		return "execve"
 	case SysReadlinkat:

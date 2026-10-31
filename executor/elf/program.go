@@ -127,6 +127,9 @@ func (p *program) Run(ctx context.Context, process proc.Proc) (uint8, error) {
 			return space.Write(ctx, address, content)
 		})
 	}
+	if robust, ok := process.Control.(proc.RobustExitControl); ok {
+		_ = robust.HandleRobustListAtExit(ctx, space)
+	}
 	// exit(2) 的状态按 Linux 截断为低 8 位(WEXITSTATUS);负数 errno
 	// 形态(如 openat 失败后的 -2)与参考 Linux 一致地成为 254,
 	// 而不是宿主侧错误(A09 差分发现)。
@@ -437,6 +440,9 @@ func syscalls(ctx context.Context, process proc.Proc, space *memory.Table, plan 
 	if killer, ok := process.Control.(proc.SignalKillControl); ok {
 		handler.Kills = processKiller{control: killer}
 	}
+	if robust, ok := process.Control.(proc.RobustListControl); ok {
+		handler.RobustLists = processRobustList{control: robust}
+	}
 	if sessions, ok := process.Control.(proc.SessionControl); ok {
 		handler.Sessions = processSessions{control: sessions}
 	}
@@ -647,6 +653,19 @@ func alignPage(address uint64) uint64 {
 }
 
 var _ common.Heap = (*heap)(nil)
+
+// processRobustList 适配 robust futex 登记端口(K07)。
+type processRobustList struct {
+	control proc.RobustListControl
+}
+
+func (p processRobustList) SetRobustList(head, length uint64) error {
+	return p.control.SetRobustList(head, length)
+}
+
+func (p processRobustList) RobustList(head, length *uint64) error {
+	return p.control.RobustList(head, length)
+}
 
 // processWaiter 把进程控制端口的子进程等待能力适配为 ABI 等待端口。
 type processWaiter struct {
@@ -1159,6 +1178,11 @@ func (t processThreader) CloneThread(ctx context.Context, request common.CloneRe
 			tidControl.ClearTidAtExit(runCtx, func(ctx context.Context, address uint64, content []byte) error {
 				return space.Write(ctx, address, content)
 			})
+		}
+		// K07:robust list 清算——持锁死亡的 futex 标记 OWNER_DIED
+		// 并唤醒等待者(EOWNERDIED 语义)。
+		if robust, ok := child.Control.(proc.RobustExitControl); ok {
+			_ = robust.HandleRobustListAtExit(runCtx, space)
 		}
 		// H08:exit_group 结束整组;exit 仅结束当前线程。致命信号
 		// 中断由内核在 Signal 投递时升级为整组结束(K08)。

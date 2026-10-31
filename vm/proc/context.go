@@ -103,6 +103,30 @@ type ThreadInterruptControl interface {
 	BindThreadInterrupt(id PID, hook func(signal.Number))
 }
 
+// RobustListControl 是 robust futex 登记端口(K07):set_robust_list
+// 登记 {head, len},get_robust_list 查询(允许跨进程查询线程组内
+// 成员——本实现按 TID 查询)。
+type RobustListControl interface {
+	SetRobustList(head, length uint64) error
+
+	RobustList(head *uint64, length *uint64) error
+}
+
+// RobustMemory 是 robust 清算所需的客体内存原语(执行器注入
+// 地址空间表)。
+type RobustMemory interface {
+	Read(ctx context.Context, address uint64, buffer []byte) error
+
+	Write(ctx context.Context, address uint64, buffer []byte) error
+}
+
+// RobustExitControl 是线程退出清算端口(K07):exit 时内核遍历
+// robust list,把仍持有的 futex 字标记 FUTEX_WAITERS|FUTEX_OWNER_DIED
+// 并唤醒等待者。内存原语由调用方注入(内核不持有地址空间)。
+type RobustExitControl interface {
+	HandleRobustListAtExit(ctx context.Context, mem RobustMemory) error
+}
+
 // SignalDeliveryControl 是客户态信号投递端口:执行器在指令边界
 // 轮询待投递信号,写信号帧并重定向执行流。
 type SignalDeliveryControl interface {
