@@ -271,6 +271,10 @@ type SignalSender interface {
 	// Tgkill 投递线程定向信号(K08):tid 必须属于 tgid 的线程组,
 	// 否则 ESRCH;实现校验组成员关系。
 	Tgkill(ctx context.Context, tgid, tid int64, number uint64) error
+
+	// Tkill 投递线程定向信号(tkill(2),musl pthread_kill 路径):
+	// tid 必须存在,否则 ESRCH。
+	Tkill(ctx context.Context, tid int64, number uint64) error
 }
 
 // SessionControl 是 setsid/setpgid/getpgid/getsid 的会话与进程组端口
@@ -494,6 +498,8 @@ func (s Syscalls) dispatch(ctx context.Context, call Call) Reply {
 		return s.kill(ctx, call)
 	case SysTgkill:
 		return s.tgkill(ctx, call)
+	case SysTkill:
+		return s.tkill(ctx, call)
 	case SysFstatfs:
 		return s.fstatfs(ctx, call)
 	case SysFcntl:
@@ -3022,6 +3028,22 @@ func (s Syscalls) kill(ctx context.Context, call Call) Reply {
 		return Reply{Errno: errno.Invalid}
 	}
 	if err := s.Kills.Kill(ctx, int64(call.Args[0]), sig); err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	return Reply{}
+}
+
+// tkill(tid, sig)(K08):线程定向信号,tid 必须存在;fatal 信号
+// 由内核升级为整组结束。musl 的 pthread_kill 走 tkill。
+func (s Syscalls) tkill(ctx context.Context, call Call) Reply {
+	if s.Kills == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	sig := call.Args[1]
+	if sig != 0 && !validGuestSignal(sig) {
+		return Reply{Errno: errno.Invalid}
+	}
+	if err := s.Kills.Tkill(ctx, int64(call.Args[0]), sig); err != nil {
 		return Reply{Errno: errnoOf(err)}
 	}
 	return Reply{}

@@ -118,6 +118,7 @@ var handled = map[Syscall]bool{
 	SysStatx:            true,
 	SysSymlinkat:        true,
 	SysSysinfo:          true,
+	SysTkill:            true,
 	SysTgkill:           true,
 	SysTimes:            true,
 	SysUmask:            true,

@@ -699,8 +699,18 @@ func (k *Kernel) finishGroupLocked(id proc.PID, code uint8, sig uint8) (bool, er
 		// 发现条目已消失而自然结束。
 		k.signals.Interrupt(uint64(member.ID), signal.KILL)
 	}
+	// 信号终止的组退出状态与 Finish 约定一致(128+信号),使组长
+	// 实例结算与表内终态可通过 Finish 的一致性校验。
+	if sig != 0 {
+		code = signal.ExitCode(signal.Number(sig))
+	}
 	if err := k.table.Exit(p.TGID, code, sig); err != nil {
 		return false, err
+	}
+	// 组长的执行实例同样中断(exit_group 的正常退出无需打断;致命
+	// 信号以该信号中断,实例结算出与组一致的信号终止状态)。
+	if sig != 0 {
+		k.signals.Interrupt(uint64(p.TGID), signal.Number(sig))
 	}
 	k.emitLocked(scheduler.KindExit, p.TGID, scheduler.ExitDetail(code, signal.Number(sig)))
 	return true, nil
@@ -1570,8 +1580,18 @@ func (k *Kernel) RunRegistered(ctx context.Context, p proc.Proc) (ExitStatus, er
 		runErr = instanceErr(result, waitErr)
 	}
 	k.mu.Lock()
+	// 组致命信号路径(K08):finishGroupLocked 已把组长置为与实例
+	// 结算一致的僵尸终态,此处 Exit 的 Busy 视为幂等成功。
+	idempotent := func(err error, code uint8, sig uint8) bool {
+		if !errors.Is(err, errno.Busy) {
+			return false
+		}
+		p, getErr := k.table.Get(pid)
+		return getErr == nil && p.State == proc.Zombie &&
+			p.ExitCode == code && p.ExitSignal == sig
+	}
 	if ctxErr := ctx.Err(); ctxErr == nil {
-		if err := k.table.Exit(pid, status.Code, uint8(status.Signal)); err == nil {
+		if err := k.table.Exit(pid, status.Code, uint8(status.Signal)); err == nil || idempotent(err, status.Code, uint8(status.Signal)) {
 			k.emitLocked(scheduler.KindExit, pid, scheduler.ExitDetail(status.Code, status.Signal))
 			k.mu.Unlock()
 			k.childStateChanged(pid, true)
@@ -1587,7 +1607,7 @@ func (k *Kernel) RunRegistered(ctx context.Context, p proc.Proc) (ExitStatus, er
 	if status.Signal == 0 {
 		code = 125
 	}
-	if err := k.table.Exit(pid, code, uint8(status.Signal)); err != nil {
+	if err := k.table.Exit(pid, code, uint8(status.Signal)); err != nil && !idempotent(err, code, uint8(status.Signal)) {
 		k.mu.Unlock()
 		return status, errors.Join(runErr, err)
 	}
@@ -1976,6 +1996,14 @@ func (c procControl) FinishThread(id proc.PID, code uint8, sig uint8) error {
 
 func (c procControl) FinishGroup(id proc.PID, code uint8, sig uint8) error {
 	return c.k.FinishGroup(id, code, sig)
+}
+
+func (c procControl) BindThreadInterrupt(id proc.PID, hook func(signal.Number)) {
+	if hook == nil {
+		c.k.signals.BindInterrupt(uint64(id), nil)
+		return
+	}
+	c.k.signals.BindInterrupt(uint64(id), hook)
 }
 
 func (c procControl) SetUmask(id proc.PID, mask stdfs.FileMode) error {

@@ -301,8 +301,8 @@ func TestAddressSpaceFollowsPlan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 段×2 + 栈 + 栈保护页(E13)。
-	if len(regions) != 4 {
+	// 段×2 + 栈 + 栈保护页(E13) + 信号返回蹭径页(K08)。
+	if len(regions) != 5 {
 		t.Fatalf("映射=%+v", regions)
 	}
 }
@@ -509,8 +509,8 @@ func TestRunRegistersAddressSpace(t *testing.T) {
 		t.Fatalf("登记进程=%d want %d", binder.pid, harness.process.ID)
 	}
 
-	if binder.regions != 4 {
-		t.Fatalf("登记映射数=%d want 4(含栈保护页)", binder.regions)
+	if binder.regions != 5 {
+		t.Fatalf("登记映射数=%d want 5(含栈保护页与信号蹭径页)", binder.regions)
 	}
 }
 

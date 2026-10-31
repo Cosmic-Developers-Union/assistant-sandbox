@@ -209,7 +209,7 @@ func (s Syscalls) pselectTimeout(ctx context.Context, address uint64) (nanosecon
 
 func timeoutOf(forever bool, nanoseconds uint64) uint64 {
 	if forever {
-		return 0
+		return poll.PollInfinite
 	}
 	return nanoseconds
 }

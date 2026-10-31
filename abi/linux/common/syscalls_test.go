@@ -2945,6 +2945,13 @@ type fakeKiller struct {
 	err error
 }
 
+func (f *fakeKiller) Tkill(_ context.Context, tid int64, number uint64) error {
+	if f.err != nil {
+		return f.err
+	}
+	return nil
+}
+
 func (f *fakeKiller) Tgkill(_ context.Context, tgid, tid int64, number uint64) error {
 	if f.err != nil {
 		return f.err

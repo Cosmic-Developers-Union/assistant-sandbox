@@ -222,6 +222,12 @@ func addressSpace(ctx context.Context, plan *loaderelf.Plan) (*memory.Table, err
 // 保护错误(SEGV/ACCERR),不会写入相邻映射(E13)。
 const stackGuardBytes = memory.PageSize
 
+// signalTrampolineAddress 是信号返回蹭径页(4GiB 下沿,匿名映射自
+// 4GiB 向上分配,永不重叠):内容为 rt_sigreturn 的两指令序列。
+// riscv64 musl 不带 SA_RESTORER,真实内核把返回地址指向 vDSO 的
+// sigreturn 蹭径;本 VM 以固定页提供等价物,信号投递时写入 ra。
+const signalTrampolineAddress = uint64(1)<<32 - memory.PageSize
+
 // interpreterBase 是动态解释器的固定装载槽位:与主程序段(低位)、
 // mmap 区(4GiB 起)、堆与栈(高位)均不重叠(F06)。真实 ld.so
 // 接入后由顶层分配器替代。
@@ -331,6 +337,28 @@ func overlaps(left, right []loaderelf.Segment) bool {
 // populateSpace 把映像段、栈与栈保护页装入既有地址空间;execve
 // 原地替换复用同一装载逻辑(H07)。
 func populateSpace(ctx context.Context, space *memory.Table, plan *loaderelf.Plan) error {
+	// 信号返回蹭径页:两指令序列 li a7,139; ecall。装载以 RW 写入
+	// 后切 RX(装载不是客体写访问,与段填充同纪律)。
+	_trampoline := []uint32{0x08B00893, 0x00000073} // li a7, 139(rt_sigreturn); ecall
+	_trampolineBytes := make([]byte, memory.PageSize)
+	for i, instruction := range _trampoline {
+		binary.LittleEndian.PutUint32(_trampolineBytes[i*4:], instruction)
+	}
+	_trampolineRegion := memory.Region{
+		Start: signalTrampolineAddress,
+		End:   signalTrampolineAddress + memory.PageSize,
+		Prot:  memory.ProtRead | memory.ProtWrite,
+		Name:  "signal-trampoline",
+	}
+	if err := space.Map(ctx, _trampolineRegion); err != nil {
+		return err
+	}
+	if err := space.Write(ctx, signalTrampolineAddress, _trampolineBytes); err != nil {
+		return err
+	}
+	if err := space.Protect(ctx, signalTrampolineAddress, signalTrampolineAddress+memory.PageSize, memory.ProtRead|memory.ProtExec); err != nil {
+		return err
+	}
 	guard := memory.Region{
 		Start: plan.Stack.Region.Start - stackGuardBytes,
 		End:   plan.Stack.Region.Start,
@@ -833,6 +861,13 @@ func (d *signalDeliverer) enterHandler(ctx context.Context, number signal.Number
 	next.PC = action.Handler
 	next.Registers[regSp] = base
 	next.Registers[regArgument0] = uint64(number)
+	// 处理器返回地址:SA_RESTORER 形态用登记的 restorer;否则内核
+	// 提供蹭径(真实内核为 vDSO,riscv64 musl 依赖此路径)。
+	if action.Flags&uint32(common.SigactionRestorer) != 0 && action.Restorer != 0 {
+		next.Registers[regRA] = action.Restorer
+	} else {
+		next.Registers[regRA] = signalTrampolineAddress
+	}
 	if action.Flags&uint32(common.SigactionSigInfo) != 0 {
 		next.Registers[regArgument0+1] = infoAddress
 		next.Registers[regArgument0+2] = ucontextAddress
@@ -889,6 +924,7 @@ func (f faultDispatching) Dispatch(ctx context.Context, trap cpu.Trap) (common.E
 
 const (
 	regSp        = 2
+	regRA        = 1
 	regArgument0 = 10
 )
 
@@ -1041,8 +1077,17 @@ func (t processThreader) CloneThread(ctx context.Context, request common.CloneRe
 		}
 	}
 	go func() {
-		runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-		defer cancel()
+		runCtx, cancel := context.WithCancelCause(context.WithoutCancel(ctx))
+		defer cancel(nil)
+		// K08:线程接线的信号中断钩子——signals.Interrupt(tid, n)
+		// 取消运行上下文,fatal 信号由此终结整组。
+		var interrupted signal.Number
+		if binder, ok := child.Control.(proc.ThreadInterruptControl); ok {
+			binder.BindThreadInterrupt(child.ID, func(n signal.Number) {
+				interrupted = n
+				cancel(errno.Wrap(errno.Interrupted, "信号中断"))
+			})
+		}
 		childCore, err := riscv64.New(cpu.Config{
 			Memory: space,
 			Entry:  state.PC,
@@ -1100,6 +1145,11 @@ func (t processThreader) CloneThread(ctx context.Context, request common.CloneRe
 			return
 		}
 		code, runErr := runner.Run(runCtx)
+		if runErr != nil && interrupted.Valid() {
+			// 致命信号:整组结束(K08),退出状态为信号。
+			_ = t.control.FinishThread(child.ID, uint8(code), uint8(interrupted))
+			return
+		}
 		if runErr != nil {
 			code = 125
 		}
@@ -1294,6 +1344,13 @@ func (p processKiller) Tgkill(ctx context.Context, tgid, tid int64, number uint6
 		return errno.Invalid
 	}
 	return p.control.Tgkill(tgid, tid, signal.Number(number))
+}
+
+func (p processKiller) Tkill(ctx context.Context, tid int64, number uint64) error {
+	if number != 0 && !signal.Number(number).Valid() {
+		return errno.Invalid
+	}
+	return p.control.KillSignal(tid, signal.Number(number))
 }
 
 // processSessions 适配 setsid/setpgid/getpgid/getsid 的会话端口(H11)。

@@ -133,7 +133,7 @@ func TestWaitForWithoutClockBlocksUntilReady(t *testing.T) {
 	source := &fakeSource{ready: 0}
 	results := make(chan []Result, 1)
 	go func() {
-		res, err := WaitFor(context.Background(), nil, []Entry{{Source: source, Want: Writable}}, 0)
+		res, err := WaitFor(context.Background(), nil, []Entry{{Source: source, Want: Writable}}, PollInfinite)
 		if err != nil {
 			t.Error(err)
 		}

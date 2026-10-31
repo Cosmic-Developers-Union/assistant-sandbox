@@ -98,25 +98,30 @@ type pollEntry struct {
 
 // pollTimeout 解析超时:poll 以毫秒计(-1 表示无限),ppoll 以时间结构
 // 计(绝对或相对,取决于调用方)。返回纳秒数,0 表示无限等待。
+// pollTimeout 解析超时:负值/NULL 为无限(poll.PollInfinite),零为
+// 立即返回,正值按纳秒。
 func (s Syscalls) pollTimeout(ctx context.Context, call Call) uint64 {
 	if call.Syscall == SysPoll {
 		milliseconds := int64(call.Args[2])
-		if milliseconds <= 0 {
+		if milliseconds < 0 {
+			return poll.PollInfinite
+		}
+		if milliseconds == 0 {
 			return 0
 		}
 		return uint64(milliseconds) * uint64(1_000_000)
 	}
 	if call.Args[2] == 0 {
-		return 0
+		return poll.PollInfinite
 	}
 	var raw [16]byte
 	if err := s.Memory.Read(ctx, call.Args[2], raw[:]); err != nil {
-		return 0
+		return poll.PollInfinite
 	}
 	seconds := int64(binary.LittleEndian.Uint64(raw[0:]))
 	nanoseconds := int64(binary.LittleEndian.Uint64(raw[8:]))
 	if seconds < 0 || nanoseconds < 0 {
-		return 0
+		return poll.PollInfinite
 	}
 	total := seconds*1_000_000_000 + nanoseconds
 	if total <= 0 {
@@ -173,15 +178,36 @@ func (s Syscalls) waitPoll(ctx context.Context, entries []pollEntry, timeout uin
 	if s.Sleeper != nil {
 		clk = s.Sleeper
 	}
+	// J09:阻塞等待按 1ms 切片轮询待投递信号,命中即 EINTR;
+	// 零超时(立即)与未装配信号端口时保持原语义。
+	if timeout == poll.PollInfinite && s.Interrupts != nil {
+		for {
+			results, err := poll.WaitFor(ctx, clk, sources, sleepSlice)
+			if err != nil {
+				return entries, err
+			}
+			if len(results) > 0 {
+				s.applyPollResults(entries, results)
+				return entries, nil
+			}
+			if _, _, ok := s.Interrupts.DeliverableSignal(); ok {
+				return entries, errno.Interrupted
+			}
+		}
+	}
 	results, err := poll.WaitFor(ctx, clk, sources, timeout)
 	if err != nil {
 		return entries, err
 	}
+	s.applyPollResults(entries, results)
+	return entries, nil
+}
+
+func (s Syscalls) applyPollResults(entries []pollEntry, results []poll.Result) {
 	for _, result := range results {
 		entry := &entries[result.Index]
 		entry.revents = s.pollRevents(entry.events, result.Received)
 	}
-	return entries, nil
 }
 
 // pollWant 把客体的事件位映射为内部就绪位。

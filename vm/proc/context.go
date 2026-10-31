@@ -96,6 +96,13 @@ type ThreadControl interface {
 	FinishGroup(id PID, code uint8, sig uint8) error
 }
 
+// ThreadInterruptControl 是线程的信号中断接线(K08):内核把
+// signals.Interrupt(tid, n) 递给线程运行器的取消钩子;未接线的
+// 线程对中断无响应(遗留 goroutine)。
+type ThreadInterruptControl interface {
+	BindThreadInterrupt(id PID, hook func(signal.Number))
+}
+
 // SignalDeliveryControl 是客户态信号投递端口:执行器在指令边界
 // 轮询待投递信号,写信号帧并重定向执行流。
 type SignalDeliveryControl interface {

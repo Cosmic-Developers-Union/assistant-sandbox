@@ -70,10 +70,12 @@ type Sleeper interface {
 }
 
 func Wait(ctx context.Context, entries []Entry) ([]Result, error) {
-	return WaitFor(ctx, nil, entries, 0)
+	return WaitFor(ctx, nil, entries, PollInfinite)
 }
 
-// WaitFor 等待条目就绪;timeoutNanos 为 0 表示无限等待。
+// PollInfinite 是无限等待的哨兵超时值;0 表示立即返回。
+const PollInfinite = ^uint64(0)
+
 func WaitFor(ctx context.Context, clk Sleeper, entries []Entry, timeoutNanos uint64) ([]Result, error) {
 	if len(entries) == 0 {
 		return nil, nil
@@ -83,6 +85,10 @@ func WaitFor(ctx context.Context, clk Sleeper, entries []Entry, timeoutNanos uin
 	}
 	if results := Immediate(entries); len(results) > 0 {
 		return results, nil
+	}
+	if timeoutNanos == 0 {
+		// 零超时=立即返回(不等待):poll/ppoll 的 timeout=0 语义。
+		return nil, nil
 	}
 	wake := wait.New()
 	cancels := make([]func(), 0, len(entries))
@@ -100,7 +106,7 @@ func WaitFor(ctx context.Context, clk Sleeper, entries []Entry, timeoutNanos uin
 		return results, nil
 	}
 	var timedOut atomic.Bool
-	if clk != nil && timeoutNanos > 0 {
+	if clk != nil && timeoutNanos > 0 && timeoutNanos != PollInfinite {
 		timerCtx, cancelTimer := context.WithCancel(ctx)
 		defer cancelTimer()
 		go func() {
