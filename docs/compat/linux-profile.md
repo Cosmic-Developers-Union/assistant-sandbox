@@ -65,7 +65,7 @@ ENOSYS 清单,归 L/I/H 组后续任务。
 | timerfd_create / timerfd_settime / timerfd_gettime | L10;一次与周期计时、ABSTIME(过去时刻立即到期)、到期计数读取清零、非阻塞 EAGAIN、gettime 剩余/区间查询、解除武装、就绪经 poll/epoll(清算式确定性过期);vm/timerfd、`TestTimerfd*`、`TestTimerfdProbe*` |
 | msync | E09;MS_SYNC/MS_ASYNC 恰有其一(可叠加 MS_INVALIDATE),范围完整映射校验(空洞 ENOMEM);`TestMsyncValidatesAndDelegates` |
 | rt_sigaction / rt_sigprocmask / rt_sigreturn / sigaltstack | J02/J04;`TestRtSig*`、`TestSigaltstack*` |
-| kill / tgkill / tkill | J05;`TestKillSignalDispatchSemantics`(tkill 为 musl pthread_kill 路径,K08;`TestCloneThreadFlagsValidation`) |
+| kill / tgkill / tkill / wait4 | J05;`TestKillSignalDispatchSemantics`(tkill 为 musl pthread_kill 路径,K08;wait4 为 musl waitpid 路径,K10;`TestCloneThreadFlagsValidation`) |
 | clock_gettime / clock_getres / gettimeofday | L02;`TestClockGettime` |
 | clock_nanosleep | L03/J09;`TestClockNanosleep*` |
 | getrandom | L04;`TestGetrandomValidatesFlags` |

@@ -25,6 +25,12 @@ type Memory interface {
 	Write(ctx context.Context, address uint64, buffer []byte) error
 }
 
+// SharedKeyer 是共享后备区间查询(K10):futex 键控按区间后备标识
+// 加盐,使文件共享映射上的同步原语跨进程可见。由内存表实现。
+type SharedKeyer interface {
+	SharedKeyAt(address uint64) (uint64, bool)
+}
+
 type Descriptors interface {
 	Read(ctx context.Context, descriptor uint64, buffer []byte) (int, error)
 
@@ -500,6 +506,8 @@ func (s Syscalls) dispatch(ctx context.Context, call Call) Reply {
 		return s.tgkill(ctx, call)
 	case SysTkill:
 		return s.tkill(ctx, call)
+	case SysWait4:
+		return s.wait4(ctx, call)
 	case SysFstatfs:
 		return s.fstatfs(ctx, call)
 	case SysFcntl:
@@ -2822,6 +2830,7 @@ const (
 // waitid(idtype, id, infop, options) 支持 P_PID/P_ALL 与 WEXITED/
 // WNOHANG;停止/继续与 WNOWAIT 未纳入兼容配置,明确 ENOTSUP。
 func (s Syscalls) waitid(ctx context.Context, call Call) Reply {
+	println("DBGWAITID who=", call.Args[0], "id=", call.Args[1])
 	if s.Memory == nil || s.Waiter == nil {
 		return Reply{Errno: errno.NotImplemented}
 	}
@@ -3032,6 +3041,60 @@ func (s Syscalls) kill(ctx context.Context, call Call) Reply {
 	}
 	return Reply{}
 }
+
+// wait4(pid, &status, options, &rusage)(K10):阻塞等待子进程并把
+// 终态编码为 wait4 状态格式(退出码<<8 / 信号)。pid>0 定向;0 与
+// -1 按任意子进程等待;PGID 等待与 rusage 计数明确 ENOTSUP(T03 接
+// 资源指标后复核)。
+func (s Syscalls) wait4(ctx context.Context, call Call) Reply {
+	if s.Memory == nil || s.Waiter == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	pid := int64(call.Args[0])
+	options := call.Args[2]
+	if options&^(wait4WNoHang|wait4WUntraced) != 0 {
+		// WSTOPPED/WCONTINUED 等不在兼容配置。
+		return Reply{Errno: errno.NotSupported}
+	}
+	var target uint64
+	switch {
+	case pid > 0:
+		target = uint64(pid)
+	case pid == 0 || pid == -1:
+		target = 0
+	default:
+		return Reply{Errno: errno.NotSupported}
+	}
+	state, found, err := s.Waiter.WaitChild(ctx, target, options&wait4WNoHang != 0)
+
+	if err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	if !found {
+		return Reply{Value: 0} // WNOHANG 且无终态
+	}
+	// wait4 状态编码:正常退出 code<<8;信号终止低 7 位。
+	var encoded uint64
+	if state.ExitSignal != 0 {
+		encoded = uint64(state.ExitSignal) & 0x7f
+	} else {
+		encoded = uint64(state.ExitCode&0xff) << 8
+	}
+	statusAddress := call.Args[1]
+	if statusAddress != 0 {
+		var raw [4]byte
+		binary.LittleEndian.PutUint32(raw[:], uint32(encoded))
+		if err := s.Memory.Write(ctx, statusAddress, raw[:]); err != nil {
+			return Reply{Errno: errno.Fault}
+		}
+	}
+	return Reply{Value: state.PID}
+}
+
+const (
+	wait4WNoHang   = 1
+	wait4WUntraced = 2
+)
 
 // tkill(tid, sig)(K08):线程定向信号,tid 必须存在;fatal 信号
 // 由内核升级为整组结束。musl 的 pthread_kill 走 tkill。

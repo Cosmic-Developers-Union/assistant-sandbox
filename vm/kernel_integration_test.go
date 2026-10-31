@@ -983,6 +983,10 @@ func TestKernelUsageAggregatesChildren(t *testing.T) {
 	if err := kernel.Finish(parent.ID, child.ID, ExitStatus{}); err != nil {
 		t.Fatal(err)
 	}
+	// H10/K10:僵尸由回收点移除(资源已在退出点清算)。
+	if _, _, err := kernel.WaitChild(context.Background(), parent.ID, child.ID, true); err != nil {
+		t.Fatal(err)
+	}
 	after, err := control.Usage(parent.ID)
 	if err != nil {
 		t.Fatal(err)

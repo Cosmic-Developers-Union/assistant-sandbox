@@ -55,6 +55,10 @@ func TestLanguageProcessLifecycleBindsCanonicalStateAndStreams(t *testing.T) {
 		if err := kernel.Finish(0, child.ID, status); err != nil {
 			t.Fatal(err)
 		}
+		// H10/K10:僵尸由 wait 回收,额度与描述符随退出清算。
+		if _, _, waitErr := kernel.WaitChild(context.Background(), 0, child.ID, true); waitErr != nil {
+			t.Fatal(waitErr)
+		}
 
 		if _, err := descriptors.Get(t.Context(), uint64(child.ID), 1); !errors.Is(err, errno.NoProcess) {
 			t.Fatal(err)
@@ -85,8 +89,11 @@ func TestLanguageProcessLifecycleBindsCanonicalStateAndStreams(t *testing.T) {
 	if _, err := kernel.RunRegistered(t.Context(), proc.Proc{ID: root.ID, Program: "forged"}); !errors.Is(err, errno.Invalid) {
 		t.Fatal(err)
 	}
-	if err := kernel.Finish(root.ID, child.ID, ExitStatus{}); err != nil {
+	if err := kernel.Finish(root.ID, child.ID, ExitStatus{Code: 3}); err != nil {
 		t.Error(err)
+	}
+	if _, _, waitErr := kernel.WaitChild(context.Background(), root.ID, child.ID, true); waitErr != nil {
+		t.Error(waitErr)
 	}
 	if err := kernel.Finish(0, root.ID, ExitStatus{}); err != nil {
 		t.Error(err)

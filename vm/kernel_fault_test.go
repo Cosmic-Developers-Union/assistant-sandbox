@@ -63,8 +63,9 @@ func TestKernelFailClosedAfterSequencerOverflow(t *testing.T) {
 	if nice, err := control.Nice(1); err != nil || nice != proc.DefaultNice {
 		t.Fatalf("优先级读应仍可用: %d %v", nice, err)
 	}
-	if _, err := kernel.Pending(child.ID); err != nil {
-		t.Fatalf("待决信号读应仍可用: %v", err)
+	// K10 语义:信号状态在退出点清算,僵尸无待决信号可读。
+	if _, err := kernel.Pending(child.ID); !errors.Is(err, errno.NoProcess) {
+		t.Fatalf("僵尸的待决信号读应报 ESRCH: %v", err)
 	}
 }
 
@@ -442,11 +443,19 @@ func TestKernelSelfReapedProcessIsNotReportedAsRunning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := kernel.RunRegistered(ctx, child); err == nil {
-		t.Fatal("终态写入失败必须上报")
+	// K10 语义:guest 自 Finish 与运行器终态写入幂等一致——
+	// RunRegistered 不再报错,进程转僵尸(非运行)待回收。
+	if _, err := kernel.RunRegistered(ctx, child); err != nil {
+		t.Fatalf("幂等终态不应上报: %v", err)
+	}
+	if procs := kernel.Processes(); len(procs) != 2 || procs[1].State != proc.Zombie {
+		t.Fatalf("自 Finish 的进程应保留为僵尸待回收: %+v", procs)
+	}
+	if _, reapErr := kernel.Reap(child.ID); reapErr != nil {
+		t.Fatalf("init 应能回收自 Finish 的僵尸: %v", reapErr)
 	}
 	if procs := kernel.Processes(); len(procs) != 1 {
-		t.Fatalf("自回收的进程不得留下残留: %+v", procs)
+		t.Fatalf("回收后不得残留: %+v", procs)
 	}
 
 	execKernel, err := New(Services{Set: capability.Set{FD: fd.New()}, Programs: reg}, 4)
@@ -454,8 +463,12 @@ func TestKernelSelfReapedProcessIsNotReportedAsRunning(t *testing.T) {
 		t.Fatal(err)
 	}
 	exited, err := execKernel.Exec(ctx, "self", nil)
-	if exited.State != proc.Zombie || err == nil {
-		t.Fatalf("已回收的进程应按终态快照报告: %+v %v", exited, err)
+	// K10 语义:幂等终态不再上报错误;进程保留为僵尸待回收。
+	if exited.State != proc.Zombie {
+		t.Fatalf("自 Finish 的进程应保留为僵尸: %+v %v", exited, err)
+	}
+	if _, reapErr := execKernel.Reap(exited.ID); reapErr != nil {
+		t.Fatalf("init 应能回收: %v", reapErr)
 	}
 
 	ctx2, cancel2 := context.WithCancel(ctx)

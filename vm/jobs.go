@@ -375,6 +375,8 @@ func (k *Kernel) runBoundedScript(ctx context.Context, dir string, env map[strin
 	}
 	if finishErr := k.Finish(0, child.ID, status); finishErr != nil {
 		_ = k.logNotice(ctx, "jobs", fmt.Sprintf("作业进程 %d 回收失败: %v", child.ID, finishErr))
+	} else {
+		_, _, _ = k.WaitChild(context.Background(), 0, child.ID, true)
 	}
 	return buffer.data, status.Code
 }

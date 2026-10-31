@@ -57,9 +57,12 @@ func TestProcessLimitBlocksEveryEntry(t *testing.T) {
 	if _, _, err := (procControl{k: kernel, self: first.ID}).Fork(); !errors.Is(err, errno.Limit) {
 		t.Fatalf("Fork 超限=%v want EAGAIN", err)
 	}
-	// 退出并回收一个进程:额度恢复。
+	// 退出并回收一个进程:僵尸占位,wait 回收后额度恢复(Linux 语义)。
 	if err := kernel.Finish(0, second.ID, ExitStatus{Code: 0}); err != nil {
 		t.Fatal(err)
+	}
+	if _, _, err := kernel.WaitChild(context.Background(), 0, second.ID, true); err != nil {
+		t.Fatalf("回收: %v", err)
 	}
 	recovered, err := kernel.Begin(0, "noop", nil, "/", nil, fd.Streams{})
 	if err != nil {

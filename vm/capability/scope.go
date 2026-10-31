@@ -12,7 +12,7 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/eventfd"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fd"
-	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fs"
+	fs "github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fs"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/identity"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/image"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/ipc"
@@ -460,6 +460,103 @@ func (f *chargeFile) Seek(offset int64, whence int) (int64, error) {
 func (f *chargeFile) Close() error { return f.base.Close() }
 
 func (f *chargeFile) Stat() (stdfs.FileInfo, error) { return f.base.Stat() }
+
+// 以下为底层句柄可选能力的转发:ABI 处理器按能力类型断言,包装层
+// 不转发会使真实(经 capability 作用域)路径恒 ENOTSUP(L11 同类)。
+// 缺能力时保持与底层一致的不实现错误。
+
+func (f *chargeFile) truncateTo(size int64) error {
+	truncater, ok := f.base.(interface {
+		Truncate(size int64) error
+	})
+	if !ok {
+		return errno.NotSupported
+	}
+	return truncater.Truncate(size)
+}
+
+// Truncate 供 truncater 断言:包装自身实现该能力,按底层有无转发。
+func (f *chargeFile) Truncate(size int64) error { return f.truncateTo(size) }
+
+func (f *chargeFile) Sync(fdatasync bool) error {
+	syncer, ok := f.base.(interface {
+		Sync(bool) error
+	})
+	if !ok {
+		return errno.NotSupported
+	}
+	return syncer.Sync(fdatasync)
+}
+
+func (f *chargeFile) SetTimes(atime, mtime int64) error {
+	setter, ok := f.base.(interface {
+		SetTimes(atime, mtime int64) error
+	})
+	if !ok {
+		return errno.NotSupported
+	}
+	return setter.SetTimes(atime, mtime)
+}
+
+func (f *chargeFile) SetTimesFollow(atime, mtime int64) error {
+	setter, ok := f.base.(interface {
+		SetTimesFollow(atime, mtime int64) error
+	})
+	if !ok {
+		return errno.NotSupported
+	}
+	return setter.SetTimesFollow(atime, mtime)
+}
+
+func (f *chargeFile) Readdir(limit int) ([]stdfs.DirEntry, error) {
+	reader, ok := f.base.(interface {
+		Readdir(limit int) ([]stdfs.DirEntry, error)
+	})
+	if !ok {
+		return nil, errno.NotSupported
+	}
+	return reader.Readdir(limit)
+}
+
+func (f *chargeFile) StatusFlags() (uint32, error) {
+	flagger, ok := f.base.(interface {
+		StatusFlags() (uint32, error)
+	})
+	if !ok {
+		return 0, errno.NotSupported
+	}
+	return flagger.StatusFlags()
+}
+
+func (f *chargeFile) SetStatusFlags(flags uint32) error {
+	setter, ok := f.base.(interface {
+		SetStatusFlags(flags uint32) error
+	})
+	if !ok {
+		return errno.NotSupported
+	}
+	return setter.SetStatusFlags(flags)
+}
+
+func (f *chargeFile) Space(ctx context.Context) (fs.Space, error) {
+	spacer, ok := f.base.(interface {
+		Space(ctx context.Context) (fs.Space, error)
+	})
+	if !ok {
+		return fs.Space{}, errno.NotSupported
+	}
+	return spacer.Space(ctx)
+}
+
+func (f *chargeFile) ResolveGuestPath(name string) (string, error) {
+	resolver, ok := f.base.(interface {
+		ResolveGuestPath(name string) (string, error)
+	})
+	if !ok {
+		return "", errno.NotDirectory
+	}
+	return resolver.ResolveGuestPath(name)
+}
 
 // randomAccess 是底层句柄的随机访问能力(pread/pwrite 语义与
 // 打开访问模式查询);文件映射(E08/E09)经此直达底层数据。

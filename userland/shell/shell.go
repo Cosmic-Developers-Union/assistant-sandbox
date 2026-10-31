@@ -46,7 +46,21 @@ type session struct {
 
 const extensionProgram = "@wasi"
 
-func (s *session) close() { _ = s.kernel.Finish(s.parent.Parent, s.parent.ID, vm.ExitStatus{}) }
+func (s *session) close() {
+	if err := s.kernel.Finish(s.parent.Parent, s.parent.ID, vm.ExitStatus{}); err == nil {
+		// H10/K10:Finish 不再自动回收,会话关闭时由 init 收回外壳。
+		_, _, _ = s.kernel.WaitChild(context.Background(), s.parent.Parent, s.parent.ID, true)
+	}
+}
+
+// finishReaped 终态化子进程并回收僵尸(H10/K10:Finish 不再自动回收)。
+func finishReaped(kernel *vm.Kernel, child proc.Proc, status vm.ExitStatus) error {
+	if err := kernel.Finish(child.Parent, child.ID, status); err != nil {
+		return err
+	}
+	_, _, err := kernel.WaitChild(context.Background(), child.Parent, child.ID, true)
+	return err
+}
 
 func Programs(factory bash.RunnerFactory) (executable.Registry, error) {
 	handlers := commands.Registry(factory)
@@ -279,7 +293,7 @@ func NewRunner(kernel *vm.Kernel, parent proc.Proc, dir string, environment []st
 				runCtx := proc.WithContext(ctx, child)
 
 				status, runErr := kernel.RunRegistered(runCtx, child)
-				finishErr := kernel.Finish(child.Parent, child.ID, status)
+				finishErr := finishReaped(kernel, child, status)
 				if runErr != nil {
 					return errors.Join(runErr, finishErr)
 				}

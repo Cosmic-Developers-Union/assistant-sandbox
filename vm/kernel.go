@@ -333,8 +333,11 @@ func (k *Kernel) Reap(id proc.PID) (proc.Proc, error) {
 	return p, err
 }
 
-func (k *Kernel) afterReapLocked(p proc.Proc) error {
-	k.emitLocked(scheduler.KindReap, p.ID, scheduler.ReapDetail(p.Program))
+// exitResourcesLocked 在进程退出(转僵尸)时清算资源:信号状态、
+// 计量、描述符与地址空间绑定。僵尸不持有任何资源(H10:回收只
+// 移除表项;K10:fork 子进程的僵尸由父进程 wait*,不再于 Finish
+// 自动回收——资源必须在退出点释放而非回收点)。
+func (k *Kernel) exitResourcesLocked(p proc.Proc) error {
 	k.signals.Discard(uint64(p.ID))
 	if k.meters != nil {
 
@@ -354,6 +357,11 @@ func (k *Kernel) afterReapLocked(p proc.Proc) error {
 
 	delete(k.spaces, p.ID)
 	return closeErr
+}
+
+func (k *Kernel) afterReapLocked(p proc.Proc) error {
+	k.emitLocked(scheduler.KindReap, p.ID, scheduler.ReapDetail(p.Program))
+	return nil
 }
 
 func (k *Kernel) Begin(parent proc.PID, name string, args []string, dir string, env map[string]string, streams fd.Streams) (proc.Proc, error) {
@@ -794,14 +802,21 @@ func (k *Kernel) Finish(parent, id proc.PID, status ExitStatus) (err error) {
 			return errno.Busy
 		}
 	}
-	reaped, err := k.table.Reap(parent, id)
-	if err != nil {
-		return err
+	// H10:fork 子进程转僵尸后由父进程 wait* 回收,Finish 不代劳——
+	// 否则父进程的 waitpid 永远 ECHILD(K10 探针暴露)。僵尸的清理
+	// 路径:父进程 wait、SIG_IGN 自动回收(childStateChanged)、
+	// 父进程退出后的 init 收养(H10)。
+	final, getErr := k.table.Get(id)
+	var closeErr error
+	if getErr == nil {
+		closeErr = k.exitResourcesLocked(final)
+	} else {
+		closeErr = getErr
 	}
-	closeErr := k.afterReapLocked(reaped)
 	k.emitLocked(scheduler.KindExit, id, scheduler.ExitDetail(status.Code, status.Signal))
 	if closeErr == nil {
 		notified = true
+		return nil
 	}
 	return closeErr
 }
@@ -1015,6 +1030,11 @@ func (k *Kernel) Signal(target proc.PID, n signal.Number) error {
 				break
 			}
 		}
+	}
+	if p.State == proc.Zombie {
+		// 对僵尸的 kill 为无操作(Linux:信号不投递、不报错)。
+		k.mu.Unlock()
+		return nil
 	}
 	zombie := p.State == proc.Zombie
 	replaying := k.replayingLocked()
@@ -1592,6 +1612,12 @@ func (k *Kernel) RunRegistered(ctx context.Context, p proc.Proc) (ExitStatus, er
 	}
 	if ctxErr := ctx.Err(); ctxErr == nil {
 		if err := k.table.Exit(pid, status.Code, uint8(status.Signal)); err == nil || idempotent(err, status.Code, uint8(status.Signal)) {
+			if exited, getErr := k.table.Get(pid); getErr == nil {
+				if cleanErr := k.exitResourcesLocked(exited); cleanErr != nil {
+					k.mu.Unlock()
+					return status, errors.Join(runErr, cleanErr)
+				}
+			}
 			k.emitLocked(scheduler.KindExit, pid, scheduler.ExitDetail(status.Code, status.Signal))
 			k.mu.Unlock()
 			k.childStateChanged(pid, true)
@@ -1610,6 +1636,12 @@ func (k *Kernel) RunRegistered(ctx context.Context, p proc.Proc) (ExitStatus, er
 	if err := k.table.Exit(pid, code, uint8(status.Signal)); err != nil && !idempotent(err, code, uint8(status.Signal)) {
 		k.mu.Unlock()
 		return status, errors.Join(runErr, err)
+	}
+	if exited, getErr := k.table.Get(pid); getErr == nil {
+		if cleanErr := k.exitResourcesLocked(exited); cleanErr != nil {
+			k.mu.Unlock()
+			return status, errors.Join(runErr, cleanErr)
+		}
 	}
 	k.emitLocked(scheduler.KindExit, pid, scheduler.ExitDetail(code, status.Signal))
 	k.mu.Unlock()
@@ -2408,6 +2440,7 @@ func (c procControl) Run(ctx context.Context, spec proc.RunSpec) (proc.Proc, err
 	for _, number := range spec.IgnoreSignals {
 		if err := c.k.signals.SetIgnored(uint64(child.ID), number, true); err != nil {
 			_ = c.k.Finish(child.Parent, child.ID, ExitStatus{Code: 125})
+			_, _, _ = c.k.WaitChild(context.Background(), child.Parent, child.ID, true)
 			return proc.Proc{}, err
 		}
 	}
@@ -2418,12 +2451,14 @@ func (c procControl) Run(ctx context.Context, spec proc.RunSpec) (proc.Proc, err
 		if err != nil {
 			c.k.mu.Unlock()
 			_ = c.k.Finish(child.Parent, child.ID, ExitStatus{Code: 125})
+			_, _, _ = c.k.WaitChild(context.Background(), child.Parent, child.ID, true)
 			return proc.Proc{}, err
 		}
 		adjustErr := c.k.table.SetNice(child.ID, clampNice(parent.Nice+*spec.NiceAdjust))
 		c.k.mu.Unlock()
 		if adjustErr != nil {
 			_ = c.k.Finish(child.Parent, child.ID, ExitStatus{Code: 125})
+			_, _, _ = c.k.WaitChild(context.Background(), child.Parent, child.ID, true)
 			return proc.Proc{}, adjustErr
 		}
 	}
@@ -2446,9 +2481,18 @@ func (c procControl) Run(ctx context.Context, spec proc.RunSpec) (proc.Proc, err
 			ExitCode: status.Code, ExitSignal: uint8(status.Signal),
 		}
 	}
-	finishErr := c.k.Finish(child.Parent, child.ID, status)
-	if runErr != nil || finishErr != nil {
-		return exited, errors.Join(runErr, finishErr)
+	// 同步运行助手即 system():结束时等待并回收子进程。RunRegistered
+	// 已把子进程转僵尸,Finish 的重复终态在此走等待回收路径。
+	if _, found, waitErr := c.k.WaitChild(context.WithoutCancel(ctx), child.Parent, child.ID, true); !found || waitErr != nil {
+		// 子进程尚未转可回收僵尸(如启动前上下文已取消):终态化后
+		// 回收,同步运行助手不留残留。
+		if finishErr := c.k.Finish(child.Parent, child.ID, status); finishErr != nil {
+			return exited, errors.Join(runErr, waitErr, finishErr)
+		}
+		_, _, _ = c.k.WaitChild(context.WithoutCancel(ctx), child.Parent, child.ID, true)
+	}
+	if runErr != nil {
+		return exited, runErr
 	}
 	return exited, nil
 }

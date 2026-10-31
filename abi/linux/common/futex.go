@@ -65,13 +65,20 @@ func (s Syscalls) futexTimeout(ctx context.Context, address uint64) (uint64, boo
 	return nanoseconds, false, ""
 }
 
-// futexOwner 返回 futex 键的所有者:线程组号——同组线程共享地址
-// 空间,组内互相唤醒;跨进程隔离靠组号不同(K02/K10)。
-func (s Syscalls) futexOwner() uint64 {
-	if s.Identity.TGID != 0 {
-		return s.Identity.TGID
+// futexKey 构造 futex 等待键(K02/K10):私有地址按线程组键控
+// (同组互唤醒,跨地址空间隔离);共享后备区间(文件共享映射)按
+// 后备标识加盐——fork 父子持同一后备,跨进程互唤醒。
+func (s Syscalls) futexKey(address uint64) futex.Key {
+	if shared, ok := s.Memory.(SharedKeyer); ok {
+		if salt, has := shared.SharedKeyAt(address); has {
+			return futex.Key{Owner: salt, Address: address}
+		}
 	}
-	return s.Identity.PID
+	owner := s.Identity.PID
+	if s.Identity.TGID != 0 {
+		owner = s.Identity.TGID
+	}
+	return futex.Key{Owner: owner, Address: address}
 }
 
 func (s Syscalls) futex(ctx context.Context, call Call) Reply {
@@ -87,7 +94,7 @@ func (s Syscalls) futex(ctx context.Context, call Call) Reply {
 		return Reply{Errno: errno.Invalid}
 	}
 	operation := call.Args[1] &^ futexPrivateFlag
-	key := futex.Key{Owner: s.futexOwner(), Address: call.Args[0]}
+	key := s.futexKey(call.Args[0])
 	switch operation & futexOpMask {
 	case futexOpWake:
 		count := call.Args[2]
@@ -122,7 +129,7 @@ func (s Syscalls) futex(ctx context.Context, call Call) Reply {
 // 其余至多 val2(args[3],经 timeout 槽传递)个迁移到 uaddr2(args[4]);
 // CMP 变体先校验 *uaddr == val3(args[5])。
 func (s Syscalls) futexRequeue(ctx context.Context, call Call, key futex.Key, compare bool) Reply {
-	target := futex.Key{Owner: s.futexOwner(), Address: call.Args[4]}
+	target := s.futexKey(call.Args[4])
 	if compare {
 		expected := uint32(call.Args[5])
 		var raw [4]byte

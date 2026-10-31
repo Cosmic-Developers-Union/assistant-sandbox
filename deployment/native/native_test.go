@@ -299,13 +299,9 @@ func TestNativeRunsProgramThatOpensFile(t *testing.T) {
 		t.Fatalf("标准输出=%q want hi（openat 读文件后写出）", output.String())
 	}
 
-	space, err := runtime.Kernel.AddressSpace(process.ID)
-	if err != nil {
-		t.Fatalf("地址空间未登记: %v", err)
-	}
-	regions, err := space.Regions(ctx)
-	if err != nil || len(regions) == 0 {
-		t.Fatalf("登记的地址空间=%v err=%v", regions, err)
+	// K10 语义:资源在退出点清算,地址空间绑定随进程结束解除。
+	if space, err := runtime.Kernel.AddressSpace(process.ID); err == nil && space != nil {
+		t.Fatalf("退出后的地址空间绑定应已解除: %+v", space)
 	}
 }
 

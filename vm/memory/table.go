@@ -300,6 +300,23 @@ func (t *Table) Write(ctx context.Context, address uint64, buffer []byte) error 
 
 // regionAtLocked 返回包含地址的区间(区间按起始地址有序,二分);
 // 调用方必须持有锁。
+// SharedKeyAt 返回地址所在共享后备区间的键(文件共享映射,futex
+// 键控加盐,K10):fork 父子共享同一后备实例,键相同;无关进程的
+// 各自映射键不同。非共享区间返回 false。
+func (t *Table) SharedKeyAt(address uint64) (uint64, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	region := t.regionAtLocked(address)
+	if region == nil || region.Backend == nil {
+		return 0, false
+	}
+	salter, ok := region.Backend.(interface{ FutexSalt() uint64 })
+	if !ok {
+		return 0, false
+	}
+	return salter.FutexSalt(), true
+}
+
 func (t *Table) regionAtLocked(address uint64) *Region {
 	index := sort.Search(len(t.regions), func(i int) bool {
 		return t.regions[i].End > address

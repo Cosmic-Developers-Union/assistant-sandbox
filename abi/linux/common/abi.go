@@ -222,6 +222,7 @@ const (
 	SysKill
 	SysTgkill
 	SysTkill
+	SysWait4
 	SysExecve
 )
 
@@ -509,6 +510,8 @@ func (s Syscall) String() string {
 		return "tgkill"
 	case SysTkill:
 		return "tkill"
+	case SysWait4:
+		return "wait4"
 	case SysExecve:
 		return "execve"
 	case SysReadlinkat:

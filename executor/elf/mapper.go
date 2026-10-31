@@ -3,6 +3,7 @@ package elf
 import (
 	"cmp"
 	"context"
+	"reflect"
 	"slices"
 	"sync"
 
@@ -75,6 +76,13 @@ func (m *mapper) Anonymous(ctx context.Context, request common.MapRequest) (uint
 // fileBackend 把常规文件句柄接到地址空间后备:共享映射直读直写
 // 底层数据(经由文件本身,跨地址空间一致),越文件尾读取零填充。
 type fileBackend struct{ file common.RandomFile }
+
+// FutexSalt 是共享映射 futex 键控的盐(K10):以底层句柄指针为身份
+// ——fork 克隆共享同一后备实例(键相同,父子互唤醒);无关打开各得
+// 独立实例(键不同,互不影响)。
+func (b fileBackend) FutexSalt() uint64 {
+	return uint64(reflect.ValueOf(b.file).Pointer())
+}
 
 func (b fileBackend) ReadAt(offset uint64, buffer []byte) error {
 	if len(buffer) == 0 {
