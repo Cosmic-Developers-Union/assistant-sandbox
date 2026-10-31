@@ -340,6 +340,33 @@ func TestEmptySegmentIsSkipped(t *testing.T) {
 	}
 }
 
+// TestPTDynamicAndTLSSegmentsLoadAsMetadata 锁定 F07:PT_DYNAMIC 与
+// PT_TLS 是元数据段(内容在 PT_LOAD 内,客体动态加载器从映射内存
+// 读取),装载器接受它们且装载结果与没有这些头一致;真实动态程序
+// (musl)自此可装载。
+func TestPTDynamicAndTLSSegmentsLoadAsMetadata(t *testing.T) {
+	raw := minimalImage()
+	patchProgramHeader(t, raw, 1, func(program *programHeader) {
+		program.typeID = programDynamic
+		program.flags = flagRead
+	})
+	plan, err := Load(raw, Options{})
+	if err != nil {
+		t.Fatalf("PT_DYNAMIC 应作为元数据被接受: %v", err)
+	}
+	if len(plan.Segments) != 1 {
+		t.Fatalf("段数=%d want 1(元数据段不产生装载段)", len(plan.Segments))
+	}
+	raw = minimalImage()
+	patchProgramHeader(t, raw, 1, func(program *programHeader) {
+		program.typeID = programTLS
+		program.flags = flagRead
+	})
+	if _, err := Load(raw, Options{}); err != nil {
+		t.Fatalf("PT_TLS 应作为元数据被接受: %v", err)
+	}
+}
+
 func TestLoadRejections(t *testing.T) {
 	type testCase struct {
 		label    string
@@ -500,18 +527,9 @@ func TestLoadRejections(t *testing.T) {
 				patchProgramHeader(t, raw, 1, func(program *programHeader) { program.typeID = programInterp })
 			},
 		},
-		{
-			label: "动态段", want: errno.NotSupported, detail: "PT_DYNAMIC",
-			mutate: func(t *testing.T, raw []byte) {
-				patchProgramHeader(t, raw, 1, func(program *programHeader) { program.typeID = programDynamic })
-			},
-		},
-		{
-			label: "TLS 段", want: errno.NotSupported, detail: "PT_TLS",
-			mutate: func(t *testing.T, raw []byte) {
-				patchProgramHeader(t, raw, 1, func(program *programHeader) { program.typeID = programTLS })
-			},
-		},
+		// F07:PT_DYNAMIC/PT_TLS 是元数据段(内容在 PT_LOAD 内),装载
+		// 不再拒绝——真实动态程序自此可装载;由 TestPTDynamicAndTLSSegments
+		// 锁定装载结果。
 		{
 			label: "没有可装载段", want: errno.NoExec, detail: "没有可装载",
 			mutate: func(t *testing.T, raw []byte) {
