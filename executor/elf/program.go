@@ -112,6 +112,11 @@ func (p *program) Run(ctx context.Context, process proc.Proc) (uint8, error) {
 	}
 	status, err := runner.Run(ctx)
 	if err != nil {
+		// F12:执行期故障(未实现指令等)诊断携带客体路径。
+		var fault common.Fault
+		if errors.As(err, &fault) {
+			return 0, errno.Wrap(err, "客体程序 "+p.path)
+		}
 		return 0, err
 	}
 	// K03:运行流终止,落实 clear_child_tid——登记地址写零并唤醒
@@ -255,7 +260,7 @@ const pieBase = uint64(0x20000000)
 func loadProgram(ctx context.Context, process proc.Proc, path string, argv, envp []string) (*loadedProgram, error) {
 	content, err := readImage(ctx, process, path)
 	if err != nil {
-		return nil, err
+		return nil, errno.Wrap(err, "读取客体程序 "+path)
 	}
 	options := loaderelf.Options{
 		Argv:     argv,
@@ -271,7 +276,7 @@ func loadProgram(ctx context.Context, process proc.Proc, path string, argv, envp
 	}
 	plan, err := loaderelf.Load(content, options)
 	if err != nil {
-		return nil, err
+		return nil, errno.Wrap(err, "装载客体程序 "+path)
 	}
 	out := &loadedProgram{main: plan}
 	if plan.InterpreterPath == "" {
@@ -279,8 +284,8 @@ func loadProgram(ctx context.Context, process proc.Proc, path string, argv, envp
 	}
 	interpContent, err := readImage(ctx, process, plan.InterpreterPath)
 	if err != nil {
-		// 携带客体路径:F05 要求缺失/不可读时报告明确加载错误。
-		return nil, errno.Wrap(err, "动态解释器 "+plan.InterpreterPath)
+		// 携带客体路径与阶段:F05/F12 要求缺失/不可读时报告明确加载错误。
+		return nil, errno.Wrap(err, "读取动态解释器 "+plan.InterpreterPath+"(主程序 "+path+")")
 	}
 	interpPlan, err := loaderelf.Load(interpContent, loaderelf.Options{
 		Argv:     argv,
@@ -290,10 +295,10 @@ func loadProgram(ctx context.Context, process proc.Proc, path string, argv, envp
 		LoadBias: interpreterBase,
 	})
 	if err != nil {
-		return nil, err
+		return nil, errno.Wrap(err, "装载动态解释器 "+plan.InterpreterPath)
 	}
 	if overlaps(plan.Segments, interpPlan.Segments) {
-		return nil, errno.Wrap(errno.NoExec, "解释器装载槽位与主程序映射重叠")
+		return nil, errno.Wrap(errno.NoExec, "解释器 "+plan.InterpreterPath+" 装载槽位与主程序 "+path+" 映射重叠")
 	}
 	// 主计划初始栈需携带解释器基址:以 AT_BASE 重新构建。
 	plan, err = loaderelf.Load(content, loaderelf.Options{
@@ -304,7 +309,7 @@ func loadProgram(ctx context.Context, process proc.Proc, path string, argv, envp
 		InterpreterBase: interpPlan.Bias,
 	})
 	if err != nil {
-		return nil, err
+		return nil, errno.Wrap(err, "重建主程序初始栈 "+path)
 	}
 	out.main = plan
 	out.interp = interpPlan
