@@ -129,6 +129,9 @@ func (d *fakeDescriptors) Fcntl(_ context.Context, descriptor uint64, cmd uint64
 }
 
 func (d *fakeDescriptors) Get(_ context.Context, descriptor uint64) (any, error) {
+	if err, ok := d.get.(error); ok {
+		return nil, err
+	}
 	if d.seekErr != nil {
 		return nil, d.seekErr
 	}
@@ -3532,5 +3535,21 @@ func TestCloneThreadFlagsValidation(t *testing.T) {
 	// 线程形态无端口 ENOSYS 族。
 	if reply := (Syscalls{}).Handle(ctx, Call{Syscall: SysClone, Args: [6]uint64{libcFlags}}); reply.Errno != errno.NotImplemented {
 		t.Fatalf("线程无端口: %+v want ENOSYS 族", reply)
+	}
+}
+
+// TestWriteValidatesDescriptorBeforeBuffer 锁定 write 的参数校验顺序
+// (与 Linux 一致):坏 fd 报 EBADF(即使缓冲区指针为 0),合法 fd 上的
+// 零长度写不触碰缓冲区、返回 0。
+func TestWriteValidatesDescriptorBeforeBuffer(t *testing.T) {
+	ctx := context.Background()
+	badFD := &fakeDescriptors{get: errno.BadHandle}
+	bad := Syscalls{Memory: newFakeMemory(), Descriptors: badFD}
+	if reply := bad.Handle(ctx, Call{Syscall: SysWrite, Args: [6]uint64{0xFFFFFFFFFFFFFFFF, 0, 0}}); reply.Errno != errno.BadHandle {
+		t.Fatalf("坏 fd: %+v want EBADF", reply)
+	}
+	good := Syscalls{Memory: newFakeMemory(), Descriptors: &fakeDescriptors{}}
+	if reply := good.Handle(ctx, Call{Syscall: SysWrite, Args: [6]uint64{3, 0, 0}}); reply.Errno != "" || reply.Value != 0 {
+		t.Fatalf("合法 fd 零长度写: %+v want 0", reply)
 	}
 }

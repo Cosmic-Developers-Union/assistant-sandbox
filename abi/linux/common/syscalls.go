@@ -559,9 +559,20 @@ func (s Syscalls) dispatch(ctx context.Context, call Call) Reply {
 }
 
 func (s Syscalls) write(ctx context.Context, call Call) Reply {
+	// Linux 先解析描述符:坏 fd 报 EBADF,先于缓冲区校验(write(-1,
+	// NULL, 0) 的 errno 语义)。
+	if s.Descriptors != nil {
+		if _, err := s.Descriptors.Get(ctx, call.Args[0]); err != nil {
+			return Reply{Errno: errnoOf(err)}
+		}
+	}
 	buffer, reply, ready := s.buffer(call)
 	if !ready {
 		return reply
+	}
+	if len(buffer) == 0 {
+		// 零长度写不触碰缓冲区(Linux:合法 fd 上返回 0)。
+		return Reply{Value: 0}
 	}
 	if err := s.Memory.Read(ctx, call.Args[1], buffer); err != nil {
 
