@@ -52,14 +52,18 @@ func cLUI(rd, imm int) uint16 {
 	return uint16(rd)<<7 | 0x3<<13 | (imm6>>5)<<12 | (imm6&0x1F)<<2 | 0x1
 }
 
+// cADDI16SP 逐位组装 C.ADDI16SP:6 位域 nzimm[9:4] 依次映射到
+// inst[12](nz[9])、inst[6](nz[4])、inst[5](nz[6])、inst[4](nz[8])、
+// inst[3](nz[7])、inst[2](nz[5]),与 addi16spImmediate 的解码相互独立。
 func cADDI16SP(imm int) uint16 {
 	nz := uint16(imm>>4) & 0x3F
 	return regSP<<7 | 0x3<<13 |
-		(nz>>5)<<12 |
+		(nz>>5&1)<<12 |
 		(nz>>0&1)<<6 |
 		(nz>>1&1)<<2 |
 		(nz>>2&1)<<5 |
-		(nz>>3&1)<<4 | 0x1
+		(nz>>3&1)<<3 |
+		(nz>>4&1)<<4 | 0x1
 }
 
 func cShift(op uint16, rd, shamt int) uint16 {
@@ -144,7 +148,7 @@ func TestExpandCompressedAgainstCanonicalEncoding(t *testing.T) {
 		{"C.SD", cSD(14, 10, 24), compressedOK, encodeStore(0x3, 14, 10, 24)},
 		{"C.ADDI", cADDI(11, -1), compressedOK, encodeOpImm(0x0, 11, 11, 0xFFF)},
 		{"C.NOP", cADDI(0, 0), compressedOK, encodeOpImm(0x0, 0, 0, 0)},
-		{"C.ADDIW", cADDIW(11, 2), compressedOK, encodeOpImmWord(0x0, 11, 2)},
+		{"C.ADDIW", cADDIW(11, 2), compressedOK, encodeOpImmWord(0x0, 11, 11, 2)},
 		{"C.LI 负数", cLI(15, -2), compressedOK, encodeOpImm(0x0, 15, regZero, 0xFFE)},
 		{"C.LUI", cLUI(10, 0x1000), compressedOK, encodeLUI(10, 0x1000)},
 		{"C.ADDI16SP", cADDI16SP(16), compressedOK, encodeOpImm(0x0, regSP, regSP, 16)},
@@ -173,8 +177,8 @@ func TestExpandCompressedAgainstCanonicalEncoding(t *testing.T) {
 		{"C.MV", cMV(10, 11), compressedOK, encodeOp(0x00, 0x0, 10, regZero, 11)},
 		{"C.ADD", cCRADD(10, 11), compressedOK, encodeOp(0x00, 0x0, 10, 10, 11)},
 		{"C.EBREAK", 0x9002, compressedOK, insEbreakEncoding},
-		{"C.FLD 依赖 F", 0x20c4, compressedFloat, 0},
-		{"C.FSDSP 依赖 F", 0xa823, compressedFloat, 0},
+		{"C.FLD", 0x20c4, compressedOK, encodeFPLoad(0x3, 9, 9, 128)},
+		{"C.FSDSP", 0xb422, compressedOK, encodeFPStore(0x3, 8, regSP, 40)},
 		{"全零编码", 0x0000, compressedReserved, 0},
 		{"C.ADDI4SPN 零偏移", 0x0008, compressedReserved, 0},
 		{"C.LUI rd=x0", 0x6001, compressedReserved, 0},
@@ -189,6 +193,240 @@ func TestExpandCompressedAgainstCanonicalEncoding(t *testing.T) {
 		if status == compressedOK && expanded != tc.want {
 			t.Errorf("%s(%#04x): 展开 %#x want %#x", tc.name, tc.raw, expanded, tc.want)
 		}
+	}
+}
+
+// TestAddi16spImmediateMatchesCanonicalEncodings 锁定 C.ADDI16SP 的
+// 立即数位序:nzimm[9|4|6|8|7|5] 依次占用 inst[12]、inst[6]、inst[5]、
+// inst[4]、inst[3]、inst[2]。raw 值为参考汇编器(llvm-mc -show-encoding)
+// 的规范编码,与测试内编码器相互独立,防止编码器与解码器共享同一位序错误。
+// 此前 inst[5] 被重复计入高位、inst[4]/inst[3] 互换,帧释放(+64)被解码
+// 为 +320,真实 libc 程序(epilogue 释放栈帧)首次运行即跳转到 0。
+func TestAddi16spImmediateMatchesCanonicalEncodings(t *testing.T) {
+	for _, tc := range []struct {
+		raw uint16
+		imm int
+	}{
+		{0x6141, 16},   // nzimm[4]
+		{0x6105, 32},   // nzimm[5]
+		{0x6145, 48},   // nzimm[4]+[5]
+		{0x6121, 64},   // nzimm[6](inst[5],曾被重复计入 nzimm[8])
+		{0x6161, 80},   // nzimm[6]+[4]
+		{0x6165, 112},  // nzimm[6]+[4]+[5]
+		{0x6109, 128},  // nzimm[7](inst[3],曾被换到 nzimm[8] 位)
+		{0x6111, 256},  // nzimm[8](inst[4],曾被换到 nzimm[7] 位)
+		{0x6119, 384},  // nzimm[8]+[7]
+		{0x617d, 496},  // 除 nzimm[9] 外全 1
+		{0x7101, -512}, // 仅 nzimm[9](负号)
+		{0x7121, -448}, // nzimm[9]+[6]
+		{0x7111, -256}, // nzimm[9]+[8]
+		{0x7119, -128}, // nzimm[9]+[8]+[7]
+		{0x7139, -64},  // nzimm[9]+[8]+[7]+[6]
+	} {
+		if got := addi16spImmediate(tc.raw); got != int32(tc.imm) {
+			t.Errorf("addi16spImmediate(%#04x)=%d want %d", tc.raw, got, tc.imm)
+			continue
+		}
+		expanded, status := expandCompressed(tc.raw)
+		if status != compressedOK {
+			t.Errorf("expandCompressed(%#04x): status=%v want compressedOK", tc.raw, status)
+			continue
+		}
+		if want := encodeOpImm(0x0, regSP, regSP, uint32(int32(tc.imm))); expanded != want {
+			t.Errorf("expandCompressed(%#04x): 展开 %#x want %#x", tc.raw, expanded, want)
+		}
+	}
+	// nzimm=0 为保留编码。
+	if _, status := expandCompressed(0x6101); status != compressedReserved {
+		t.Errorf("expandCompressed(0x6101): status=%v want compressedReserved", status)
+	}
+}
+
+// TestAddi16spMovesStackPointerByDecodedImmediate 在执行层面锁定栈帧
+// 释放:真实 libc 函数 epilogue 用 c.addi16sp 恢复 sp,立即数解码错误
+// 会让返回地址读到未初始化栈(表现为跳转到 0)。
+func TestAddi16spMovesStackPointerByDecodedImmediate(t *testing.T) {
+	ctx := context.Background()
+	memory := newSparse()
+	port := newPort(t, memory, 0)
+	if err := port.WriteRegister(regSP, 0x4000); err != nil {
+		t.Fatal(err)
+	}
+	writeCompressed(t, memory, []uint16{
+		cADDI16SP(64),   // 0x6121:inst[5] 置位
+		cADDI16SP(-320), // inst[12]+[5]+[3] 置位
+	})
+	for step := 0; step < 2; step++ {
+		outcome, err := port.Step(ctx)
+		if err != nil || outcome != cpu.Continued {
+			t.Fatalf("第 %d 步: outcome=%v err=%v", step, outcome, err)
+		}
+	}
+	state, err := port.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := state.Registers[regSP]; got != 0x4000+64-320 {
+		t.Fatalf("sp=%#x want %#x(帧释放偏移解码错误会破坏返回地址)", got, 0x4000+64-320)
+	}
+}
+
+// TestAddiwExpansionPreservesSourceRegister 锁定 C.ADDIW 的展开:必须
+// 展开为 addiw rd, rd, imm(源寄存器是 rd 自身),而不是 addiw rd, x0。
+// 此前 encodeOpImmWord 丢失 rs1 字段,sext.w(即 addiw rd,rd,0)把返回值
+// 清零,真实 libc 程序的每次系统调用返回都被破坏。raw 为参考汇编器
+// (llvm-mc -show-encoding)的规范编码。
+func TestAddiwExpansionPreservesSourceRegister(t *testing.T) {
+	for _, tc := range []struct {
+		raw      uint16
+		expanded uint32
+	}{
+		{0x2689, 0x0026869B}, // c.addiw a3, 2 → addiw a3, a3, 2
+		{0x2501, 0x0005051B}, // c.addiw a0, 0 → sext.w a0, a0(musl 返回值处理)
+		{0x36fd, 0xFFF6869B}, // c.addiw a3, -1 → addiw a3, a3, -1
+	} {
+		expanded, status := expandCompressed(tc.raw)
+		if status != compressedOK {
+			t.Errorf("expandCompressed(%#04x): status=%v want compressedOK", tc.raw, status)
+			continue
+		}
+		if expanded != tc.expanded {
+			t.Errorf("expandCompressed(%#04x): 展开 %#x want %#x", tc.raw, expanded, tc.expanded)
+		}
+	}
+}
+
+// TestAddiwMovesRegisterValue 在执行层面锁定 C.ADDIW:32 位符号扩展
+// 不得清零源寄存器值。
+func TestAddiwMovesRegisterValue(t *testing.T) {
+	ctx := context.Background()
+	memory := newSparse()
+	port := newPort(t, memory, 0)
+	if err := port.WriteRegister(10, 3); err != nil {
+		t.Fatal(err)
+	}
+	writeCompressed(t, memory, []uint16{
+		0x2501, // c.addiw a0, 0(sext.w a0, a0):musl 系统调用返回路径
+	})
+	outcome, err := port.Step(ctx)
+	if err != nil || outcome != cpu.Continued {
+		t.Fatalf("执行: outcome=%v err=%v", outcome, err)
+	}
+	state, err := port.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := state.Registers[10]; got != 3 {
+		t.Fatalf("sext.w 后 a0=%d want 3(此前被展开为 addiw a0,x0,0 清零)", got)
+	}
+}
+
+// TestJalrCompressedLinksToNextCompressedInstruction 锁定 C.JALR 的链接
+// 语义:链接寄存器记录 2 字节指令的下一地址 pc+2,而非 32 位 JALR 的
+// pc+4。此前每次压缩间接调用都返回到指令中间,真实 libc 程序
+// (musl 的 call main 即 c.jalr)必然跑飞。
+func TestJalrCompressedLinksToNextCompressedInstruction(t *testing.T) {
+	ctx := context.Background()
+	memory := newSparse()
+	port := newPort(t, memory, 0)
+	if err := port.WriteRegister(18, 8); err != nil { // s2 = 目标地址 8
+		t.Fatal(err)
+	}
+	writeCompressed(t, memory, []uint16{
+		cJALR(18), // 0x1001A44 等价:2 字节 c.jalr s2
+	})
+	outcome, err := port.Step(ctx)
+	if err != nil || outcome != cpu.Continued {
+		t.Fatalf("执行: outcome=%v err=%v", outcome, err)
+	}
+	state, err := port.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := state.Registers[regRA]; got != 2 {
+		t.Fatalf("链接值=%#x want 0x2(c.jalr 在地址 0,下一指令为 2)", got)
+	}
+	if state.PC != 8 {
+		t.Fatalf("PC=%#x want 8(目标寄存器地址)", state.PC)
+	}
+	// rs1 与 rd 同为 ra 的罕见编码也必须以旧值为目标。
+	memory2 := newSparse()
+	port2 := newPort(t, memory2, 0)
+	if err := port2.WriteRegister(regRA, 0x20); err != nil {
+		t.Fatal(err)
+	}
+	writeCompressed(t, memory2, []uint16{cJALR(regRA)})
+	if _, err := port2.Step(ctx); err != nil {
+		t.Fatal(err)
+	}
+	state2, err := port2.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state2.PC != 0x20 || state2.Registers[regRA] != 2 {
+		t.Fatalf("PC=%#x ra=%#x want PC=0x20(旧值为目标)、ra=2", state2.PC, state2.Registers[regRA])
+	}
+}
+
+// TestCompressedFloatStackRoundTrip 锁定 C.FLDSP/C.FSDSP:双精度值经栈
+// 保存与恢复(musl 保存/恢复调用者浮点状态的形式)。位型先写入内存,
+// FLD 装入 f8,c.fsdsp 存栈,c.fldsp 恢复到 f9。
+func TestCompressedFloatStackRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	memory := newSparse()
+	port := newPort(t, memory, 0)
+	if err := port.WriteRegister(regSP, 0x800); err != nil {
+		t.Fatal(err)
+	}
+	if err := port.WriteRegister(5, 0x40); err != nil {
+		t.Fatal(err)
+	}
+	const pattern = uint64(0x400C000000000000) // 3.5 的位型
+	var raw [8]byte
+	binary.LittleEndian.PutUint64(raw[:], pattern)
+	if err := memory.Write(ctx, 0x10, raw[:]); err != nil {
+		t.Fatal(err)
+	}
+	// 压缩流:基址寄存器、4 字节 FLD 与压缩栈存取混排(不留空隙)。
+	writeCompressed(t, memory, []uint16{
+		cLI(5, 0x10),
+	})
+	var fld [4]byte
+	binary.LittleEndian.PutUint32(fld[:], encodeFPLoad(0x3, 8, 5, 0)) // fld f8, 0(x5)
+	base := fld[:]
+	if err := memory.Write(ctx, 2, base); err != nil {
+		t.Fatal(err)
+	}
+	writeCompressedAt(t, memory, 6, []uint16{
+		0xb422, // c.fsdsp f8, 40(sp)
+		0x34a2, // c.fldsp f9, 40(sp)
+	})
+	for step := 0; step < 4; step++ {
+		outcome, err := port.Step(ctx)
+		if err != nil || outcome != cpu.Continued {
+			t.Fatalf("第 %d 步: outcome=%v err=%v", step, outcome, err)
+		}
+	}
+	state, err := port.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := state.Floats[9]; got != pattern {
+		t.Fatalf("f9=%#x want %#x(压缩浮点栈往返失败)", got, pattern)
+	}
+}
+
+// writeCompressedAt 把压缩指令序列写到指定地址。
+func writeCompressedAt(t *testing.T, memory *sparse, base uint64, program []uint16) {
+	t.Helper()
+	raw := make([]byte, 0, len(program)*2)
+	for _, instruction := range program {
+		var encoded [2]byte
+		binary.LittleEndian.PutUint16(encoded[:], instruction)
+		raw = append(raw, encoded[:]...)
+	}
+	if err := memory.Write(context.Background(), base, raw); err != nil {
+		t.Fatal(err)
 	}
 }
 

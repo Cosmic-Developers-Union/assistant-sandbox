@@ -144,6 +144,17 @@ func (c *Core) Step(ctx context.Context) (cpu.Outcome, error) {
 		expanded, status := expandCompressed(raw)
 		switch status {
 		case compressedOK:
+			// C.JALR 的链接寄存器记录 2 字节指令的下一地址 pc+2,
+			// 而展开后的 32 位 JALR 语义写 pc+4:真实 libc 的每次
+			// 间接调用都会返回到指令中间。这里自行完成"目标取旧
+			// rs1、链接写 pc+2"的 JALR 语义,不以 32 位形式执行。
+			if expanded&0x7F == 0x67 && expanded>>12&0x7 == 0 && expanded>>7&0x1F == regRA {
+				target := (c.read(int(expanded >> 15 & 0x1F))) &^ 1
+				c.write(regRA, pc+2)
+				c.machine.PC = target
+				c.retired++
+				return cpu.Continued, nil
+			}
 			outcome, trap, err := c.execute(ctx, pc, expanded)
 			if err != nil {
 				return 0, err
@@ -154,11 +165,6 @@ func (c *Core) Step(ctx context.Context) (cpu.Outcome, error) {
 			}
 			c.retired++
 			return outcome, nil
-		case compressedFloat:
-			return cpu.Trapped, cpu.Trap{
-				Kind: cpu.TrapNotImplemented, Address: pc, Instruction: uint32(raw),
-				Detail: uint64(raw) | 1<<16,
-			}
 		default:
 			return cpu.Trapped, cpu.Trap{
 				Kind: cpu.TrapIllegalInstruction, Address: pc, Instruction: uint32(raw),

@@ -28,10 +28,6 @@ func encodeFMA(opcode uint32, rm uint32, rd, rs1, rs2, rs3 int) uint32 {
 	return uint32(rs3)<<27 | uint32(rs2)<<20 | uint32(rs1)<<15 | rm<<12 | uint32(rd)<<7 | opcode
 }
 
-func encodeFPLoad(funct3 uint32, rd, rs1 int, offset int) uint32 {
-	return uint32(offset&0xFFF)<<20 | uint32(rs1)<<15 | funct3<<12 | uint32(rd)<<7 | 0x07
-}
-
 func encodeFPCvtInt(funct7 uint32, rm uint32, rd, rs1, rs2 int) uint32 {
 	return funct7<<25 | uint32(rs2)<<20 | uint32(rs1)<<15 | rm<<12 | uint32(rd)<<7 | 0x53
 }

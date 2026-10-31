@@ -4,13 +4,12 @@ type compressedStatus uint8
 
 const (
 	compressedOK compressedStatus = iota
-	compressedFloat
 	compressedReserved
 )
 
 // expandCompressed 把 RV64C 编码翻译为等价的 32 位指令,由既有执行路径处理。
-// compressedFloat 表示该编码属于 F/D 扩展;compressedReserved 表示保留编码
-// (含显式非法的 0x0000)。HINT 编码按其基指令展开,无副作用。
+// compressedReserved 表示保留编码(含显式非法的 0x0000)。
+// HINT 编码按其基指令展开,无副作用。
 func expandCompressed(ins uint16) (uint32, compressedStatus) {
 	switch ins & 0x3 {
 	case 0x0:
@@ -40,8 +39,13 @@ func expandQuadrant0(ins uint16) (uint32, compressedStatus) {
 		}
 		return encodeOpImm(0x0, rd, regSP, uint32(imm)), compressedOK
 	case 0x1, 0x5:
-		// C.FLD / C.FSD 依赖 F 扩展。
-		return 0, compressedFloat
+		// C.FLD/C.FSD(D 扩展落地后可展开):与 C.LD/C.SD 同布局,
+		// 展开为 32 位 FLD/FSD。
+		offset := fpLoadStoreOffset(ins)
+		if (ins>>13)&0x7 == 0x1 {
+			return encodeFPLoad(0x3, rvcIndex(ins, 2), rvcIndex(ins, 7), offset), compressedOK
+		}
+		return encodeFPStore(0x3, rvcIndex(ins, 2), rvcIndex(ins, 7), offset), compressedOK
 	case 0x2:
 		return encodeLoad(0x2, rvcIndex(ins, 2), rvcIndex(ins, 7), loadStoreWordOffset(ins)), compressedOK
 	case 0x3:
@@ -66,6 +70,13 @@ func loadStoreDoubleOffset(ins uint16) uint32 {
 		(uint32(ins>>5)&0x3)<<6
 }
 
+// fpLoadStoreOffset 是 C.FLD/C.FSD 的偏移:uimm[5:3|7:6],与整数
+// C.LD/C.SD 的位布局一致。
+func fpLoadStoreOffset(ins uint16) uint32 {
+	return (uint32(ins>>10)&0x7)<<3 |
+		(uint32(ins>>5)&0x3)<<6
+}
+
 func expandQuadrant1(ins uint16) (uint32, compressedStatus) {
 	rd := int((ins >> 7) & 0x1F)
 	switch (ins >> 13) & 0x7 {
@@ -73,8 +84,8 @@ func expandQuadrant1(ins uint16) (uint32, compressedStatus) {
 		// C.ADDI / C.NOP(rd=x0 时按 HINT 展开为基指令)。
 		return encodeOpImm(0x0, rd, rd, uint32(signExtend6(ins))), compressedOK
 	case 0x1:
-		// RV64: C.ADDIW。
-		return encodeOpImmWord(0x0, rd, uint32(signExtend6(ins))), compressedOK
+		// RV64: C.ADDIW 展开 addiw rd, rd, imm(sext.w 即 imm=0 的形式)。
+		return encodeOpImmWord(0x0, rd, rd, uint32(signExtend6(ins))), compressedOK
 	case 0x2:
 		// C.LI。
 		return encodeOpImm(0x0, rd, regZero, uint32(signExtend6(ins))), compressedOK
@@ -153,8 +164,17 @@ func expandQuadrant2(ins uint16) (uint32, compressedStatus) {
 		shamt := uint32(ins>>12)&1<<5 | uint32(ins>>2)&0x1F
 		return encodeOpImm(0x1, rd, rd, shamt), compressedOK
 	case 0x1, 0x5:
-		// C.FLDSP / C.FSDSP 依赖 F 扩展。
-		return 0, compressedFloat
+		// C.FLDSP/C.FSDSP(D 扩展落地后可展开):与 C.LDSP/C.SDSP 同布局,
+		// 展开为 32 位 FLD/FSD(sp 基址)。
+		if (ins>>13)&0x7 == 0x1 {
+			offset := uint32(ins>>12)&1<<5 |
+				uint32(ins>>5)&0x3<<3 |
+				uint32(ins>>2)&0x7<<6
+			return encodeFPLoad(0x3, rd, regSP, offset), compressedOK
+		}
+		offset := uint32(ins>>10)&0x7<<3 |
+			uint32(ins>>7)&0x7<<6
+		return encodeFPStore(0x3, rs2, regSP, offset), compressedOK
 	case 0x2:
 		// C.LWSP;rd=0 为保留编码。
 		if rd == regZero {
@@ -212,12 +232,15 @@ func expandQuadrant2(ins uint16) (uint32, compressedStatus) {
 	}
 }
 
+// addi16spImmediate 解码 C.ADDI16SP 的 6 位无零立即数域:nzimm[9|4|6|8|7|5]
+// 依次占用 inst[12]、inst[6]、inst[5]、inst[4]、inst[3]、inst[2],值 = 域×16。
 func addi16spImmediate(ins uint16) int32 {
 	raw := uint32(ins>>12)&1<<5 |
 		uint32(ins>>6)&1<<0 |
 		uint32(ins>>2)&1<<1 |
 		uint32(ins>>5)&1<<2 |
-		uint32(ins>>4)&3<<3
+		uint32(ins>>3)&1<<3 |
+		uint32(ins>>4)&1<<4
 	return int32(signExtend(uint64(raw), 6)) << 4
 }
 
@@ -252,8 +275,8 @@ func encodeOpImm(funct3 uint32, rd, rs1 int, imm uint32) uint32 {
 	return (imm&0xFFF)<<20 | uint32(rs1)<<15 | funct3<<12 | uint32(rd)<<7 | 0x13
 }
 
-func encodeOpImmWord(funct3 uint32, rd int, imm uint32) uint32 {
-	return (imm&0xFFF)<<20 | funct3<<12 | uint32(rd)<<7 | 0x1B
+func encodeOpImmWord(funct3 uint32, rd, rs1 int, imm uint32) uint32 {
+	return (imm&0xFFF)<<20 | uint32(rs1)<<15 | funct3<<12 | uint32(rd)<<7 | 0x1B
 }
 
 func encodeLUI(rd int, imm uint32) uint32 {
@@ -270,6 +293,21 @@ func encodeOpWord(funct7, funct3 uint32, rd, rs1, rs2 int) uint32 {
 
 func encodeLoad(funct3 uint32, rd, rs1 int, offset uint32) uint32 {
 	return (offset&0xFFF)<<20 | uint32(rs1)<<15 | funct3<<12 | uint32(rd)<<7 | 0x03
+}
+
+// encodeFPLoad/encodeFPStore 生成 FLD/FSD 编码:rd 字段承载浮点寄存器
+// 编号,布局与整数 LOAD/STORE 一致。
+func encodeFPLoad(funct3 uint32, rd, rs1 int, offset uint32) uint32 {
+	return (offset&0xFFF)<<20 | uint32(rs1)<<15 | funct3<<12 | uint32(rd)<<7 | 0x07
+}
+
+func encodeFPStore(funct3 uint32, rs2, rs1 int, offset uint32) uint32 {
+	return offset>>5&0x7F<<25 |
+		uint32(rs2)<<20 |
+		uint32(rs1)<<15 |
+		funct3<<12 |
+		offset&0x1F<<7 |
+		0x27
 }
 
 func encodeStore(funct3 uint32, rs2, rs1 int, offset uint32) uint32 {

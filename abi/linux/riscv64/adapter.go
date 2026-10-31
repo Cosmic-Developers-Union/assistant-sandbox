@@ -247,9 +247,12 @@ const (
 	openExclusive   = 0o200
 	openTruncate    = 0o1000
 	openAppend      = 0o2000
+	openLargeFile   = 0o100000
 	openCloseOnExec = 0o2000000
 
-	openKnown = openAccessMask | openCreate | openExclusive | openTruncate | openAppend | openCloseOnExec
+	// O_LARGEFILE 在 64 位客体 ABI 上无语义(参考 Linux riscv64 接受
+	// 并忽略),libc 的 open/openat 无条件携带,必须纳入已知掩码。
+	openKnown = openAccessMask | openCreate | openExclusive | openTruncate | openAppend | openLargeFile | openCloseOnExec
 )
 
 func openFlags(raw uint64) *common.OpenFlags {

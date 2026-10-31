@@ -915,16 +915,30 @@ func TestReservedCompressedEncodingsTrap(t *testing.T) {
 		}
 	}
 
-	// C.FLD 依赖 F 扩展,应报未实现而非非法。
+	// C.FLD 在 D 扩展落地后展开为 FLD:装入门内存的位型。
 	memory := newSparse()
 	if err := memory.Write(context.Background(), 0, []byte{0xc4, 0x20}); err != nil {
 		t.Fatal(err)
 	}
+	var pattern [8]byte
+	binary.LittleEndian.PutUint64(pattern[:], 0x400C000000000000)
+	// 0x20c4 = c.fld f9, 128(s1):位型放在 s1+128 处。
+	if err := memory.Write(context.Background(), 0x10+128, pattern[:]); err != nil {
+		t.Fatal(err)
+	}
 	port := newPort(t, memory, 0)
-	_, err := port.Step(context.Background())
-	var trap cpu.Trap
-	if !errors.As(err, &trap) || trap.Kind != cpu.TrapNotImplemented {
-		t.Fatalf("C.FLD 应报 not-implemented: %v", err)
+	if err := port.WriteRegister(9, 0x10); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := port.Step(context.Background()); err != nil {
+		t.Fatalf("C.FLD 应展开执行: %v", err)
+	}
+	state, err := port.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := state.Floats[9]; got != 0x400C000000000000 {
+		t.Fatalf("f9=%#x want 3.5 的位型", got)
 	}
 }
 
