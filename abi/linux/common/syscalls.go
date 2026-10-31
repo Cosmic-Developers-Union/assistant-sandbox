@@ -109,8 +109,11 @@ type Identity struct {
 	PPID uint64
 	// TID 是调用线程号;单线程模型下与 PID 相同,0 表示未区分。
 	TID uint64
-	UID uint32
-	GID uint32
+	// TGID 是线程组号(K02):同组线程共享地址空间,futex 等按组
+	// 键控;单线程模型下与 PID 相同,0 表示未区分(实现回退 PID)。
+	TGID uint64
+	UID  uint32
+	GID  uint32
 }
 
 type OpenRequest struct {
@@ -227,6 +230,14 @@ type Syscalls struct {
 
 	Spawner Spawner
 
+	// Threader 是 clone 线程形态(K02)的端口;未装配时线程形态
+	// clone 报 ENOSYS 族。
+	Threader ThreadSpawner
+
+	// LastExitGroup 记录最近一次 exit 族调用是否为 exit_group(H08):
+	// 线程运行器据此区分线程退出与整组退出。仅调用线程读写。
+	LastExitGroup bool
+
 	Kills SignalSender
 
 	// Sessions 是 setsid/setpgid/getpgid/getsid 的会话端口(H11);
@@ -256,6 +267,10 @@ type Syscalls struct {
 // 自定义处理器经 J03/J04 的边界投递执行。
 type SignalSender interface {
 	Kill(ctx context.Context, pid int64, number uint64) error
+
+	// Tgkill 投递线程定向信号(K08):tid 必须属于 tgid 的线程组,
+	// 否则 ESRCH;实现校验组成员关系。
+	Tgkill(ctx context.Context, tgid, tid int64, number uint64) error
 }
 
 // SessionControl 是 setsid/setpgid/getpgid/getsid 的会话与进程组端口
@@ -354,6 +369,8 @@ func (s Syscalls) Handle(ctx context.Context, call Call) Reply {
 func (s Syscalls) dispatch(ctx context.Context, call Call) Reply {
 	switch call.Syscall {
 	case SysExit, SysExitGroup:
+		// H08:exit_group 与 exit 的区分由线程运行器消费(K02)。
+		s.LastExitGroup = call.Syscall == SysExitGroup
 		return Reply{Exit: true, Value: call.Args[0]}
 	case SysWrite:
 		return s.write(ctx, call)
@@ -2866,8 +2883,9 @@ const (
 	sigsetSize = 8
 )
 
-// sigMaxNumbers 是本兼容配置支持的最高信号号(SIGRTMAX 边界)。
-const sigMaxNumbers = 31
+// sigMaxNumbers 是本兼容配置支持的最高信号号:Linux 1..64
+// (含 musl 内部保留的 32/33),与 vm/signal.Max 一致。
+const sigMaxNumbers = 64
 
 func validGuestSignal(sig uint64) bool { return sig >= 1 && sig <= sigMaxNumbers }
 
@@ -3006,11 +3024,8 @@ func (s Syscalls) tgkill(ctx context.Context, call Call) Reply {
 	if sig != 0 && !validGuestSignal(sig) {
 		return Reply{Errno: errno.Invalid}
 	}
-	if call.Args[0] != call.Args[1] {
-		// 无线程进程:tid 必须等于 tgid。
-		return Reply{Errno: errno.NoProcess}
-	}
-	if err := s.Kills.Kill(ctx, int64(call.Args[0]), sig); err != nil {
+	// K08:组成员关系由实现校验(tid 不属于 tgid 报 ESRCH)。
+	if err := s.Kills.Tgkill(ctx, int64(call.Args[0]), int64(call.Args[1]), sig); err != nil {
 		return Reply{Errno: errnoOf(err)}
 	}
 	return Reply{}
@@ -3019,20 +3034,122 @@ func (s Syscalls) tgkill(ctx context.Context, call Call) Reply {
 // asm-generic clone 的 SIGCHLD 位:flags==SIGCHLD 即 fork。
 const cloneSigchld = 17
 
-// clone(flags, ...) 仅支持 fork 形态(flags==SIGCHLD 且 sp=0);
-// 线程/共享地址空间标志随 H05/K 组落地,当前明确 ENOTSUP。
+// clone 标志(asm-generic):libc 线程形态(K02)所需子集 + 明确拒绝项。
+const (
+	cloneVM             = 0x00000100
+	cloneDetachedIgnore = 0x00400000 // CLONE_DETACHED:已废弃,Linux 忽略
+	cloneFS             = 0x00000200
+	cloneFiles          = 0x00000400
+	cloneSighand        = 0x00000800
+	clonePtrace         = 0x00002000
+	cloneVFork          = 0x00004000
+	cloneParent         = 0x00008000
+	cloneThread         = 0x00010000
+	cloneSysvsem        = 0x00040000
+	cloneSetTLS         = 0x00080000
+	cloneParentSetTID   = 0x00100000
+	cloneChildClearTID  = 0x00200000
+	cloneDetached       = 0x00400000
+	cloneUntraced       = 0x00800000
+	cloneChildSetTID    = 0x01000000
+	cloneSignalMask     = 0xff
+	cloneNewNamespaceLo = 0x20000000 // CLONE_NEWNS 起的命名空间族
+)
+
+// CloneRequest 是线程形态 clone 的已解析参数(H05)。
+type CloneRequest struct {
+	// Stack 是子线程的初始 sp(0=沿用调用线程当前栈)。
+	Stack uint64
+	// TLS 与 SetTLS 是 CLONE_SETTLS 的线程指针初值。
+	TLS    uint64
+	SetTLS bool
+	// ParentTIDPtr/ChildTIDPtr 是 CLONE_PARENT_SETTID/CLONE_CHILD_SETTID
+	// 的写回地址(0=不写回);内核在登记后写线程号。
+	ParentTIDPtr uint64
+	ChildTIDPtr  uint64
+	// ClearTID 是 CLONE_CHILD_CLEARTID 的登记地址(0=不登记),
+	// 线程退出时内核写零并唤醒 futex 等待者(K03)。
+	ClearTID uint64
+}
+
+// ThreadSpawner 是 clone 线程形态(K02)的端口:实现登记同组线程、
+// 共享地址空间/描述符/信号处置,并在子线程上下文完成续接执行。
+type ThreadSpawner interface {
+	CloneThread(ctx context.Context, request CloneRequest) (uint64, error)
+}
+
+// validateCloneFlags 按 Linux 语义校验 clone 标志(H05):未知位 EINVAL;
+// CLONE_SIGHAND 必须伴随 CLONE_VM,CLONE_THREAD 必须伴随 CLONE_SIGHAND;
+// 线程形态的退出信号必须为 0;命名空间族与调试/驱动形态明确 ENOTSUP。
+func validateCloneFlags(flags uint64) errno.Code {
+	if flags&^(cloneVM|cloneFS|cloneFiles|cloneSighand|cloneThread|cloneSysvsem|
+		cloneSetTLS|cloneParentSetTID|cloneChildClearTID|cloneChildSetTID|
+		cloneDetachedIgnore|uint64(cloneSignalMask)) != 0 {
+		if flags&(clonePtrace|cloneVFork|cloneParent|cloneUntraced) != 0 ||
+			flags&^uint64(cloneSignalMask) >= cloneNewNamespaceLo {
+			return errno.NotSupported
+		}
+		return errno.Invalid
+	}
+	if flags&cloneSighand != 0 && flags&cloneVM == 0 {
+		return errno.Invalid
+	}
+	if flags&cloneThread != 0 {
+		if flags&cloneSighand == 0 {
+			return errno.Invalid
+		}
+		if flags&uint64(cloneSignalMask) != 0 {
+			return errno.Invalid
+		}
+		return ""
+	}
+	// 非线程的共享形态(部分共享 VM/FS/FILES/SIGHAND 的"进程")不在
+	// 兼容配置,明确拒绝而非伪装 fork。
+	if flags&^(uint64(cloneSignalMask)) != 0 {
+		return errno.NotSupported
+	}
+	return errno.NotSupported
+}
+
+// clone(flags, sp, parent_tid, tls, child_tid):fork 形态(flags==SIGCHLD
+// 且 sp=0)复制进程(H04);线程形态(K02,libc pthread)经 Threader
+// 共享地址空间续接执行;其余形态按 H05 校验后明确拒绝。
 func (s Syscalls) cloneProcess(ctx context.Context, call Call) Reply {
-	if s.Spawner == nil {
+	flags, sp := call.Args[0], call.Args[1]
+	if flags == cloneSigchld && sp == 0 {
+		if s.Spawner == nil {
+			return Reply{Errno: errno.NotImplemented}
+		}
+		pid, err := s.Spawner.Fork(ctx)
+		if err != nil {
+			return Reply{Errno: errnoOf(err)}
+		}
+		return Reply{Value: pid}
+	}
+	if code := validateCloneFlags(flags); code != "" {
+		return Reply{Errno: code}
+	}
+	if s.Threader == nil {
 		return Reply{Errno: errno.NotImplemented}
 	}
-	if call.Args[0] != cloneSigchld || call.Args[1] != 0 {
-		return Reply{Errno: errno.NotSupported}
+	var request CloneRequest
+	request.Stack = sp
+	request.SetTLS = flags&cloneSetTLS != 0
+	request.TLS = call.Args[3]
+	if flags&cloneParentSetTID != 0 {
+		request.ParentTIDPtr = call.Args[2]
 	}
-	pid, err := s.Spawner.Fork(ctx)
+	if flags&cloneChildSetTID != 0 {
+		request.ChildTIDPtr = call.Args[4]
+	}
+	if flags&cloneChildClearTID != 0 {
+		request.ClearTID = call.Args[4]
+	}
+	tid, err := s.Threader.CloneThread(ctx, request)
 	if err != nil {
 		return Reply{Errno: errnoOf(err)}
 	}
-	return Reply{Value: pid}
+	return Reply{Value: tid}
 }
 
 // sigreturn 的帧基址经 Args[0] 注入(适配器从 sp 寄存器读取);

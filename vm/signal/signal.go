@@ -43,7 +43,9 @@ const (
 	SYS    Number = 31
 )
 
-const Max = Number(31)
+// Max 是客体信号上限:Linux 支持 1..64(标准 1..31 + 实时 32..64);
+// musl 内部使用 32/33(SIGTIMER/SIGSYNCCALL),掩码按 64 位集合处理。
+const Max = Number(64)
 
 type Action uint8
 
@@ -147,8 +149,8 @@ func (s *State) ApplyMask(how MaskHow, set uint64) (uint64, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	blocked := uint64(s.blocked)
-	old := blocked
+	old := s.blocked
+	blocked := s.blocked
 	switch how {
 	case MaskBlock:
 		blocked |= set
@@ -159,7 +161,7 @@ func (s *State) ApplyMask(how MaskHow, set uint64) (uint64, error) {
 	default:
 		return 0, errno.Invalid
 	}
-	s.blocked = uint32(blocked)
+	s.blocked = blocked
 	return old, nil
 }
 
@@ -176,7 +178,7 @@ func maskRangeBits() uint64 {
 func (s *State) Mask() uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return uint64(s.blocked)
+	return s.blocked
 }
 
 // DeliverableHandler 返回待投递且登记了客户态处理器的信号;
@@ -188,7 +190,9 @@ func (s *State) DeliverableHandler() (Number, ActionConfig, bool) {
 	if !ok {
 		return 0, ActionConfig{}, false
 	}
-	config := s.actions[number]
+	s.disp.mu.Lock()
+	config := s.disp.actions[number]
+	s.disp.mu.Unlock()
 	if config.Handler <= SigIgnore {
 		return 0, ActionConfig{}, false
 	}
@@ -203,8 +207,8 @@ func (s *State) BlockForHandler(n Number, handlerMask uint64, nodefer bool) (uin
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	old := uint64(s.blocked)
-	s.blocked |= uint32(handlerMask & maskRangeBits())
+	old := s.blocked
+	s.blocked |= handlerMask & maskRangeBits()
 	if !nodefer {
 		s.blocked |= mask(n)
 	}
@@ -218,7 +222,7 @@ func (s *State) RestoreHandlerMask(mask uint64) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.blocked = uint32(mask)
+	s.blocked = mask
 	return nil
 }
 
@@ -243,13 +247,32 @@ type AltStack struct {
 	Present bool
 }
 
+// dispositions 是可在线程间共享的信号处置集(K01/K02 的
+// CLONE_SIGHAND):登记的处理器动作与忽略位整组共用;引用计数在
+// 最后一个引用丢弃时释放。挂起集、屏蔽集与备用栈始终线程私有。
+type dispositions struct {
+	mu      sync.Mutex
+	refs    int
+	ignored uint64
+	actions [Max + 1]ActionConfig
+}
+
+func newDispositions() *dispositions { return &dispositions{refs: 1} }
+
 type State struct {
 	mu       sync.Mutex
-	pending  uint32
-	blocked  uint32
-	ignored  uint32
-	actions  [Max + 1]ActionConfig
+	pending  uint64
+	blocked  uint64
 	altStack AltStack
+	disp     *dispositions
+}
+
+func newState() *State { return &State{disp: newDispositions()} }
+
+func (s *State) dispositionsLocked() (uint64, [Max + 1]ActionConfig) {
+	s.disp.mu.Lock()
+	defer s.disp.mu.Unlock()
+	return s.disp.ignored, s.disp.actions
 }
 
 // SetAction 登记 rt_sigaction 处置;KILL/STOP 不可改,EINVAL。
@@ -260,9 +283,9 @@ func (s *State) SetAction(n Number, config ActionConfig) error {
 	if Unmaskable(n) {
 		return errno.Invalid
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.actions[n] = config
+	s.disp.mu.Lock()
+	defer s.disp.mu.Unlock()
+	s.disp.actions[n] = config
 	return nil
 }
 
@@ -271,12 +294,12 @@ func (s *State) Action(n Number) (ActionConfig, error) {
 	if !n.Valid() {
 		return ActionConfig{}, errno.Invalid
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.actions[n], nil
+	s.disp.mu.Lock()
+	defer s.disp.mu.Unlock()
+	return s.disp.actions[n], nil
 }
 
-func mask(n Number) uint32 { return 1 << (n - 1) }
+func mask(n Number) uint64 { return 1 << (n - 1) }
 
 func (s *State) Raise(n Number) bool {
 	s.mu.Lock()
@@ -327,22 +350,23 @@ func (s *State) SetIgnored(n Number, ignored bool) error {
 	if Unmaskable(n) {
 		return errno.NotSupported
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.disp.mu.Lock()
+	defer s.disp.mu.Unlock()
 	if ignored {
-		s.ignored |= mask(n)
+		s.disp.ignored |= mask(n)
 	} else {
-		s.ignored &^= mask(n)
+		s.disp.ignored &^= mask(n)
 	}
 	return nil
 }
 
 func (s *State) deliverable() (Number, bool) {
+	ignored, actions := s.dispositionsLocked()
 	for n := Number(1); n <= Max; n++ {
 		if s.pending&mask(n) == 0 {
 			continue
 		}
-		if s.ignored&mask(n) != 0 {
+		if ignored&mask(n) != 0 {
 
 			s.pending &^= mask(n)
 			continue
@@ -350,6 +374,7 @@ func (s *State) deliverable() (Number, bool) {
 		if s.blocked&mask(n) != 0 {
 			continue
 		}
+		_ = actions
 		return n, true
 	}
 	return 0, false
@@ -374,7 +399,7 @@ func New() *Table {
 func (t *Table) Spawn(pid uint64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.states[pid] = &State{}
+	t.states[pid] = newState()
 }
 
 func (t *Table) Reset() {
@@ -386,9 +411,18 @@ func (t *Table) Reset() {
 
 func (t *Table) Discard(pid uint64) {
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	state := t.states[pid]
 	delete(t.states, pid)
 	delete(t.interrupts, pid)
+	t.mu.Unlock()
+	if state == nil {
+		return
+	}
+	// 释放处置集引用:最后一个引用丢弃时集合随之释放。
+	// 处置集引用计数归零后由 GC 回收,无需显式清理。
+	state.disp.mu.Lock()
+	state.disp.refs--
+	state.disp.mu.Unlock()
 }
 
 func (t *Table) ResetForExec(pid uint64) error {
@@ -400,14 +434,18 @@ func (t *Table) ResetForExec(pid uint64) error {
 	}
 	state.mu.Lock()
 	state.pending = 0
-	state.actions = [Max + 1]ActionConfig{}
 	state.mu.Unlock()
+	state.disp.mu.Lock()
+	// exec 复位全部登记处理器,但 SIG_IGN 忽略位保留(Linux 语义)。
+	state.disp.actions = [Max + 1]ActionConfig{}
+	state.disp.mu.Unlock()
 	delete(t.interrupts, pid)
 	return nil
 }
 
 // Fork 把 parent 的信号处置、屏蔽集与忽略位复制给 child;
 // 挂起集与备用栈不继承(与 Linux fork 一致),登记的中断钩子不复制。
+// 复制产生独立的处置集(fork 语义)。
 func (t *Table) Fork(parent, child uint64) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -416,12 +454,34 @@ func (t *Table) Fork(parent, child uint64) error {
 		return errno.NoProcess
 	}
 	source.mu.Lock()
-	actions := source.actions
 	blocked := source.blocked
-	ignored := source.ignored
 	source.mu.Unlock()
+	ignored, actions := source.dispositionsLocked()
 
-	t.states[child] = &State{actions: actions, blocked: blocked, ignored: ignored}
+	t.states[child] = &State{blocked: blocked, disp: &dispositions{refs: 1, ignored: ignored, actions: actions}}
+	return nil
+}
+
+// Share 让 child 与 parent 共用信号处置集(CLONE_SIGHAND,K01):
+// 登记处理器与忽略位整组可见;挂起集、屏蔽集与备用栈保持线程私有,
+// child 的屏蔽集继承 parent 当前值(Linux 语义)。
+func (t *Table) Share(parent, child uint64) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	source := t.states[parent]
+	if source == nil {
+		return errno.NoProcess
+	}
+	source.mu.Lock()
+	blocked := source.blocked
+	altStack := source.altStack
+	source.mu.Unlock()
+	source.disp.mu.Lock()
+	source.disp.refs++
+	disp := source.disp
+	source.disp.mu.Unlock()
+
+	t.states[child] = &State{blocked: blocked, altStack: altStack, disp: disp}
 	return nil
 }
 
@@ -531,7 +591,8 @@ func (t *Table) Ignored(pid uint64, n Number) bool {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.ignored&mask(n) != 0
+	ignored, _ := s.dispositionsLocked()
+	return ignored&mask(n) != 0
 }
 
 func (t *Table) state(pid uint64) *State {

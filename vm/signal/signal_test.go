@@ -132,7 +132,11 @@ func TestUnknownProcessAndInvalidNumber(t *testing.T) {
 	if err := table.Raise(9, 0); !errors.Is(err, errno.Invalid) {
 		t.Fatal(err)
 	}
-	if err := table.Raise(9, 32); !errors.Is(err, errno.Invalid) {
+	if err := table.Raise(9, 65); !errors.Is(err, errno.Invalid) {
+		t.Fatal(err)
+	}
+	// 实时信号 32(musl SIGTIMER 区段)在 64 位信号集内合法。
+	if err := table.Raise(9, 32); err != nil {
 		t.Fatal(err)
 	}
 	table.Discard(9)
@@ -368,10 +372,10 @@ func TestApplyMaskBulkSemantics(t *testing.T) {
 	if current, _ := table.Mask(3); current != 1<<(TERM-1) {
 		t.Fatalf("当前屏蔽=%d", current)
 	}
-	// 越界位与未知 how EINVAL;屏蔽 KILL/STOP 不被 ApplyMask 拒绝之外,
-	// 范围内的合法位正常工作。
-	if _, err := table.ApplyMask(3, MaskBlock, 1<<31|1<<40); !errors.Is(err, errno.Invalid) {
-		t.Fatalf("越界位: err=%v want EINVAL", err)
+	// 未知 how EINVAL;8 字节集合的全部 64 位均为合法信号位
+	// (1..64,含 musl 内部使用的 32/33)。
+	if _, err := table.ApplyMask(3, MaskBlock, 1<<32|1<<33); err != nil {
+		t.Fatalf("实时信号位应合法: err=%v", err)
 	}
 	if _, err := table.ApplyMask(3, MaskHow(9), 1); !errors.Is(err, errno.Invalid) {
 		t.Fatalf("未知 how: err=%v want EINVAL", err)
@@ -410,5 +414,66 @@ func TestAltStackLifecycle(t *testing.T) {
 	// 未知进程查询返回空栈,不 panic。
 	if stack := table.AltStack(99); stack.Present {
 		t.Fatal("未知进程不应有备用栈")
+	}
+}
+
+// TestShareDispositionsKeepsPrivateMasks 锁定 CLONE_SIGHAND 共享(K01):
+// 子线程与父共用登记处置与忽略位(任一侧登记双方可见),而屏蔽集与
+// 挂起集保持线程私有;fork 复制仍是独立副本。
+func TestShareDispositionsKeepsPrivateMasks(t *testing.T) {
+	table := New()
+	table.Spawn(2)
+	if err := table.SetAction(2, USR1, ActionConfig{Handler: 0x4040}); err != nil {
+		t.Fatal(err)
+	}
+	if err := table.SetMasked(2, TERM, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := table.Share(2, 3); err != nil {
+		t.Fatalf("共享: %v", err)
+	}
+	// 处置共享:子侧读到父登记的处理器。
+	if action, err := table.Action(3, USR1); err != nil || action.Handler != 0x4040 {
+		t.Fatalf("子侧处置=%+v err=%v", action, err)
+	}
+	// 子侧登记对父可见。
+	if err := table.SetAction(3, USR2, ActionConfig{Handler: 0x5050}); err != nil {
+		t.Fatal(err)
+	}
+	if action, err := table.Action(2, USR2); err != nil || action.Handler != 0x5050 {
+		t.Fatalf("父侧看到的子登记=%+v err=%v", action, err)
+	}
+	// 屏蔽集线程私有:子继承父当前值,此后互不影响。
+	if masked, err := table.Mask(3); err != nil || masked != 1<<(TERM-1) {
+		t.Fatalf("子初始屏蔽=%d err=%v", masked, err)
+	}
+	if err := table.SetMasked(3, HUP, true); err != nil {
+		t.Fatal(err)
+	}
+	if masked, _ := table.Mask(2); masked&mask(HUP) != 0 {
+		t.Fatal("子侧屏蔽不得影响父")
+	}
+	// 挂起集线程私有。
+	if err := table.Raise(3, USR1); err != nil {
+		t.Fatal(err)
+	}
+	if pending := table.states[2].pending; pending&(1<<(USR1-1)) != 0 {
+		t.Fatal("子侧挂起不得影响父")
+	}
+	// 忽略位共享:父侧登记的忽略使子的同信号挂起被丢弃
+	// (先解除子侧对 HUP 的屏蔽,排除屏蔽干扰)。
+	if err := table.SetIgnored(2, HUP, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := table.SetMasked(3, HUP, false); err != nil {
+		t.Fatal(err)
+	}
+	table.Consume(3, USR1)
+	table.Consume(3, HUP)
+	if err := table.Raise(3, HUP); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := table.Deliverable(3); ok {
+		t.Fatal("共享忽略位应吞掉子的 HUP")
 	}
 }

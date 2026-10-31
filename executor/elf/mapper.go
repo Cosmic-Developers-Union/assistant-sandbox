@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"slices"
+	"sync"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/abi/linux/common"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/loader/elf"
@@ -18,6 +19,8 @@ import (
 const mmapFloor = 1 << 32
 
 type mapper struct {
+	mu sync.Mutex
+
 	table   *memory.Table
 	meter   resources.Meter
 	pid     uint64
@@ -37,6 +40,8 @@ func newMapper(table *memory.Table, process proc.Proc, plan *elf.Plan) *mapper {
 }
 
 func (m *mapper) Anonymous(ctx context.Context, request common.MapRequest) (uint64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
@@ -103,6 +108,8 @@ const snapshotChunk = 64 << 10
 // File 实现文件映射(E08 私有/E09 共享):共享映射挂直通后备,
 // 私有映射把文件内容装载为私有页(此后修改不写回)。
 func (m *mapper) File(ctx context.Context, request common.FileMapRequest) (uint64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
@@ -160,6 +167,8 @@ func (m *mapper) File(ctx context.Context, request common.FileMapRequest) (uint6
 
 // Sync 实现 msync:共享映射写入即时直通文件,只需校验范围完整映射。
 func (m *mapper) Sync(ctx context.Context, start, end uint64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -167,6 +176,8 @@ func (m *mapper) Sync(ctx context.Context, start, end uint64) error {
 }
 
 func (m *mapper) Unmap(ctx context.Context, start, end uint64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -179,6 +190,8 @@ func (m *mapper) Unmap(ctx context.Context, start, end uint64) error {
 }
 
 func (m *mapper) Protect(ctx context.Context, start, end uint64, bits uint64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -323,6 +336,8 @@ var _ common.Limiter = (*limiter)(nil)
 // Mremap 实现 mremap(2):收缩原地、扩张尽量原地、尾部被占用时按 MAYMOVE 迁移。
 // 旧范围必须恰好是一个映射(与真实分配器的整段重映射用法一致)。
 func (m *mapper) Mremap(ctx context.Context, oldStart, oldEnd, newEnd uint64, mayMove, fixed bool, fixedStart uint64) (uint64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
@@ -388,6 +403,8 @@ func (m *mapper) Mremap(ctx context.Context, oldStart, oldEnd, newEnd uint64, ma
 // Madvise 实现有明确语义的 advice 子集:DONTNEED 丢弃页内容,
 // NORMAL/RANDOM/SEQUENTIAL/WILLNEED 在本模型中无可观察差异,如实返回成功。
 func (m *mapper) Madvise(ctx context.Context, start, end uint64, advice uint64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return err
 	}

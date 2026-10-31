@@ -16,7 +16,7 @@ import (
 //     待投递信号(EINTR,J09 契约);uaddr 必须 4 字节对齐;
 //   - futex(uaddr, WAKE, count, …):唤醒至多 count 个等待者并返回
 //     实际唤醒数,无等待者返回 0;
-//   - FUTEX_PRIVATE_FLAG 被接受:等待表按进程键控,两种形式同语义
+//   - FUTEX_PRIVATE_FLAG 被接受:等待表按线程组键控,两种形式同语义
 //     (跨地址空间共享随 E08/E09 共享映射落地);
 //   - 其余操作(requeue、bitset、PI、waitv)随 K06 逐项接入,
 //     当前按未知操作报 EINVAL;FUTEX_CLOCK_REALTIME 只用于
@@ -65,6 +65,15 @@ func (s Syscalls) futexTimeout(ctx context.Context, address uint64) (uint64, boo
 	return nanoseconds, false, ""
 }
 
+// futexOwner 返回 futex 键的所有者:线程组号——同组线程共享地址
+// 空间,组内互相唤醒;跨进程隔离靠组号不同(K02/K10)。
+func (s Syscalls) futexOwner() uint64 {
+	if s.Identity.TGID != 0 {
+		return s.Identity.TGID
+	}
+	return s.Identity.PID
+}
+
 func (s Syscalls) futex(ctx context.Context, call Call) Reply {
 	if s.Futexes == nil || s.Memory == nil || s.Identity == nil {
 		return Reply{Errno: errno.NotImplemented}
@@ -78,7 +87,7 @@ func (s Syscalls) futex(ctx context.Context, call Call) Reply {
 		return Reply{Errno: errno.Invalid}
 	}
 	operation := call.Args[1] &^ futexPrivateFlag
-	key := futex.Key{Owner: s.Identity.PID, Address: call.Args[0]}
+	key := futex.Key{Owner: s.futexOwner(), Address: call.Args[0]}
 	switch operation & futexOpMask {
 	case futexOpWake:
 		count := call.Args[2]
@@ -113,7 +122,7 @@ func (s Syscalls) futex(ctx context.Context, call Call) Reply {
 // 其余至多 val2(args[3],经 timeout 槽传递)个迁移到 uaddr2(args[4]);
 // CMP 变体先校验 *uaddr == val3(args[5])。
 func (s Syscalls) futexRequeue(ctx context.Context, call Call, key futex.Key, compare bool) Reply {
-	target := futex.Key{Owner: s.Identity.PID, Address: call.Args[4]}
+	target := futex.Key{Owner: s.futexOwner(), Address: call.Args[4]}
 	if compare {
 		expected := uint32(call.Args[5])
 		var raw [4]byte

@@ -76,6 +76,26 @@ type ForkControl interface {
 	Fork() (Proc, *memory.Table, error)
 }
 
+// ThreadControl 是 clone 线程形态(K01/K02)的端口:内核登记同组
+// 线程条目并接线共享资源(地址空间、描述符集合、信号处置);执行
+// 续接(同一地址空间、sp/tls/返回值 0)由调用方完成。CLONE_FILES
+// 与 CLONE_SIGHAND 随线程形态固定共享。
+type ThreadControl interface {
+	// CloneThread 在调用线程所属组内创建线程:返回线程条目与共享
+	// 地址空间。clearTID 是 CLONE_CHILD_CLEARTID 的登记地址(0=
+	// 不登记),线程退出时由内核消费并唤醒 futex 等待者(K03)。
+	CloneThread(clearTID uint64) (Proc, *memory.Table, error)
+
+	// FinishThread 结束单个线程:非组长直接清算(无僵尸,join 依赖
+	// clear_child_tid 唤醒);组长保留占位直到组完成。signal 非 0
+	// 表示致命信号,按 Linux 语义升级为整组结束(K08)。
+	FinishThread(id PID, code uint8, sig uint8) error
+
+	// FinishGroup 结束整个线程组(exit_group,H08):全组以同一状态
+	// 结束,组长承载退出状态转僵尸并通知父进程。
+	FinishGroup(id PID, code uint8, sig uint8) error
+}
+
 // SignalDeliveryControl 是客户态信号投递端口:执行器在指令边界
 // 轮询待投递信号,写信号帧并重定向执行流。
 type SignalDeliveryControl interface {
@@ -112,6 +132,10 @@ type SignalKillControl interface {
 	// KillSignal 按 kill(2) 的 pid 语义发送:pid>0 目标进程,
 	// pid=0 调用方进程组,pid=-1 除调用方外的全部进程,pid<-1 进程组 -pid。
 	KillSignal(pid int64, number signal.Number) error
+
+	// Tgkill 按 tgkill(2) 投递线程定向信号(K08):tid 必须属于
+	// tgid 的线程组,否则 ESRCH。
+	Tgkill(tgid, tid int64, number signal.Number) error
 }
 
 // FutexControl 是 futex 系统调用(K05)的同步端口:暴露内核的

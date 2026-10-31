@@ -440,3 +440,64 @@ func (c *memfsCloseCounter) Close() error {
 	c.closeCalls++
 	return c.File.Close()
 }
+
+// TestShareAliasesDescriptors 锁定 CLONE_FILES 共享(K02):子别名与
+// 父共用同一打开描述符集合——读写与偏移互相可见,任一侧关闭即真关;
+// DropAlias 摘除线程别名不触碰句柄,父侧继续可用。
+func TestShareAliasesDescriptors(t *testing.T) {
+	table := New()
+	var log []string
+	tracking := func(name string) Stream { return &trackingStream{name: name, log: &log} }
+	table.Attach(2, Streams{})
+	if err := table.Install(2, 5, tracking("a")); err != nil {
+		t.Fatal(err)
+	}
+	if err := table.Share(2, 3); err != nil {
+		t.Fatalf("共享: %v", err)
+	}
+	handle, err := table.Get(context.Background(), 3, 5)
+	if err != nil {
+		t.Fatalf("子别名读取: %v", err)
+	}
+	if _, err := handle.Write([]byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	// 父侧看到的同一句柄:关闭计数共享,恰好一次关闭。
+	child, err := table.Get(context.Background(), 2, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = child.Close()
+	if err := table.Close(context.Background(), 3, 5); err != nil {
+		t.Fatalf("子侧关闭: %v", err)
+	}
+	if log[len(log)-1] != "close:a" {
+		t.Fatalf("关闭序列=%v want 恰好一次 close:a", log)
+	}
+	// DropAlias:摘除别名不关句柄。
+	if err := table.Install(2, 6, tracking("b")); err != nil {
+		t.Fatal(err)
+	}
+	if err := table.Share(2, 3); err != nil {
+		t.Fatal(err)
+	}
+	table.DropAlias(3)
+	if _, err := table.Get(context.Background(), 2, 6); err != nil {
+		t.Fatalf("父侧句柄应存活: %v", err)
+	}
+	if _, err := table.Get(context.Background(), 3, 6); err == nil {
+		t.Fatal("别名应已摘除")
+	}
+}
+
+type trackingStream struct {
+	name string
+	log  *[]string
+}
+
+func (s *trackingStream) Read(p []byte) (int, error)  { return 0, io.EOF }
+func (s *trackingStream) Write(p []byte) (int, error) { return len(p), nil }
+func (s *trackingStream) Close() error {
+	*s.log = append(*s.log, "close:"+s.name)
+	return nil
+}

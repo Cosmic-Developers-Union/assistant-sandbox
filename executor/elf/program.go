@@ -9,6 +9,7 @@ import (
 	"io"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/abi/linux/common"
 	linuxriscv64 "github.com/Cosmic-Developers-Union/assistant-sandbox/abi/linux/riscv64"
@@ -365,7 +366,7 @@ func populateSpace(ctx context.Context, space *memory.Table, plan *loaderelf.Pla
 
 func syscalls(ctx context.Context, process proc.Proc, space *memory.Table, plan *loaderelf.Plan, core cpu.Port) common.Syscalls {
 	handler := common.Syscalls{Memory: space, Sysname: "Linux", Nodename: "assistant-sandbox", Release: "6.8.0", Version: "#1", Machine: "riscv64", Domainname: "(none)", Cwd: process.Dir}
-	identity := &common.Identity{PID: uint64(process.ID), PPID: uint64(process.Parent), TID: uint64(process.TID)}
+	identity := &common.Identity{PID: uint64(process.ID), PPID: uint64(process.Parent), TID: uint64(process.TID), TGID: uint64(process.TGID)}
 	handler.Identity = identity
 	if process.Resources == nil {
 
@@ -388,11 +389,11 @@ func syscalls(ctx context.Context, process proc.Proc, space *memory.Table, plan 
 		}
 	}
 
-	if heap := newHeap(space, process, plan); heap != nil {
-		handler.Heap = heap
-	}
-	if m := newMapper(space, process, plan); m != nil {
-		handler.Mapper = m
+	// 每空间装载状态(K02):同组线程共享 brk/mmap 游标;首个装载
+	// 创建,后续装载复用。
+	if runtime := spaceRuntimeOf(space, process, plan); runtime != nil {
+		handler.Heap = runtime.heap
+		handler.Mapper = runtime.mapper
 	}
 	handler.Limiter = &limiter{meters: metersOf(process), pid: uint64(process.ID)}
 	if waiter, ok := process.Control.(proc.WaitControl); ok {
@@ -427,6 +428,12 @@ func syscalls(ctx context.Context, process proc.Proc, space *memory.Table, plan 
 		handler.Spawner = processForker{
 			parent: process, space: space, plan: plan, core: core,
 			control: forker,
+		}
+	}
+	if threader, ok := process.Control.(proc.ThreadControl); ok {
+		handler.Threader = processThreader{
+			parent: process, space: space, plan: plan, core: core,
+			control: threader,
 		}
 	}
 	if source, err := process.Resources.Time(); err == nil {
@@ -505,6 +512,8 @@ var _ executable.Program = (*program)(nil)
 const heapMaximum = 64 << 20
 
 type heap struct {
+	mu sync.Mutex
+
 	table *memory.Table
 	meter resources.Meter
 	pid   uint64
@@ -543,6 +552,8 @@ func heapStart(plan *loaderelf.Plan) uint64 {
 }
 
 func (h *heap) Break(ctx context.Context) (uint64, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
@@ -550,6 +561,8 @@ func (h *heap) Break(ctx context.Context) (uint64, error) {
 }
 
 func (h *heap) Grow(ctx context.Context, target uint64) (uint64, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
@@ -967,6 +980,147 @@ func (f processForker) Fork(ctx context.Context) (uint64, error) {
 	return uint64(child.ID), nil
 }
 
+// spaceRuntime 是同组线程共享的每地址空间装载状态(K02):brk 与
+// mmap 游标属于地址空间而非线程,经 memory.Table.Annotation 挂载;
+// 计费归属创建它的组长(线程 mmap 共享同一地址空间)。execve 原地
+// 替换时整体重建(H07)。
+type spaceRuntime struct {
+	heap   *heap
+	mapper *mapper
+}
+
+func spaceRuntimeOf(space *memory.Table, process proc.Proc, plan *loaderelf.Plan) *spaceRuntime {
+	if space == nil {
+		return nil
+	}
+	if rt, ok := space.Annotation().(*spaceRuntime); ok {
+		return rt
+	}
+	rt := &spaceRuntime{heap: newHeap(space, process, plan), mapper: newMapper(space, process, plan)}
+	space.SetAnnotation(rt)
+	return rt
+}
+
+// processThreader 把 clone 线程形态适配为同组线程创建(K02):子线程
+// 与调用方共享地址空间与每空间装载状态,内核完成登记与共享接线,
+// 执行续接为同一 PC、调用方指定的栈与线程指针、返回值 0。
+type processThreader struct {
+	parent  proc.Proc
+	space   *memory.Table
+	plan    *loaderelf.Plan
+	core    cpu.Port
+	control proc.ThreadControl
+}
+
+func (t processThreader) CloneThread(ctx context.Context, request common.CloneRequest) (uint64, error) {
+	child, space, err := t.control.CloneThread(request.ClearTID)
+	if err != nil {
+		return 0, err
+	}
+	// 续接边界:调用时刻的完整寄存器与 ecall 之后的 PC;子线程
+	// 返回值为 0,栈与线程指针按 clone 参数。
+	state, err := t.core.State(ctx)
+	if err != nil {
+		return 0, err
+	}
+	runtime := spaceRuntimeOf(space, child, t.plan)
+	if request.ParentTIDPtr != 0 {
+		var value [8]byte
+		binary.LittleEndian.PutUint64(value[:], uint64(child.ID))
+		if err := space.Write(ctx, request.ParentTIDPtr, value[:]); err != nil {
+			_ = t.control.FinishThread(child.ID, 125, 0)
+			return 0, err
+		}
+	}
+	if request.ChildTIDPtr != 0 {
+		var value [8]byte
+		binary.LittleEndian.PutUint64(value[:], uint64(child.ID))
+		if err := space.Write(ctx, request.ChildTIDPtr, value[:]); err != nil {
+			_ = t.control.FinishThread(child.ID, 125, 0)
+			return 0, err
+		}
+	}
+	go func() {
+		runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+		defer cancel()
+		childCore, err := riscv64.New(cpu.Config{
+			Memory: space,
+			Entry:  state.PC,
+			Meter:  meter{ctx: runCtx, meters: metersOf(child), pid: uint64(child.ID)},
+		})
+		if err != nil {
+			_ = t.control.FinishThread(child.ID, 125, 0)
+			return
+		}
+		next := state
+		next.Registers[regArgument0] = 0
+		if request.Stack != 0 {
+			next.Registers[regSp] = request.Stack
+		}
+		if request.SetTLS {
+			next.Registers[4] = request.TLS // tp:x4(K04)
+		}
+		if err := childCore.Reset(runCtx, next); err != nil {
+			_ = t.control.FinishThread(child.ID, 125, 0)
+			return
+		}
+		childHandler := syscalls(runCtx, child, space, t.plan, childCore)
+		// 共享每空间装载状态:brk/mmap 游标与计费归属组长(K02)。
+		if runtime != nil {
+			childHandler.Heap = runtime.heap
+			childHandler.Mapper = runtime.mapper
+		}
+		childHandler.Core = childCore
+		deliverer := &signalDeliverer{space: space, core: childCore}
+		if delivery, ok := child.Control.(proc.SignalDeliveryControl); ok {
+			deliverer.control = delivery
+		}
+		if dispositions, ok := child.Control.(proc.SignalDispositionControl); ok {
+			deliverer.disposition = dispositions
+		}
+		childHandler.Execs = &processExec{process: child, space: space, core: childCore, handler: &childHandler}
+		childConfig := common.Config{
+			Core:       childCore,
+			Dispatcher: faultDispatching{next: &linuxriscv64.Adapter{Handler: &childHandler, Registers: childCore}, deliver: deliverer},
+			Boundary:   deliverer.boundary,
+		}
+		childScheduling, hasScheduling := child.Control.(proc.ExecutionScheduling)
+		if hasScheduling {
+			if err := childScheduling.Enter(runCtx); err != nil {
+				_ = t.control.FinishThread(child.ID, 125, 0)
+				return
+			}
+			defer func() { _ = childScheduling.Leave() }()
+			childConfig.Switcher = &sliceSwitcher{sched: childScheduling, remaining: instructionsPerSlice}
+			childConfig.Dispatcher = schedulingDispatch{next: childConfig.Dispatcher, sched: childScheduling}
+		}
+		runner, err := common.NewRunner(childConfig)
+		if err != nil {
+			_ = t.control.FinishThread(child.ID, 125, 0)
+			return
+		}
+		code, runErr := runner.Run(runCtx)
+		if runErr != nil {
+			code = 125
+		}
+		// K03:线程退出路径落实 clear_child_tid——登记地址写零并
+		// 唤醒 futex 等待者(pthread_join 依赖)。
+		if tidControl, ok := child.Control.(proc.TidAddressControl); ok {
+			tidControl.ClearTidAtExit(runCtx, func(ctx context.Context, address uint64, content []byte) error {
+				return space.Write(ctx, address, content)
+			})
+		}
+		// H08:exit_group 结束整组;exit 仅结束当前线程。致命信号
+		// 中断由内核在 Signal 投递时升级为整组结束(K08)。
+		if childHandler.LastExitGroup {
+			_ = t.control.FinishGroup(child.ID, uint8(code), 0)
+			return
+		}
+		_ = t.control.FinishThread(child.ID, uint8(code), 0)
+	}()
+	return uint64(child.ID), nil
+}
+
 // processExec 把 execve 适配为当前进程的原子映像替换(H06/H07):
 // 新映像(含 shebang 解析)完全装载成功后才释放旧地址空间并重置
 // 核心;装载失败不做任何修改,旧程序继续执行。成功后 PID 不变,
@@ -1133,6 +1287,13 @@ func (p processKiller) Kill(ctx context.Context, pid int64, number uint64) error
 		return errno.Invalid
 	}
 	return p.control.KillSignal(pid, signal.Number(number))
+}
+
+func (p processKiller) Tgkill(ctx context.Context, tgid, tid int64, number uint64) error {
+	if number != 0 && !signal.Number(number).Valid() {
+		return errno.Invalid
+	}
+	return p.control.Tgkill(tgid, tid, signal.Number(number))
 }
 
 // processSessions 适配 setsid/setpgid/getpgid/getsid 的会话端口(H11)。

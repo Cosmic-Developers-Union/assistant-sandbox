@@ -2865,12 +2865,14 @@ func TestRtSigprocmaskBlockUnblockAndSetmask(t *testing.T) {
 			t.Fatalf("校验 %+v: %+v want EINVAL", tc, reply)
 		}
 	}
+	// 8 字节集合的全部 64 位合法(1..64,含 musl 内部 32/33):
+	// 高位不再 EINVAL,只有未知 how 与错误长度被拒。
 	binary.LittleEndian.PutUint64(set[0:], 1<<40)
 	if err := space.Write(ctx, 0x1000, set[:]); err != nil {
 		t.Fatal(err)
 	}
-	if reply := syscalls.Handle(ctx, Call{Syscall: SysRtSigprocmask, Args: [6]uint64{sigBlock, 0x1000, 0, sigsetSize}}); reply.Errno != errno.Invalid {
-		t.Fatalf("越界位: %+v want EINVAL", reply)
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysRtSigprocmask, Args: [6]uint64{sigBlock, 0x1000, 0, sigsetSize}}); reply.Errno != "" {
+		t.Fatalf("64 位集合位应合法: %+v", reply)
 	}
 	// 未装配端口 ENOSYS。
 	if reply := (Syscalls{}).Handle(ctx, Call{Syscall: SysRtSigprocmask}); reply.Errno != errno.NotImplemented {
@@ -2938,6 +2940,17 @@ type fakeKiller struct {
 		sig uint64
 	}
 	err error
+}
+
+func (f *fakeKiller) Tgkill(_ context.Context, tgid, tid int64, number uint64) error {
+	if f.err != nil {
+		return f.err
+	}
+	if tgid != tid {
+		// K08 前的无线程语义:tid≠tgid ESRCH 由 fake 校验。
+		return errno.NoProcess
+	}
+	return nil
 }
 
 func (f *fakeKiller) Kill(_ context.Context, pid int64, number uint64) error {
@@ -3430,5 +3443,94 @@ func TestSignalfd4ValidatesAndDelegates(t *testing.T) {
 	descriptors.signalfdErr = errno.Limit
 	if reply := handler.Handle(ctx, Call{Syscall: SysSignalfd4, Args: [6]uint64{^uint64(0), sigsetAddress, 8, 0}}); reply.Errno != errno.Limit {
 		t.Fatalf("实现层错误应透传: %v", reply.Errno)
+	}
+}
+
+// fakeThreader 记录线程形态 clone 的请求并返回固定线程号(K02)。
+type fakeThreader struct {
+	request  CloneRequest
+	got      bool
+	err      error
+	tid      uint64
+	failFlag uint64
+}
+
+func (f *fakeThreader) CloneThread(_ context.Context, request CloneRequest) (uint64, error) {
+	if request.Stack == f.failFlag {
+		return 0, f.err
+	}
+	f.request = request
+	f.got = true
+	return f.tid, nil
+}
+
+// TestCloneThreadFlagsValidation 验证 H05:线程形态 clone 的标志
+// 逐项校验——libc 组合(CLONE_VM|FS|FILES|SIGHAND|THREAD|SYSVSEM|
+// SETTLS|PARENT_SETTID|CHILD_CLEARTID,可含已废弃的 CLONE_DETACHED)
+// 被接受且参数解析正确;未知位 EINVAL;命名空间族/vfork/parent/
+// ptrace ENOTSUP;SIGHAND 缺 VM、THREAD 缺 SIGHAND、线程带退出信号
+// 均 EINVAL;fork 形态不受影响。
+func TestCloneThreadFlagsValidation(t *testing.T) {
+	const (
+		libcFlags = 0x100 | 0x200 | 0x400 | 0x800 | 0x10000 | 0x40000 |
+			0x80000 | 0x100000 | 0x200000 // VM|FS|FILES|SIGHAND|THREAD|SYSVSEM|SETTLS|PARENT_SETTID|CHILD_CLEARTID
+	)
+	threader := &fakeThreader{tid: 77}
+	handler := Syscalls{Threader: threader}
+	ctx := context.Background()
+
+	// libc 组合:接受,参数按 (flags, sp, parent_tid, tls, child_tid) 解析。
+	reply := handler.Handle(ctx, Call{Syscall: SysClone, Args: [6]uint64{libcFlags | 0x400000, 0x7000, 0x9000, 0xA000, 0xB000}})
+	if reply.Errno != "" || reply.Value != 77 {
+		t.Fatalf("libc 线程组合: %+v want tid 77", reply)
+	}
+	if !threader.got {
+		t.Fatal("Threader 未被调用")
+	}
+	if !threader.request.SetTLS || threader.request.TLS != 0xA000 {
+		t.Fatalf("SETTLS 参数=%+v", threader.request)
+	}
+	if threader.request.Stack != 0x7000 || threader.request.ParentTIDPtr != 0x9000 {
+		t.Fatalf("栈/父写回参数=%+v", threader.request)
+	}
+	if threader.request.ClearTID != 0xB000 {
+		t.Fatalf("CHILD_CLEARTID 参数=%+v", threader.request)
+	}
+
+	// 未知位 EINVAL。
+	if reply := handler.Handle(ctx, Call{Syscall: SysClone, Args: [6]uint64{libcFlags | 0x2}}); reply.Errno != errno.Invalid {
+		t.Fatalf("未知位: %+v want EINVAL", reply)
+	}
+	// 命名空间族 ENOTSUP。
+	if reply := handler.Handle(ctx, Call{Syscall: SysClone, Args: [6]uint64{libcFlags | 0x20000000}}); reply.Errno != errno.NotSupported {
+		t.Fatalf("CLONE_NEWNS: %+v want ENOTSUP", reply)
+	}
+	// vfork ENOTSUP(H12 前明确拒绝)。
+	if reply := handler.Handle(ctx, Call{Syscall: SysClone, Args: [6]uint64{libcFlags | 0x4000}}); reply.Errno != errno.NotSupported {
+		t.Fatalf("CLONE_VFORK: %+v want ENOTSUP", reply)
+	}
+	// SIGHAND 缺 VM EINVAL。
+	if reply := handler.Handle(ctx, Call{Syscall: SysClone, Args: [6]uint64{0x800 | 0x10000}}); reply.Errno != errno.Invalid {
+		t.Fatalf("SIGHAND 无 VM: %+v want EINVAL", reply)
+	}
+	// THREAD 缺 SIGHAND EINVAL。
+	if reply := handler.Handle(ctx, Call{Syscall: SysClone, Args: [6]uint64{0x100 | 0x10000}}); reply.Errno != errno.Invalid {
+		t.Fatalf("THREAD 无 SIGHAND: %+v want EINVAL", reply)
+	}
+	// 线程形态带退出信号 EINVAL。
+	if reply := handler.Handle(ctx, Call{Syscall: SysClone, Args: [6]uint64{libcFlags | 17}}); reply.Errno != errno.Invalid {
+		t.Fatalf("线程带退出信号: %+v want EINVAL", reply)
+	}
+	// 非线程的共享形态(VM 无 THREAD)ENOTSUP。
+	if reply := handler.Handle(ctx, Call{Syscall: SysClone, Args: [6]uint64{0x100 | 17}}); reply.Errno != errno.NotSupported {
+		t.Fatalf("共享进程形态: %+v want ENOTSUP", reply)
+	}
+	// fork 形态不变:无 Threader 也不影响 SIGCHLD 分派。
+	if reply := (Syscalls{}).Handle(ctx, Call{Syscall: SysClone, Args: [6]uint64{17}}); reply.Errno != errno.NotImplemented {
+		t.Fatalf("fork 无端口: %+v want ENOSYS 族", reply)
+	}
+	// 线程形态无端口 ENOSYS 族。
+	if reply := (Syscalls{}).Handle(ctx, Call{Syscall: SysClone, Args: [6]uint64{libcFlags}}); reply.Errno != errno.NotImplemented {
+		t.Fatalf("线程无端口: %+v want ENOSYS 族", reply)
 	}
 }

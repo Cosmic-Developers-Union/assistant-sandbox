@@ -1180,8 +1180,8 @@ func TestKillSignalDispatchSemantics(t *testing.T) {
 	if err := control.KillSignal(int64(parent.ID+50), 0); !errors.Is(err, errno.NoProcess) {
 		t.Fatalf("缺失目标: %v want ESRCH", err)
 	}
-	// 非法信号号 EINVAL。
-	if err := control.KillSignal(int64(parent.ID), signal.Number(64)); !errors.Is(err, errno.Invalid) {
+	// 非法信号号 EINVAL(1..64 合法,含 musl 内部保留段)。
+	if err := control.KillSignal(int64(parent.ID), signal.Number(65)); !errors.Is(err, errno.Invalid) {
 		t.Fatalf("非法信号: %v want EINVAL", err)
 	}
 	// pid>0 投递:登记处理器的信号保持挂起待边界投递。

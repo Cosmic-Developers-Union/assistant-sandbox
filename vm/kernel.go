@@ -513,6 +513,224 @@ func (k *Kernel) Fork(parent proc.PID) (proc.Proc, *memory.Table, error) {
 	return child, cloned.Inner(), nil
 }
 
+// CloneThread 创建同组线程(K01/K02):登记线程条目并共享地址空间、
+// 描述符集合与信号处置;不克隆地址空间、不重复计页费(共享映射的
+// 计费归属组长;线程栈是客体 mmap,已在映射时计费,E15 备注)。
+// 线程计入进程数量上限(O02)。clearTID 登记 CLONE_CHILD_CLEARTID
+// (K03):线程退出时写零并唤醒 futex 等待者。
+func (k *Kernel) CloneThread(parent proc.PID, clearTID uint64) (proc.Proc, *memory.Table, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.failed {
+		return proc.Proc{}, nil, errno.Busy
+	}
+	if k.closed {
+		return proc.Proc{}, nil, errno.Cancelled
+	}
+	source, err := k.table.Get(parent)
+	if err != nil {
+		return proc.Proc{}, nil, err
+	}
+	requested := k.budget(proc.Proc{Parent: source.Parent, Program: source.Program})
+	child, err := k.table.CreateThread(parent, source.Program)
+	if err != nil {
+		return proc.Proc{}, nil, err
+	}
+	if err := k.table.Start(child.ID); err != nil {
+		_, _ = k.table.ExitThread(child.ID, 125, 0)
+		return proc.Proc{}, nil, err
+	}
+	if k.meters != nil {
+		if err := k.meters.Spawn(uint64(child.ID), requested); err != nil {
+			_, _ = k.table.ExitThread(child.ID, 125, 0)
+			return proc.Proc{}, nil, err
+		}
+		if err := k.meters.Charge(context.Background(), uint64(child.ID), spawnWorkUnits); err != nil {
+			k.meters.Discard(uint64(child.ID))
+			_, _ = k.table.ExitThread(child.ID, 125, 0)
+			return proc.Proc{}, nil, err
+		}
+	}
+	// CLONE_FILES:共享打开描述符集合;任一侧关闭对双方可见。
+	if k.fds != nil {
+		if err := k.fds.Share(uint64(parent), uint64(child.ID)); err != nil {
+			if k.meters != nil {
+				k.meters.Discard(uint64(child.ID))
+			}
+			_, _ = k.table.ExitThread(child.ID, 125, 0)
+			return proc.Proc{}, nil, err
+		}
+	}
+	// CLONE_SIGHAND:共享信号处置集;屏蔽集继承当前值(线程私有)。
+	if err := k.signals.Share(uint64(parent), uint64(child.ID)); err != nil {
+		if k.fds != nil {
+			k.fds.DropAlias(uint64(child.ID))
+		}
+		if k.meters != nil {
+			k.meters.Discard(uint64(child.ID))
+		}
+		_, _ = k.table.ExitThread(child.ID, 125, 0)
+		return proc.Proc{}, nil, err
+	}
+	bound, ok := k.spaces[parent]
+	if !ok {
+		k.fds.DropAlias(uint64(child.ID))
+		k.signals.Discard(uint64(child.ID))
+		if k.meters != nil {
+			k.meters.Discard(uint64(child.ID))
+		}
+		_, _ = k.table.ExitThread(child.ID, 125, 0)
+		return proc.Proc{}, nil, errno.Wrap(errno.Invalid, "进程未绑定地址空间,不能创建线程")
+	}
+	guard, guarded := bound.(*memory.Guard)
+	if !guarded {
+		k.fds.DropAlias(uint64(child.ID))
+		k.signals.Discard(uint64(child.ID))
+		if k.meters != nil {
+			k.meters.Discard(uint64(child.ID))
+		}
+		_, _ = k.table.ExitThread(child.ID, 125, 0)
+		return proc.Proc{}, nil, errno.Wrap(errno.Invalid, "进程地址空间不支持线程共享")
+	}
+	k.spaces[child.ID] = bound
+	if clearTID != 0 {
+		k.tidAddresses[child.ID] = clearTID
+	}
+	child.State = proc.Running
+	child.Resources = capability.Scope(uint64(child.ID), k.services.Set, k.meters)
+	child.Control = procControl{k: k, self: child.ID}
+	k.emitLocked(scheduler.KindSpawn, child.ID, scheduler.SpawnDetail(source.Program))
+	return child, guard.Inner(), nil
+}
+
+// FinishThread 结束单个线程(K02):非组长直接清算(线程无僵尸,
+// join 依赖 clear_child_tid 唤醒);组长保留占位直到组内最后一个
+// 线程退出。signal 非 0 的致命信号按 Linux 语义升级为整组结束(K08)。
+// 返回组完成与否:组完成时调用方通知父进程状态变化。
+func (k *Kernel) FinishThread(id proc.PID, code uint8, sig uint8) error {
+	k.mu.Lock()
+	if k.closed || k.failed {
+		// 内核终态下线程随内核消亡,不再改动进程表。
+		k.mu.Unlock()
+		return errno.Cancelled
+	}
+	// 致命信号杀死整组(K08):线程定向的默认终止信号不遗留给
+	// 无关线程。
+	if sig != 0 {
+		groupDone, err := k.finishGroupLocked(id, code, sig)
+		k.mu.Unlock()
+		if err == nil && groupDone {
+			k.childStateChanged(id, true)
+			k.children.WakeAll(wait.Data)
+		}
+		return err
+	}
+	groupDone, err := k.table.ExitThread(id, code, 0)
+	if err != nil {
+		k.mu.Unlock()
+		return err
+	}
+	// 线程私有清算:描述符别名、信号状态、计量与地址空间绑定。
+	if k.fds != nil {
+		k.fds.DropAlias(uint64(id))
+	}
+	k.signals.Discard(uint64(id))
+	k.deleteTidAddressLocked(id)
+	if k.meters != nil {
+		k.meters.Discard(uint64(id))
+	}
+	delete(k.spaces, id)
+	if !groupDone {
+		k.mu.Unlock()
+		return nil
+	}
+	k.emitLocked(scheduler.KindExit, id, scheduler.ExitDetail(code, signal.Number(0)))
+	reaped, err := k.table.Get(id)
+	k.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	k.childStateChanged(id, true)
+	k.children.WakeAll(wait.Data)
+	_ = reaped
+	return nil
+}
+
+// FinishGroup 结束整个线程组(exit_group 语义,H08):全组以同一
+// 状态结束,组长承载退出状态转僵尸并通知父进程。
+func (k *Kernel) FinishGroup(id proc.PID, code uint8, sig uint8) error {
+	k.mu.Lock()
+	groupDone, err := k.finishGroupLocked(id, code, sig)
+	k.mu.Unlock()
+	if err == nil && groupDone {
+		k.childStateChanged(id, true)
+		k.children.WakeAll(wait.Data)
+	}
+	return err
+}
+
+// finishGroupLocked 是 FinishGroup 的锁内实现:逐成员清算线程私有
+// 资源并中断残留执行,组长条目承载退出状态。
+func (k *Kernel) finishGroupLocked(id proc.PID, code uint8, sig uint8) (bool, error) {
+	if k.failed {
+		return false, errno.Busy
+	}
+	if k.closed {
+		return false, errno.Cancelled
+	}
+	p, err := k.table.Get(id)
+	if err != nil {
+		return false, err
+	}
+	for _, member := range k.table.Threads(p.TGID) {
+		if member.ID == p.TGID {
+			continue
+		}
+		if k.fds != nil {
+			k.fds.DropAlias(uint64(member.ID))
+		}
+		k.signals.Discard(uint64(member.ID))
+		k.deleteTidAddressLocked(member.ID)
+		if k.meters != nil {
+			k.meters.Discard(uint64(member.ID))
+		}
+		delete(k.spaces, member.ID)
+		// 残留执行流:以致命信号中断,运行器返回后其 FinishThread
+		// 发现条目已消失而自然结束。
+		k.signals.Interrupt(uint64(member.ID), signal.KILL)
+	}
+	if err := k.table.Exit(p.TGID, code, sig); err != nil {
+		return false, err
+	}
+	k.emitLocked(scheduler.KindExit, p.TGID, scheduler.ExitDetail(code, signal.Number(sig)))
+	return true, nil
+}
+
+// Tgkill 按 tgkill(2) 语义投递线程定向信号(K08):tid 必须属于
+// tgid 的线程组(单线程进程 tid==tgid),否则 ESRCH。
+func (k *Kernel) Tgkill(tgid, tid proc.PID, n signal.Number) error {
+	if !n.Valid() {
+		return errno.Invalid
+	}
+	k.mu.Lock()
+	member, err := k.table.Get(tid)
+	if err != nil {
+		k.mu.Unlock()
+		return errno.NoProcess
+	}
+	if member.TGID != tgid {
+		k.mu.Unlock()
+		return errno.NoProcess
+	}
+	k.mu.Unlock()
+	return k.Signal(tid, n)
+}
+
+// deleteTidAddressLocked 清除线程登记的 clear_child_tid 地址。
+func (k *Kernel) deleteTidAddressLocked(id proc.PID) {
+	delete(k.tidAddresses, id)
+}
+
 func (k *Kernel) resolve(name string) (executable.Resolved, error) {
 	if program, err := k.services.Programs.Lookup(name); err == nil {
 
@@ -653,7 +871,8 @@ func (k *Kernel) Wait(ctx context.Context, parent, target proc.PID) (proc.Proc, 
 					// 不再无限等待一个已消失的进程。
 					return true, wait.Data, errno.NoChild
 				}
-				return p.Parent == parent && p.State == proc.Zombie, wait.Data, nil
+				// 组长占位僵尸(组内仍有存活线程)不唤醒等待(K02)。
+				return p.Parent == parent && p.State == proc.Zombie && k.table.Reapable(target), wait.Data, nil
 			}
 			_, ok := k.table.WaitAny(parent)
 			return ok, wait.Data, nil
@@ -709,7 +928,8 @@ func (k *Kernel) WaitChild(ctx context.Context, parent, target proc.PID, nohang 
 				k.mu.Unlock()
 				return proc.ChildState{}, false, errno.NoChild
 			}
-			if p.State != proc.Zombie {
+			// 组长占位僵尸(组内仍有存活线程)不可回收(K02)。
+			if p.State != proc.Zombie || !k.table.Reapable(target) {
 				k.mu.Unlock()
 				return proc.ChildState{}, false, nil
 			}
@@ -775,6 +995,16 @@ func (k *Kernel) Signal(target proc.PID, n signal.Number) error {
 	if err != nil {
 		k.mu.Unlock()
 		return err
+	}
+	if p.State == proc.Zombie && k.table.ThreadCount(p.TGID) > 1 {
+		// 占位组长(组内仍有存活线程,K02):信号投递给首个存活成员。
+		for _, member := range k.table.Threads(p.TGID) {
+			if member.State != proc.Zombie {
+				target = member.ID
+				p = member
+				break
+			}
+		}
 	}
 	zombie := p.State == proc.Zombie
 	replaying := k.replayingLocked()
@@ -847,11 +1077,39 @@ func (k *Kernel) Signal(target proc.PID, n signal.Number) error {
 		k.childStateChanged(target, false)
 		return nil
 	case action == signal.Terminate, action == signal.Core:
+		// K08:线程组内任意线程的致命信号结束整组(Linux 语义)。
+		k.mu.Lock()
+		grouped := k.table.ThreadCount(p.TGID) > 1
+		var groupErr error
+		if grouped {
+			_, groupErr = k.finishGroupLocked(target, 0, uint8(n))
+		}
+		k.mu.Unlock()
+		if grouped {
+			return groupErr
+		}
 		k.signals.Interrupt(uint64(target), n)
 		return nil
 	case action == signal.Stop:
 		// 驻停执行(运行器在指令边界暂停)并记录进程状态;
-		// 丢弃挂起的继续信号(Linux 语义)。
+		// 丢弃挂起的继续信号(Linux 语义)。线程组驻停整组(K08)。
+		k.mu.Lock()
+		members := k.table.Threads(p.TGID)
+		grouped := len(members) > 1
+		if grouped {
+			for _, member := range members {
+				if member.State == proc.Running || member.State == proc.Waiting {
+					_ = k.table.Stop(member.ID)
+				}
+				k.signals.Consume(uint64(member.ID), signal.CONT)
+				k.signals.Interrupt(uint64(member.ID), n)
+			}
+		}
+		k.mu.Unlock()
+		if grouped {
+			k.childStateChanged(target, false)
+			return nil
+		}
 		if err := k.table.Stop(target); err != nil {
 			return err
 		}
@@ -1704,6 +1962,22 @@ func (c procControl) Finish(parent, id proc.PID, code uint8) error {
 	return c.k.Finish(parent, id, ExitStatus{Code: code})
 }
 
+func (c procControl) Tgkill(tgid, tid int64, number signal.Number) error {
+	return c.k.Tgkill(proc.PID(tgid), proc.PID(tid), number)
+}
+
+func (c procControl) CloneThread(clearTID uint64) (proc.Proc, *memory.Table, error) {
+	return c.k.CloneThread(c.self, clearTID)
+}
+
+func (c procControl) FinishThread(id proc.PID, code uint8, sig uint8) error {
+	return c.k.FinishThread(id, code, sig)
+}
+
+func (c procControl) FinishGroup(id proc.PID, code uint8, sig uint8) error {
+	return c.k.FinishGroup(id, code, sig)
+}
+
 func (c procControl) SetUmask(id proc.PID, mask stdfs.FileMode) error {
 	return c.k.SetUmask(id, mask)
 }
@@ -1858,8 +2132,13 @@ func (c procControl) ClearTidAtExit(ctx context.Context, write func(context.Cont
 	if write != nil {
 		_ = write(ctx, address, make([]byte, 8))
 	}
-	if futexes, ok := c.k.futexes, true; ok {
-		futexes.Wake(futex.Key{Owner: uint64(c.self), Address: address}, math.MaxInt32)
+	// 唤醒键按线程组(K02):等待 join 的线程与退出线程同组。
+	owner := uint64(c.self)
+	if p, err := c.k.table.Get(c.self); err == nil {
+		owner = uint64(p.TGID)
+	}
+	if c.k.futexes != nil {
+		c.k.futexes.Wake(futex.Key{Owner: owner, Address: address}, math.MaxInt32)
 	}
 }
 

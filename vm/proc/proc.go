@@ -85,13 +85,16 @@ type Table struct {
 	limit   int
 	init    PID
 	entries map[PID]Proc
+	// groups 记录线程组存活成员:TGID → 组内 TID 集合(含组长)。
+	// 线程退出递减,组空时组长转僵尸并通知父进程(K01/K02)。
+	groups map[PID]map[PID]struct{}
 }
 
 func New(limit int) (*Table, error) {
 	if limit < 1 {
 		return nil, fmt.Errorf("进程预算必须为正数: %w", errno.Invalid)
 	}
-	return &Table{next: 1, limit: limit, entries: map[PID]Proc{}}, nil
+	return &Table{next: 1, limit: limit, entries: map[PID]Proc{}, groups: map[PID]map[PID]struct{}{}}, nil
 }
 
 func clone(p Proc) Proc {
@@ -148,7 +151,76 @@ func (t *Table) Create(parent PID, program string, args []string, dir string, en
 	}
 	t.next++
 	t.entries[p.ID] = p
+	t.join(p.ID, p.TGID)
 	return clone(p), nil
+}
+
+// join 把 TID 登记进其线程组;组集合随用随建。
+func (t *Table) join(tid, tgid PID) {
+	set, ok := t.groups[tgid]
+	if !ok {
+		set = map[PID]struct{}{}
+		t.groups[tgid] = set
+	}
+	set[tid] = struct{}{}
+}
+
+// CreateThread 在 parent 所属线程组内创建线程(K01/K02):新条目
+// 的 TID 独立分配,TGID、进程组、会话与父指针继承组长语义;
+// 程序名/目录/环境/掩码按 clone 语义复制创建线程当前值。
+func (t *Table) CreateThread(parent PID, program string) (Proc, error) {
+	pp, ok := t.entries[parent]
+	if !ok {
+		return Proc{}, errno.NoProcess
+	}
+	if pp.State != Running && pp.State != Waiting {
+		return Proc{}, errno.Busy
+	}
+	if t.entries == nil || len(t.entries) >= t.limit || t.next == 0 {
+		return Proc{}, errno.Limit
+	}
+	p := Proc{
+		ID:         t.next,
+		TID:        t.next,
+		TGID:       pp.TGID,
+		Parent:     pp.Parent,
+		Program:    pp.Program,
+		Args:       slices.Clone(pp.Args),
+		Dir:        pp.Dir,
+		Env:        maps.Clone(pp.Env),
+		State:      Ready,
+		Generation: pp.Generation,
+
+		PGID:  pp.PGID,
+		SID:   pp.SID,
+		Umask: pp.Umask,
+		Nice:  pp.Nice,
+	}
+	t.next++
+	t.entries[p.ID] = p
+	t.join(p.ID, p.TGID)
+	return clone(p), nil
+}
+
+// Threads 返回线程组内存活成员(含组长),按 TID 排序。
+func (t *Table) Threads(tgid PID) []Proc {
+	set, ok := t.groups[tgid]
+	if !ok {
+		return nil
+	}
+	out := make([]Proc, 0, len(set))
+	for tid := range set {
+		if p, ok := t.entries[tid]; ok {
+			out = append(out, clone(p))
+		}
+	}
+	slices.SortFunc(out, func(a, b Proc) int { return int(a.ID) - int(b.ID) })
+	return out
+}
+
+// ThreadCount 返回线程组内存活成员数。
+func (t *Table) ThreadCount(tgid PID) int {
+	return len(t.groups[tgid])
 }
 
 const DefaultUmask stdfs.FileMode = 0o022
@@ -271,6 +343,42 @@ func (t *Table) Exit(id PID, code uint8, signal uint8) error {
 	if p.State != Running && p.State != Stopped && p.State != Waiting {
 		return errno.Busy
 	}
+	// 线程组语义(H08/K02):exit_group 结束整组——非组长条目直接
+	// 移除,组长条目承载退出状态转僵尸。单线程进程即普通退出。
+	tgid := p.TGID
+	set := t.groups[tgid]
+	for tid := range set {
+		for childID, child := range t.entries {
+			if child.Parent == tid && childID != tid {
+				child.Parent = t.init
+				t.entries[childID] = child
+			}
+		}
+		if tid != tgid {
+			delete(t.entries, tid)
+		}
+	}
+	t.groups[tgid] = map[PID]struct{}{tgid: {}}
+	leader := t.entries[tgid]
+	leader.ExitCode = code
+	leader.ExitSignal = signal
+	leader.State = Zombie
+	t.entries[tgid] = leader
+	return nil
+}
+
+// ExitThread 退出单个线程(K02/H08):非组长条目直接移除(线程无
+// 僵尸,join 靠 clear_child_tid 唤醒);组长条目在组内存活期间保留
+// 为占位僵尸(不可回收),组内最后一个线程退出时以该线程的状态
+// 定稿并报告组完成。groupDone=true 表示整个进程已转僵尸。
+func (t *Table) ExitThread(id PID, code uint8, signal uint8) (bool, error) {
+	p, ok := t.entries[id]
+	if !ok {
+		return false, errno.NoProcess
+	}
+	if p.State != Running && p.State != Stopped && p.State != Waiting {
+		return false, errno.Busy
+	}
 	p.ExitCode = code
 	p.ExitSignal = signal
 	for childID, child := range t.entries {
@@ -279,9 +387,41 @@ func (t *Table) Exit(id PID, code uint8, signal uint8) error {
 			t.entries[childID] = child
 		}
 	}
-	p.State = Zombie
-	t.entries[id] = p
-	return nil
+	set := t.groups[p.TGID]
+	if id == p.TGID {
+		p.State = Zombie
+		t.entries[id] = p
+		return len(set) == 1, nil
+	}
+	delete(t.entries, id)
+	delete(set, id)
+	leader := t.entries[p.TGID]
+	if leader.State != Zombie {
+		// 组长仍在运行:组未结束(最后退出的成员若是组长,由
+		// 组长分支定稿)。
+		return false, nil
+	}
+	// 组长已先退出并保留占位僵尸:全组就此结束,以最后退出的
+	// 线程状态定稿。
+	leader.ExitCode = code
+	leader.ExitSignal = signal
+	t.entries[leader.ID] = leader
+	return true, nil
+}
+
+// groupFinished 判断组长的僵尸占位是否已可回收:组内只剩组长自身。
+func (t *Table) groupFinished(p Proc) bool {
+	return p.State == Zombie && len(t.groups[p.TGID]) <= 1
+}
+
+// Reapable 报告 id 是否处于可回收终态:僵尸且(组长时)整组已结束。
+// 等待路径以此判断唤醒,避免组长占位僵尸提前唤醒 wait*。
+func (t *Table) Reapable(id PID) bool {
+	p, ok := t.entries[id]
+	if !ok {
+		return false
+	}
+	return t.groupFinished(p)
 }
 
 // Stop 把运行中的进程转入驻停状态;僵尸与已驻停进程报错。阻塞
@@ -314,16 +454,18 @@ func (t *Table) Reap(parent, id PID) (Proc, error) {
 	if !ok || p.Parent != parent {
 		return Proc{}, errno.NoChild
 	}
-	if p.State != Zombie {
+	if p.State != Zombie || !t.groupFinished(p) {
+		// 组长僵尸在组内仍有存活线程时不可回收(K02):等待继续。
 		return Proc{}, errno.Busy
 	}
 	delete(t.entries, id)
+	delete(t.groups, p.TGID)
 	return clone(p), nil
 }
 
 func (t *Table) WaitAny(parent PID) (Proc, bool) {
 	for _, id := range slices.Sorted(maps.Keys(t.entries)) {
-		if p := t.entries[id]; p.Parent == parent && p.State == Zombie {
+		if p := t.entries[id]; p.Parent == parent && t.groupFinished(p) {
 			return clone(p), true
 		}
 	}

@@ -17,9 +17,27 @@ type Table struct {
 	pages map[uint64][]byte
 
 	limit uint64
+
+	// annotation 允许装载层在同组线程共享的地址空间上挂每地址空间
+	// 状态(brk/mmap 游标等);内核不解释其内容(K02)。
+	annotation any
 }
 
 func New(limitBytes uint64) *Table { return &Table{limit: limitBytes} }
+
+// SetAnnotation 挂载每地址空间装载状态。
+func (t *Table) SetAnnotation(value any) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.annotation = value
+}
+
+// Annotation 返回挂载的每地址空间状态;未挂载返回 nil。
+func (t *Table) Annotation() any {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.annotation
+}
 
 // Clone 复制整个地址空间(fork 语义):区域列表与全部私有页深拷贝,
 // 父子此后对同一虚拟地址的写入互不可见;预算上限一并继承。

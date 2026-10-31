@@ -104,6 +104,12 @@ func (t *Table) Restore(ctx context.Context, data []byte) error {
 	t.entries = entries
 	t.next = next
 	t.init = snapshot.Init
+	// 线程组集合按 TID/TGID 重建(K02):快照逐条目恢复,组集合
+	// 是派生状态。
+	t.groups = map[PID]map[PID]struct{}{}
+	for _, p := range entries {
+		t.join(p.ID, p.TGID)
+	}
 	return nil
 }
 

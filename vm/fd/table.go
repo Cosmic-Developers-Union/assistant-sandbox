@@ -242,6 +242,29 @@ func (t *Table) Dup(ctx context.Context, pid uint64, from, to uint32) error {
 // Fork 把 parent 的全部描述符复制给 child:条目与 CLOEXEC 标志逐一
 // 复制并共享底层句柄(与 fork 语义一致,打开文件描述共享偏移);
 // 返回复制的描述符个数。
+// Share 让 child 与 parent 共用同一打开描述符集合(CLONE_FILES,
+// K02):任一侧的安装/关闭对双方可见,预算不重复计费——共享安装
+// 由执行安装的一方计费。线程退出用 DropAlias 摘除别名而不关闭
+// 句柄;最后一个别名照常由 Detach 清算。
+func (t *Table) Share(parent, child uint64) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	source := t.entries[parent]
+	if source == nil {
+		return errno.NoProcess
+	}
+	t.entries[child] = source
+	return nil
+}
+
+// DropAlias 摘除 child 的描述符别名(CLONE_FILES 线程退出):
+// 不触碰共享集合中的任何句柄,也不归还预算(费用记在安装方)。
+func (t *Table) DropAlias(child uint64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.entries, child)
+}
+
 func (t *Table) Fork(parent, child uint64) (int, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()

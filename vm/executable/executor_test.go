@@ -279,11 +279,12 @@ func TestDeathClassifiesAsSignaled(t *testing.T) {
 }
 
 // TestDeathInvalidSignalStaysFatal 验证无效信号号的 Death 不被归类,
-// 保持原错误上抛(fail-closed)。
+// 保持原错误上抛(fail-closed)。信号 1..64 合法(64 位信号集),
+// 65 及以上无效。
 func TestDeathInvalidSignalStaysFatal(t *testing.T) {
 	b := NewBuiltin()
 	program := Func(func(context.Context, proc.Proc) (uint8, error) {
-		return 0, Death{Signal: signal.Number(64)}
+		return 0, Death{Signal: signal.Number(65)}
 	})
 	inst, err := b.Start(t.Context(), program, testProc())
 	if err != nil {
