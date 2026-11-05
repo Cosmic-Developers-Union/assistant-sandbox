@@ -34,7 +34,7 @@ syslog、pivot_root、perf_event_open、pidfd_open、pidfd_getfd、
 close_range、fadvise64、fallocate、userfaultfd、accept4)固定登记为
 ENOSYS 清单,归 L/I/H 组后续任务。
 
-### 已交付语义(80 项)
+### 已交付语义(94 项)
 
 | 调用 | 语义来源(任务/测试) |
 | --- | --- |
@@ -43,6 +43,7 @@ ENOSYS 清单,归 L/I/H 组后续任务。
 | execve | H06/H07;`TestRealELFExecve*` |
 | waitid | H09;`TestKernelWaitChild*`、`TestWaitid*` |
 | inotify_init1 / inotify_add_watch / inotify_rm_watch | I20(路径匹配子集:CREATE/MODIFY/DELETE/OPEN/ACCESS/CLOSE/MOVED_FROM/TO/DELETE_SELF/MOVE_SELF/IGNORED/Q_OVERFLOW;rename 后旧路径不跟随为登记差异);`TestInotifyLifecycleAgainstRealFileSystem`、`vm/inotify` |
+| socket / socketpair / bind / listen / accept / accept4 / connect / sendto / recvfrom / shutdown / getsockname / getpeername / getsockopt / setsockopt | M01–M06(VM 独立命名空间,回环撮合;AF_INET 流式/数据报与 AF_UNIX 流式;SOCK_NONBLOCK/CLOEXEC;选项子集 SO_REUSEADDR/SO_TYPE/SO_ERROR/SO_KEEPALIVE/TCP_NODELAY;AF_INET6 与 AF_UNIX 数据报 ENOTSUP;MSG_NOSIGNAL 忽略);`vm/net`、`TestSocketSyscallsDispatchWithSockaddrEncoding` |
 | getpid / gettid / getppid | G 组身份查询 |
 | openat / close / read / write | I03/I06;`TestOpenFlag*`、`TestReadWriteShort*` |
 | readv / writev | I07;`TestReadvWritevScatterGather` |
@@ -81,7 +82,6 @@ ENOSYS 清单,归 L/I/H 组后续任务。
 
 | 调用 | 承接任务 |
 | --- | --- |
-| socket / bind / listen / accept / connect / socketpair / sendto / recvfrom / shutdown / setsockopt / getsockopt / getsockname / getpeername | M02–M08 |
 | getitimer / setitimer | 未纳入配置(需要时立任务) |
 | getpriority / setpriority | 未纳入配置(需要时立任务) |
 | mlock / munlock / mlockall / munlockall / mincore | E15(映射/物理页预算) |

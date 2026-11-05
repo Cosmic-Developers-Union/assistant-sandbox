@@ -100,6 +100,10 @@ type Kernel struct {
 	// 成功后事件送达全部命中监视,跨进程可见。
 	notifies *inotify.Broker
 
+	// network 是 VM 独立的网络命名空间(M01):回环撮合与端口
+	// 注册表随内核创建与关闭,两台 VM 互不可见。
+	network *net.Namespace
+
 	jobsMu      sync.Mutex
 	jobsRunning bool
 
@@ -218,6 +222,7 @@ func New(services Services, maxProcesses int) (*Kernel, error) {
 	k.robustLists = map[proc.PID]robustList{}
 	k.prepared = map[proc.PID]*memory.Table{}
 	k.notifies = inotify.NewBroker()
+	k.network = net.New()
 	k.locks = locks.New()
 	k.init = root.ID
 	k.signals.Spawn(uint64(root.ID))
@@ -1879,6 +1884,8 @@ func (k *Kernel) Close(ctx context.Context) error {
 	k.queue.close()
 	// 关闭 futex 等待表:阻塞的 WAIT 以 ECANCELED 放行(K05)。
 	k.futexes.Close()
+	// 关闭网络命名空间:阻塞的 socket 操作放行,监听拆除(M01/M12)。
+	k.network.Close()
 	if k.locks != nil {
 		k.locks.Close()
 	}
@@ -2474,6 +2481,10 @@ func (c procControl) HandleRobustListAtExit(ctx context.Context, mem proc.Robust
 
 func (c procControl) NotifyBroker() *inotify.Broker {
 	return c.k.notifies
+}
+
+func (c procControl) NetNamespace() *net.Namespace {
+	return c.k.network
 }
 
 func (c procControl) Locks() *locks.Table {

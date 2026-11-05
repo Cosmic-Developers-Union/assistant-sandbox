@@ -28,6 +28,9 @@ func TestWASIMappingIsStable(t *testing.T) {
 		Cancelled: 11, Interrupted: 27, WouldBlock: 6, Range: 68, Overflow: 61,
 		BrokenPipe: 64, NoExec: 45, TooBig: 57, Seek: 70, TimedOut: 73, Version: 75,
 		Fault: 21, IO: 29, CrossDevice: 18, NoDevice: 60,
+		AddressInUse: 3, AddressNotAvail: 4, IsConn: 30, NotConn: 53, NotSock: 57,
+		ConnRefused: 14, ConnReset: 15, ConnAborted: 13, Already: 7, InProgress: 26,
+		MessageSize: 35, HostUnreachable: 23,
 	}
 
 	// 每个声明码都有独立于回退值的映射,不得伪装成 ENOSYS。
@@ -67,6 +70,9 @@ func TestLinuxMappingIsStable(t *testing.T) {
 		NotImplemented: 38, NotEmpty: 39, LinkLoop: 40, Version: 71, Overflow: 75,
 		NotSupported: 95, NetworkUnreachable: 101, TimedOut: 110, Cancelled: 125,
 		Fault: 14, IO: 5, Seek: 29,
+		AddressInUse: 98, AddressNotAvail: 99, IsConn: 106, NotConn: 107, NotSock: 88,
+		ConnRefused: 111, ConnReset: 104, ConnAborted: 103, Already: 114, InProgress: 115,
+		MessageSize: 90, HostUnreachable: 113,
 	}
 
 	for _, code := range Codes() {

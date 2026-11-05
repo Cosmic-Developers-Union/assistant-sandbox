@@ -256,6 +256,10 @@ type Syscalls struct {
 	// 已解析路径发事件;未装配时全部为空操作。
 	Notify inotify.Observer
 
+	// Sockets 是 socket 系统调用端口(M02+);未装配时 socket 族
+	// 报 NotImplemented 族。
+	Sockets Sockets
+
 	// Locks 是字节范围文件锁表(I14);未装配时文件锁命令报 ENOSYS 族。
 	Locks *locks.Table
 
@@ -551,6 +555,34 @@ func (s Syscalls) dispatch(ctx context.Context, call Call) Reply {
 		return s.inotifyAddWatch(ctx, call)
 	case SysInotifyRmWatch:
 		return s.inotifyRmWatch(ctx, call)
+	case SysSocket:
+		return s.socket(ctx, call)
+	case SysSocketpair:
+		return s.socketpair(ctx, call)
+	case SysBind:
+		return s.bind(ctx, call)
+	case SysListen:
+		return s.listen(ctx, call)
+	case SysAccept:
+		return s.accept4(ctx, call)
+	case SysAccept4:
+		return s.accept4(ctx, call)
+	case SysConnect:
+		return s.connect(ctx, call)
+	case SysSendto:
+		return s.sendto(ctx, call)
+	case SysRecvfrom:
+		return s.recvfrom(ctx, call)
+	case SysShutdown:
+		return s.shutdown(ctx, call)
+	case SysGetsockname:
+		return s.getsockname(ctx, call)
+	case SysGetpeername:
+		return s.getpeername(ctx, call)
+	case SysGetsockopt:
+		return s.getsockopt(ctx, call)
+	case SysSetsockopt:
+		return s.setsockopt(ctx, call)
 	case SysDup:
 		return s.dup(ctx, call)
 	case SysDup3:
@@ -585,9 +617,6 @@ func (s Syscalls) dispatch(ctx context.Context, call Call) Reply {
 		return s.newfstatat(ctx, call)
 	case SysStatx:
 		return s.statx(ctx, call)
-	case SysSocket, SysBind, SysListen, SysAccept, SysConnect, SysSocketpair, SysSendto, SysRecvfrom, SysShutdown, SysSetsockopt, SysGetsockopt, SysGetsockname, SysGetpeername:
-		// 网络栈整组未交付(M 组);已登记但能力缺失按约定报 ENOTSUP。
-		return Reply{Errno: errno.NotSupported}
 	case SysReadlinkat:
 		return s.readlinkat(ctx, call)
 	case SysUmask:

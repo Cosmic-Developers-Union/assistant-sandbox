@@ -580,7 +580,7 @@ func TestRegistryMatchesAdapterMapping(t *testing.T) {
 	// 适配器认识但未实现的编号:明确登记为 ENOSYS 清单(新增映射
 	// 必须同时实现或显式进入本清单,防止伪成功)。
 	unimplemented := map[string]bool{
-		"accept4": true, "acct": true, "chroot": true, "close_range": true,
+		"acct": true, "chroot": true, "close_range": true,
 		"clone3":     true,
 		"faccessat2": true, "fadvise64": true, "fallocate": true, "kexec_load": true, "memfd_create": true,
 		"mount": true, "openat2": true, "perf_event_open": true, "pidfd_getfd": true,

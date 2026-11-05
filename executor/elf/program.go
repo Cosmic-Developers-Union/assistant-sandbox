@@ -462,6 +462,21 @@ func syscalls(ctx context.Context, process proc.Proc, space *memory.Table, plan 
 		// inotify 事件扇出(I20):文件类系统调用成功后按路径发事件。
 		handler.Notify = notify.NotifyBroker()
 	}
+	if netControl, ok := process.Control.(proc.NetControl); ok {
+		// socket 系统调用端口(M01-M05):VM 独立命名空间 + 描述符表。
+		if descriptors, err := process.Resources.Descriptors(); err == nil {
+			if installer, ok := descriptors.(fd.Installer); ok {
+				handler.Sockets = processSockets{
+					ns:        netControl.NetNamespace(),
+					installer: installer,
+					descriptors: func(ctx context.Context, fd uint64) (any, error) {
+						return descriptorsHandle{table: descriptors, pid: uint64(process.ID)}.Get(ctx, fd)
+					},
+					pid: uint64(process.ID),
+				}
+			}
+		}
+	}
 	if sessions, ok := process.Control.(proc.SessionControl); ok {
 		handler.Sessions = processSessions{control: sessions}
 	}

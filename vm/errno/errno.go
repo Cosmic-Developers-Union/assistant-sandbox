@@ -50,6 +50,20 @@ const (
 	IO Code = "EIO：描述符读写失败"
 
 	Seek Code = "ESPIPE：描述符不支持定位"
+
+	// 网络族(M 组):asm-generic 数值即 Linux 数值。
+	AddressInUse    Code = "EADDRINUSE：地址已被占用"
+	AddressNotAvail Code = "EADDRNOTAVAIL：地址不可用"
+	IsConn          Code = "EISCONN：套接字已连接"
+	NotSock         Code = "ENOTSOCK：描述符不是套接字"
+	NotConn         Code = "ENOTCONN：套接字未连接"
+	ConnRefused     Code = "ECONNREFUSED：目标拒绝连接"
+	ConnReset       Code = "ECONNRESET：连接被对端重置"
+	ConnAborted     Code = "ECONNABORTED：软件导致的连接中止"
+	Already         Code = "EALREADY：操作已在进行"
+	InProgress      Code = "EINPROGRESS：操作正在进行"
+	MessageSize     Code = "EMSGSIZE：报文过长"
+	HostUnreachable Code = "EHOSTUNREACH：主机不可达"
 )
 
 var declared = []Code{
@@ -57,6 +71,8 @@ var declared = []Code{
 	Permission, NotPermitted, Exist, NotDirectory, IsDirectory, NotEmpty, BadHandle, BrokenPipe, NameTooLong, ReadOnlyFS,
 	LinkLoop, NoDevice, NoSpace, NoMemory, CrossDevice, Cancelled, Interrupted, WouldBlock, Range, Overflow,
 	TimedOut, NoExec, Version, Fault, IO, Seek, TooBig,
+	AddressInUse, AddressNotAvail, IsConn, NotConn, NotSock, ConnRefused, ConnReset, ConnAborted, Already,
+	InProgress, MessageSize, HostUnreachable,
 }
 
 func Codes() []Code { return slices.Clone(declared) }
@@ -103,6 +119,19 @@ var wasiNumbers = map[Code]uint16{
 	NoExec:      45,
 	TooBig:      57,
 	Version:     75,
+	// 网络族(M 组;Go wasip1 表数值)。
+	AddressInUse:    3,
+	AddressNotAvail: 4,
+	IsConn:          30,
+	NotConn:         53,
+	NotSock:         57,
+	ConnRefused:     14,
+	ConnReset:       15,
+	ConnAborted:     13,
+	Already:         7,
+	InProgress:      26,
+	MessageSize:     35,
+	HostUnreachable: 23,
 }
 
 func WASI(code Code) (uint16, string) {
@@ -151,6 +180,18 @@ var linuxNumbers = map[Code]int32{
 	NetworkUnreachable: 101,
 	TimedOut:           110,
 	Cancelled:          125,
+	AddressInUse:       98,
+	AddressNotAvail:    99,
+	IsConn:             106,
+	NotSock:            88,
+	NotConn:            107,
+	ConnRefused:        111,
+	ConnReset:          104,
+	ConnAborted:        103,
+	Already:            114,
+	InProgress:         115,
+	MessageSize:        90,
+	HostUnreachable:    113,
 }
 
 func Linux(code Code) (int32, string) {

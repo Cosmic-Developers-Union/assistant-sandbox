@@ -10,6 +10,7 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/inotify"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/locks"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/memory"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/net"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/signal"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/trace"
 )
@@ -153,6 +154,12 @@ type LocksControl interface {
 // 共享内核级扇出注册表,文件类系统调用成功后事件送达全部命中监视。
 type NotifyControl interface {
 	NotifyBroker() *inotify.Broker
+}
+
+// NetControl 是网络命名空间端口(M01/M02):socket 系统调用经 VM
+// 独立的命名空间完成撮合,两台 VM 互不可见。
+type NetControl interface {
+	NetNamespace() *net.Namespace
 }
 
 // RobustMemory 是 robust 清算所需的客体内存原语(执行器注入
