@@ -483,6 +483,19 @@ func syscalls(ctx context.Context, process proc.Proc, space *memory.Table, plan 
 		}
 		handler.Spawner = spawner
 	}
+	if vforkControl, ok := process.Control.(proc.VforkControl); ok {
+		vforker := processVforker{
+			parent: process, space: space, plan: plan, core: core,
+			control: vforkControl,
+		}
+		if finisher, ok := process.Control.(proc.FinishCurrentControl); ok {
+			vforker.finisher = finisher
+		}
+		if rebind, ok := process.Control.(proc.SpaceRebindControl); ok {
+			vforker.rebind = rebind
+		}
+		handler.Vforker = vforker
+	}
 	if threader, ok := process.Control.(proc.ThreadControl); ok {
 		handler.Threader = processThreader{
 			parent: process, space: space, plan: plan, core: core,
@@ -1050,7 +1063,13 @@ func (f processForker) Fork(ctx context.Context) (uint64, error) {
 			// 子进程执行故障:按 fail-closed 以 125 退出并转僵尸。
 			code = 125
 		}
-		_ = f.finisher.FinishCurrent(child.ID, uint8(code))
+		// H10 语义:僵尸由父进程 wait* 回收;控制端口无
+		// FinishCurrentControl 时退回按登记父进程写终态。
+		if f.finisher != nil {
+			_ = f.finisher.FinishCurrent(child.ID, uint8(code))
+		} else {
+			_ = f.parent.Control.Finish(f.parent.ID, child.ID, uint8(code))
+		}
 	}()
 	return uint64(child.ID), nil
 }
@@ -1215,15 +1234,182 @@ func (t processThreader) CloneThread(ctx context.Context, request common.CloneRe
 	return uint64(child.ID), nil
 }
 
+// processVforker 把 clone 的 vfork 形态(H12)适配为共享地址空间的
+// 子进程创建:子进程与调用方共享同一地址空间续接执行(栈按请求,
+// 缺省沿用调用方栈),父进程在本系统调用内暂停,直到子进程 exec
+// (换绑新地址空间)或退出——vfork 的完成语义。共享状态(地址空间、
+// 每空间装载游标)由暂停保证串行,exec 后子进程与父进程各自独立。
+type processVforker struct {
+	parent   proc.Proc
+	space    *memory.Table
+	plan     *loaderelf.Plan
+	core     cpu.Port
+	control  proc.VforkControl
+	finisher proc.FinishCurrentControl
+	rebind   proc.SpaceRebindControl
+}
+
+func (f processVforker) Vfork(ctx context.Context, request common.VforkRequest) (uint64, error) {
+	child, space, err := f.control.Vfork()
+	if err != nil {
+		return 0, err
+	}
+	// 续接边界:调用时刻的完整寄存器与 ecall 之后的 PC;子进程
+	// vfork 返回值为 0(Linux 语义)。
+	state, err := f.core.State(ctx)
+	if err != nil {
+		return 0, err
+	}
+	binding := &vforkBinding{
+		process: child,
+		space:   space,
+		plan:    f.plan,
+		control: f.rebind,
+		done:    make(chan struct{}),
+	}
+	go func() {
+		// 子进程生命周期独立于调用方上下文;父进程在 vfork 调用内
+		// 暂停,完成(exec/退出)后恢复。
+		runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+		defer cancel()
+		childCore, err := riscv64.New(cpu.Config{
+			Memory: space,
+			Entry:  state.PC,
+			Meter:  meter{ctx: runCtx, meters: metersOf(child), pid: uint64(child.ID)},
+		})
+		if err != nil {
+			binding.release()
+			_ = f.finisher.FinishCurrent(child.ID, 125)
+			return
+		}
+		next := state
+		next.Registers[regArgument0] = 0
+		if request.Stack != 0 {
+			next.Registers[regSp] = request.Stack
+		}
+		if err := childCore.Reset(runCtx, next); err != nil {
+			binding.release()
+			_ = f.finisher.FinishCurrent(child.ID, 125)
+			return
+		}
+		childHandler := syscalls(runCtx, child, space, f.plan, childCore)
+		// 共享每空间装载状态:brk/mmap 游标与计费归属空间持有者
+		// (K02 同一语义)。
+		if runtime := spaceRuntimeOf(space, child, f.plan); runtime != nil {
+			childHandler.Heap = runtime.heap
+			childHandler.Mapper = runtime.mapper
+		}
+		childHandler.Core = childCore
+		deliverer := &signalDeliverer{space: space, core: childCore}
+		if delivery, ok := child.Control.(proc.SignalDeliveryControl); ok {
+			deliverer.control = delivery
+		}
+		if dispositions, ok := child.Control.(proc.SignalDispositionControl); ok {
+			deliverer.disposition = dispositions
+		}
+		binding.handler = &childHandler
+		binding.core = childCore
+		binding.deliverer = deliverer
+		childHandler.Execs = &processExec{process: child, space: space, core: childCore, handler: &childHandler, vf: binding}
+		childConfig := common.Config{
+			Core:       childCore,
+			Dispatcher: faultDispatching{next: &linuxriscv64.Adapter{Handler: &childHandler, Registers: childCore}, deliver: deliverer},
+			Boundary:   deliverer.boundary,
+		}
+		// 子进程同样接入执行权排队(H02/H03)。
+		childScheduling, hasScheduling := child.Control.(proc.ExecutionScheduling)
+		if hasScheduling {
+			if err := childScheduling.Enter(runCtx); err != nil {
+				binding.release()
+				_ = f.finisher.FinishCurrent(child.ID, 125)
+				return
+			}
+			defer func() { _ = childScheduling.Leave() }()
+			childConfig.Switcher = &sliceSwitcher{sched: childScheduling, remaining: instructionsPerSlice}
+			childConfig.Dispatcher = schedulingDispatch{next: childConfig.Dispatcher, sched: childScheduling}
+		}
+		runner, err := common.NewRunner(childConfig)
+		if err != nil {
+			binding.release()
+			_ = f.finisher.FinishCurrent(child.ID, 125)
+			return
+		}
+		code, runErr := runner.Run(runCtx)
+		if runErr != nil {
+			// 子进程执行故障:按 fail-closed 以 125 退出并转僵尸。
+			code = 125
+		}
+		// exec 成功路径已完成 release;此处对退出路径兜底(恰好一次)。
+		binding.release()
+		_ = f.finisher.FinishCurrent(child.ID, uint8(code))
+	}()
+	select {
+	case <-binding.done:
+	case <-ctx.Done():
+		// 调用方上下文取消(关闭/信号):vfork 不再等待完成。
+		return 0, ctx.Err()
+	}
+	return uint64(child.ID), nil
+}
+
+// vforkBinding 携带 vfork 子进程的可换绑执行上下文(H12):exec 时
+// 换绑全新地址空间并恰好一次地释放父进程暂停。
+type vforkBinding struct {
+	process   proc.Proc
+	space     *memory.Table
+	plan      *loaderelf.Plan
+	control   proc.SpaceRebindControl
+	handler   *common.Syscalls
+	core      cpu.Port
+	deliverer *signalDeliverer
+
+	done chan struct{}
+	once sync.Once
+}
+
+// release 在子进程 exec 成功或退出时恰好触发一次:父进程恢复。
+func (v *vforkBinding) release() {
+	v.once.Do(func() { close(v.done) })
+}
+
+// prepare 为 exec 装载新映像准备全新空表(内核暂存待提交绑定)。
+func (v *vforkBinding) prepare() (*memory.Table, error) {
+	if v.control == nil {
+		return nil, errno.Wrap(errno.NotSupported, "地址空间换绑端口未装配")
+	}
+	return v.control.PrepareSpace()
+}
+
+// switchTo 把执行上下文(核心、系统调用内存、信号帧投递、每空间
+// 装载状态)切换到新表并固化内核绑定。
+func (v *vforkBinding) switchTo(ctx context.Context, fresh *memory.Table) error {
+	if err := v.control.CommitSpace(); err != nil {
+		return err
+	}
+	v.space = fresh
+	if v.handler != nil {
+		v.handler.Memory = fresh
+	}
+	if attacher, ok := v.core.(cpu.Attacher); ok {
+		attacher.Attach(fresh)
+	}
+	if v.deliverer != nil {
+		v.deliverer.space = fresh
+	}
+	return nil
+}
+
 // processExec 把 execve 适配为当前进程的原子映像替换(H06/H07):
 // 新映像(含 shebang 解析)完全装载成功后才释放旧地址空间并重置
 // 核心;装载失败不做任何修改,旧程序继续执行。成功后 PID 不变,
-// 信号处置/挂起/CLOEXEC 经内核控制端口复位。
+// 信号处置/挂起/CLOEXEC 经内核控制端口复位。vfork 子进程(H12)经
+// vf 换绑全新地址空间:父进程保留原空间,装载失败旧空间不受影响。
 type processExec struct {
 	process proc.Proc
 	space   *memory.Table
 	core    cpu.Port
 	handler *common.Syscalls
+	vf      *vforkBinding
 }
 
 // maxShebangDepth 与 Linux BINPRM_MAX_INTERP 一致:解释器链最深 4 层。
@@ -1235,35 +1421,80 @@ func (p *processExec) Exec(ctx context.Context, path string, argv, envp []string
 		return err
 	}
 	plan := loaded.main
+	// vfork 子进程:先准备全新空表(内核暂存待提交绑定),装载失败
+	// 时丢弃——原空间(父进程仍在使用)全程不被触碰。
+	var fresh *memory.Table
+	if p.vf != nil {
+		fresh, err = p.vf.prepare()
+		if err != nil {
+			return err
+		}
+	}
 	// 原子边界:装载已成功。先回吐旧映像的内存计量,再为新映像记账;
 	// 记账失败(配额耗尽)恢复旧计量,旧程序继续执行。此后释放旧空间、
 	// 装入新映像并重置执行流。
-	released := p.releaseOld(ctx)
+	// vfork 子进程不回吐旧计量:旧空间仍归父进程持有,新映像按子
+	// 进程自身记账。
+	released := uint64(0)
+	if p.vf == nil {
+		released = p.releaseOld(ctx)
+	}
 	if err := chargeMemory(ctx, p.process, plan); err != nil {
-		p.recharge(ctx, released)
+		if p.vf != nil {
+			p.vf.control.DiscardSpace()
+		} else {
+			p.recharge(ctx, released)
+		}
 		return err
 	}
 	chargeSegments(ctx, p.process, loaded.interpreterSegments())
-	if err := p.clearSpace(ctx); err != nil {
+	target := p.space
+	if p.vf != nil {
+		target = fresh
+	} else if err := p.clearSpace(ctx); err != nil {
 		return err
 	}
-	if err := populateSpace(ctx, p.space, plan); err != nil {
+	if err := populateSpace(ctx, target, plan); err != nil {
+		if p.vf != nil {
+			p.vf.control.DiscardSpace()
+		}
 		return err
 	}
-	if err := populateSegments(ctx, p.space, loaded.interpreterSegments()); err != nil {
+	if err := populateSegments(ctx, target, loaded.interpreterSegments()); err != nil {
+		if p.vf != nil {
+			p.vf.control.DiscardSpace()
+		}
 		return err
 	}
-	// brk 随新映像布局重建,堆起始不得沿用旧布局。
-	p.handler.Heap = newHeap(p.space, p.process, plan)
+	// brk 随新映像布局重建,堆起始不得沿用旧布局。vfork 子进程的
+	// 每空间装载状态随新表重建。
+	p.handler.Heap = newHeap(target, p.process, plan)
+	if p.vf != nil {
+		p.handler.Mapper = newMapper(target, p.process, plan)
+	}
 	// 动态程序入口为解释器(AT_BASE/AT_ENTRY/AT_PHDR 已在主计划
 	// 初始栈,见 F06);静态程序为主程序入口。
 	initial := cpu.Machine{PC: loaded.Entry(), Registers: make([]uint64, 32), Floats: make([]uint64, 32)}
 	initial.Registers[regSp] = plan.Stack.SP
 	if err := p.core.Reset(ctx, initial); err != nil {
+		if p.vf != nil {
+			p.vf.control.DiscardSpace()
+		}
 		return err
 	}
+	if p.vf != nil {
+		// 换绑执行上下文并固化内核绑定,随后释放父进程暂停——
+		// 此后子进程与父进程各自独立运行。
+		if err := p.vf.switchTo(ctx, target); err != nil {
+			p.vf.control.DiscardSpace()
+			return err
+		}
+		p.space = target
+		p.vf.release()
+	}
 	if control, ok := p.process.Control.(proc.ExecControl); ok {
-		return control.ResetForExec(path, finalArgv, environmentFromList(envp))
+		err := control.ResetForExec(path, finalArgv, environmentFromList(envp))
+		return err
 	}
 	return nil
 }

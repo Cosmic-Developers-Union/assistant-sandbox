@@ -3479,6 +3479,23 @@ func (f *fakeThreader) CloneThread(_ context.Context, request CloneRequest) (uin
 	return f.tid, nil
 }
 
+// fakeVforker 记录 vfork 形态 clone 的请求(H12)。
+type fakeVforker struct {
+	request VforkRequest
+	got     bool
+	err     error
+	pid     uint64
+}
+
+func (f *fakeVforker) Vfork(_ context.Context, request VforkRequest) (uint64, error) {
+	if f.err != nil {
+		return 0, f.err
+	}
+	f.request = request
+	f.got = true
+	return f.pid, nil
+}
+
 // TestCloneThreadFlagsValidation 验证 H05:线程形态 clone 的标志
 // 逐项校验——libc 组合(CLONE_VM|FS|FILES|SIGHAND|THREAD|SYSVSEM|
 // SETTLS|PARENT_SETTID|CHILD_CLEARTID,可含已废弃的 CLONE_DETACHED)
@@ -3547,6 +3564,44 @@ func TestCloneThreadFlagsValidation(t *testing.T) {
 	// 线程形态无端口 ENOSYS 族。
 	if reply := (Syscalls{}).Handle(ctx, Call{Syscall: SysClone, Args: [6]uint64{libcFlags}}); reply.Errno != errno.NotImplemented {
 		t.Fatalf("线程无端口: %+v want ENOSYS 族", reply)
+	}
+}
+
+// TestCloneVforkFormDispatchesToVforker 验证 H12 的 ABI 分派:恰为
+// CLONE_VM|CLONE_VFORK|SIGCHLD 的 clone 走 Vforker 端口(sp 原样
+// 传递);无端口 ENOTSUP;其他带 CLONE_VFORK 的组合仍按 H05 拒绝。
+func TestCloneVforkFormDispatchesToVforker(t *testing.T) {
+	const vforkFlags = 0x100 | 0x4000 | 17 // CLONE_VM|CLONE_VFORK|SIGCHLD
+	ctx := context.Background()
+
+	vforker := &fakeVforker{pid: 4242}
+	handler := Syscalls{Vforker: vforker}
+	reply := handler.Handle(ctx, Call{Syscall: SysClone, Args: [6]uint64{vforkFlags, 0x9000}})
+	if reply.Errno != "" || reply.Value != 4242 {
+		t.Fatalf("vfork 形态: %+v want pid 4242", reply)
+	}
+	if !vforker.got || vforker.request.Stack != 0x9000 {
+		t.Fatalf("vfork 请求参数=%+v", vforker.request)
+	}
+
+	// 无端口 ENOTSUP。
+	if reply := (Syscalls{}).Handle(ctx, Call{Syscall: SysClone, Args: [6]uint64{vforkFlags}}); reply.Errno != errno.NotSupported {
+		t.Fatalf("vfork 无端口: %+v want ENOTSUP", reply)
+	}
+	// 端口错误透传(未知错误按 EIO 应答,不伪装成功)。
+	failing := &fakeVforker{err: errors.New("boom")}
+	if reply := (Syscalls{Vforker: failing}).Handle(ctx, Call{Syscall: SysClone, Args: [6]uint64{vforkFlags}}); reply.Errno != errno.IO {
+		t.Fatalf("vfork 端口错误: %+v want EIO", reply)
+	}
+
+	// 非 vfork 形态:CLONE_VM|CLONE_VFORK 缺退出信号仍拒绝。
+	if reply := (Syscalls{}).Handle(ctx, Call{Syscall: SysClone, Args: [6]uint64{0x100 | 0x4000}}); reply.Errno != errno.NotSupported {
+		t.Fatalf("VM|VFORK 缺 SIGCHLD: %+v want ENOTSUP", reply)
+	}
+	// 线程组合加 VFORK 仍拒绝(H05)。
+	const libcFlags = 0x100 | 0x200 | 0x400 | 0x800 | 0x10000 | 0x40000 | 0x80000 | 0x100000 | 0x200000
+	if reply := (Syscalls{}).Handle(ctx, Call{Syscall: SysClone, Args: [6]uint64{libcFlags | 0x4000}}); reply.Errno != errno.NotSupported {
+		t.Fatalf("线程组合+VFORK: %+v want ENOTSUP", reply)
 	}
 }
 

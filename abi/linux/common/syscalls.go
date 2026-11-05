@@ -241,6 +241,10 @@ type Syscalls struct {
 	// clone 报 ENOSYS 族。
 	Threader ThreadSpawner
 
+	// Vforker 是 clone 的 vfork 形态(H12)端口;未装配时 vfork 形态
+	// 报 ENOTSUP。
+	Vforker Vforker
+
 	// Locks 是字节范围文件锁表(I14);未装配时文件锁命令报 ENOSYS 族。
 	Locks *locks.Table
 
@@ -3224,6 +3228,20 @@ type ThreadSpawner interface {
 	CloneThread(ctx context.Context, request CloneRequest) (uint64, error)
 }
 
+// VforkRequest 是 vfork 形态 clone 的已解析参数(H12)。
+type VforkRequest struct {
+	// Stack 是子进程的初始 sp(0=沿用调用方当前栈,musl vfork 语义;
+	// posix_spawn 传自备栈)。
+	Stack uint64
+}
+
+// Vforker 是 clone 的 vfork 形态(H12)端口:实现登记共享地址空间的
+// 子进程并暂停调用方,直到子进程 exec(换绑新地址空间)或退出后
+// 恢复——vfork 的完成语义。
+type Vforker interface {
+	Vfork(ctx context.Context, request VforkRequest) (uint64, error)
+}
+
 // RobustListPort 是 robust futex 登记端口(K07)。
 type RobustListPort interface {
 	SetRobustList(head, length uint64) error
@@ -3265,7 +3283,9 @@ func validateCloneFlags(flags uint64) errno.Code {
 }
 
 // clone(flags, sp, parent_tid, tls, child_tid):fork 形态(flags==SIGCHLD
-// 且 sp=0)复制进程(H04);线程形态(K02,libc pthread)经 Threader
+// 且 sp=0)复制进程(H04);vfork 形态(CLONE_VM|CLONE_VFORK|SIGCHLD,
+// glibc/musl 的 vfork 与 posix_spawn 底层)共享地址空间并暂停调用方
+// 到子进程 exec/exit(H12);线程形态(K02,libc pthread)经 Threader
 // 共享地址空间续接执行;其余形态按 H05 校验后明确拒绝。
 func (s Syscalls) cloneProcess(ctx context.Context, call Call) Reply {
 	flags, sp := call.Args[0], call.Args[1]
@@ -3274,6 +3294,19 @@ func (s Syscalls) cloneProcess(ctx context.Context, call Call) Reply {
 			return Reply{Errno: errno.NotImplemented}
 		}
 		pid, err := s.Spawner.Fork(ctx)
+		if err != nil {
+			return Reply{Errno: errnoOf(err)}
+		}
+		return Reply{Value: pid}
+	}
+	// vfork 形态:仅接受恰为 CLONE_VM|CLONE_VFORK|SIGCHLD 的组合;
+	// 其他带 CLONE_VFORK 的组合仍按 H05 拒绝。CLONE_VM 不含
+	// CLONE_SETTLS 等参数位,父/子 TID 写回与 clear_child_tid 不适用。
+	if flags == cloneVM|cloneVFork|cloneSigchld {
+		if s.Vforker == nil {
+			return Reply{Errno: errno.NotSupported}
+		}
+		pid, err := s.Vforker.Vfork(ctx, VforkRequest{Stack: sp})
 		if err != nil {
 			return Reply{Errno: errnoOf(err)}
 		}

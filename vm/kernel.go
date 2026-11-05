@@ -91,6 +91,10 @@ type Kernel struct {
 
 	spaces map[proc.PID]memory.Space
 
+	// prepared 暂存 vfork 子进程 exec 的待提交换绑表(H12):装载
+	// 成功后 Commit 接管,失败 Discard 丢弃。
+	prepared map[proc.PID]*memory.Table
+
 	jobsMu      sync.Mutex
 	jobsRunning bool
 
@@ -207,6 +211,7 @@ func New(services Services, maxProcesses int) (*Kernel, error) {
 	k.futexes = futex.New()
 	k.tidAddresses = map[proc.PID]uint64{}
 	k.robustLists = map[proc.PID]robustList{}
+	k.prepared = map[proc.PID]*memory.Table{}
 	k.locks = locks.New()
 	k.init = root.ID
 	k.signals.Spawn(uint64(root.ID))
@@ -551,6 +556,137 @@ func (k *Kernel) Fork(parent proc.PID) (proc.Proc, *memory.Table, error) {
 	return child, cloned.Inner(), nil
 }
 
+// Vfork 以 Linux vfork(clone(CLONE_VM|CLONE_VFORK|SIGCHLD)) 语义创建
+// 子进程(H12):子进程是独立进程(新 PID,描述符表与信号处置按 fork
+// 复制),地址空间与父进程共享——不克隆、不重复计页费,计费归属
+// 持有空间的父进程。父进程的暂停与子进程的执行续接由调用方完成。
+func (k *Kernel) Vfork(parent proc.PID) (proc.Proc, *memory.Table, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.failed {
+		return proc.Proc{}, nil, errno.Busy
+	}
+	if k.closed {
+		return proc.Proc{}, nil, errno.Cancelled
+	}
+	source, err := k.table.Get(parent)
+	if err != nil {
+		return proc.Proc{}, nil, err
+	}
+	requested := k.budget(proc.Proc{Parent: source.Parent, Program: source.Program})
+	// vfork 的子进程父是调用进程本身(Linux 语义)。
+	child, err := k.table.Create(parent, source.Program, source.Args, source.Dir, source.Env)
+	if err != nil {
+		return proc.Proc{}, nil, err
+	}
+	if err := k.table.Start(child.ID); err != nil {
+		_ = k.table.Exit(child.ID, 125, 0)
+		_, _ = k.table.Reap(parent, child.ID)
+		return proc.Proc{}, nil, err
+	}
+	_ = k.table.SetUmask(child.ID, source.Umask)
+	if k.meters != nil {
+		if err := k.meters.Spawn(uint64(child.ID), requested); err != nil {
+			_ = k.table.Exit(child.ID, 125, 0)
+			_, _ = k.table.Reap(parent, child.ID)
+			return proc.Proc{}, nil, err
+		}
+		if err := k.meters.Charge(context.Background(), uint64(child.ID), spawnWorkUnits); err != nil {
+			k.meters.Discard(uint64(child.ID))
+			_ = k.table.Exit(child.ID, 125, 0)
+			_, _ = k.table.Reap(parent, child.ID)
+			return proc.Proc{}, nil, err
+		}
+	}
+	if err := k.signals.Fork(uint64(parent), uint64(child.ID)); err != nil {
+		return proc.Proc{}, nil, err
+	}
+	// 描述符:CLONE_VM 不含 CLONE_FILES,描述符表按 fork 复制
+	// (打开文件描述仍共享)。
+	if k.fds != nil {
+		count, err := k.fds.Fork(uint64(parent), uint64(child.ID))
+		if err != nil {
+			return proc.Proc{}, nil, err
+		}
+		if k.meters != nil && count > 0 {
+			if err := k.meters.ChargeKind(context.Background(), uint64(child.ID), resources.KindDescriptors, uint64(count)); err != nil {
+				_ = k.table.Exit(child.ID, 125, 0)
+				_, _ = k.table.Reap(parent, child.ID)
+				return proc.Proc{}, nil, err
+			}
+		}
+	}
+	// 地址空间:CLONE_VM 共享,不克隆(E15 页费归属持有者)。
+	bound, ok := k.spaces[parent]
+	if !ok {
+		return proc.Proc{}, nil, errno.Wrap(errno.Invalid, "进程未绑定地址空间,不能 vfork")
+	}
+	if _, guarded := bound.(*memory.Guard); !guarded {
+		return proc.Proc{}, nil, errno.Wrap(errno.Invalid, "进程地址空间不支持 vfork 共享")
+	}
+	k.spaces[child.ID] = bound
+	child.State = proc.Running
+	child.Resources = capability.Scope(uint64(child.ID), k.services.Set, k.meters)
+	child.Control = procControl{k: k, self: child.ID}
+	k.emitLocked(scheduler.KindSpawn, child.ID, scheduler.SpawnDetail(source.Program))
+	return child, bound.(*memory.Guard).Inner(), nil
+}
+
+// PrepareSpace 创建全新空表并暂存为调用进程的待提交绑定,返回新表
+// (H12)。上限沿用进程当前绑定的表;违例上报在 Commit 时按进程装配。
+func (k *Kernel) PrepareSpace(pid proc.PID) (*memory.Table, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.failed {
+		return nil, errno.Busy
+	}
+	if k.closed {
+		return nil, errno.Cancelled
+	}
+	if _, err := k.table.Get(pid); err != nil {
+		return nil, err
+	}
+	bound, ok := k.spaces[pid]
+	if !ok {
+		return nil, errno.Wrap(errno.Invalid, "进程未绑定地址空间")
+	}
+	limit := uint64(0)
+	if guard, guarded := bound.(*memory.Guard); guarded {
+		limit = guard.Inner().Limit()
+	}
+	if k.prepared == nil {
+		k.prepared = map[proc.PID]*memory.Table{}
+	}
+	fresh := memory.New(limit)
+	k.prepared[pid] = fresh
+	return fresh, nil
+}
+
+// CommitSpace 把待提交的表接管为进程当前空间(守卫的违例上报按本
+// 进程装配,H12)。无准备时报 EINVAL。
+func (k *Kernel) CommitSpace(pid proc.PID) error {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	fresh, ok := k.prepared[pid]
+	if !ok {
+		return errno.Invalid
+	}
+	delete(k.prepared, pid)
+	k.spaces[pid] = memory.NewGuard(fresh, func(ctx context.Context, violation memory.Violation) {
+		k.mu.Lock()
+		defer k.mu.Unlock()
+		k.emitAddressViolationLocked(pid, violation)
+	})
+	return nil
+}
+
+// DiscardSpace 丢弃待提交的准备(H12);无准备时为空操作。
+func (k *Kernel) DiscardSpace(pid proc.PID) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	delete(k.prepared, pid)
+}
+
 // CloneThread 创建同组线程(K01/K02):登记线程条目并共享地址空间、
 // 描述符集合与信号处置;不克隆地址空间、不重复计页费(共享映射的
 // 计费归属组长;线程栈是客体 mmap,已在映射时计费,E15 备注)。
@@ -678,6 +814,7 @@ func (k *Kernel) FinishThread(id proc.PID, code uint8, sig uint8) error {
 		k.meters.Discard(uint64(id))
 	}
 	delete(k.spaces, id)
+	delete(k.prepared, id)
 	if !groupDone {
 		k.mu.Unlock()
 		return nil
@@ -733,6 +870,7 @@ func (k *Kernel) finishGroupLocked(id proc.PID, code uint8, sig uint8) (bool, er
 			k.meters.Discard(uint64(member.ID))
 		}
 		delete(k.spaces, member.ID)
+		delete(k.prepared, member.ID)
 		// 残留执行流:以致命信号中断,运行器返回后其 FinishThread
 		// 发现条目已消失而自然结束。
 		k.signals.Interrupt(uint64(member.ID), signal.KILL)
@@ -2119,6 +2257,34 @@ func (c procControl) Fork() (proc.Proc, *memory.Table, error) {
 		return proc.Proc{}, nil, errno.NoProcess
 	}
 	return c.k.Fork(c.self)
+}
+
+func (c procControl) Vfork() (proc.Proc, *memory.Table, error) {
+	if c.self == 0 {
+		return proc.Proc{}, nil, errno.NoProcess
+	}
+	return c.k.Vfork(c.self)
+}
+
+func (c procControl) PrepareSpace() (*memory.Table, error) {
+	if c.self == 0 {
+		return nil, errno.NoProcess
+	}
+	return c.k.PrepareSpace(c.self)
+}
+
+func (c procControl) CommitSpace() error {
+	if c.self == 0 {
+		return errno.NoProcess
+	}
+	return c.k.CommitSpace(c.self)
+}
+
+func (c procControl) DiscardSpace() {
+	if c.self == 0 {
+		return
+	}
+	c.k.DiscardSpace(c.self)
 }
 
 // SetPGID 按 setpgid(2) 语义把目标进程移入进程组(H11):pid=0 表示

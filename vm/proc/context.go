@@ -120,6 +120,28 @@ type FinishCurrentControl interface {
 	FinishCurrent(PID, uint8) error
 }
 
+// VforkControl 是 vfork(H12)的进程创建端口:子进程是独立进程(新
+// PID,描述符表与信号处置按 fork 复制),地址空间与调用方共享;
+// 执行续接与父进程暂停(到子进程 exec/exit)由调用方完成。
+type VforkControl interface {
+	Vfork() (Proc, *memory.Table, error)
+}
+
+// SpaceRebindControl 是 vfork 子进程 exec 的地址空间换绑端口(H12):
+// Linux 对共享 mm 的进程 exec 换新 mm,父进程保留原空间。执行器先
+// Prepare 再装载新映像,成功后 Commit 固化;失败 Discard 回滚,
+// 子进程留在原空间继续(旧空间全程未被破坏)。
+type SpaceRebindControl interface {
+	// PrepareSpace 创建全新空表(沿用原表上限)并暂存为待提交绑定,
+	// 返回新表。同一进程重复准备替换先前未提交的准备。
+	PrepareSpace() (*memory.Table, error)
+	// CommitSpace 把待提交的表接管为进程当前空间(违例上报按本
+	// 进程装配)。无准备时报 EINVAL。
+	CommitSpace() error
+	// DiscardSpace 丢弃待提交的准备;无准备时为空操作。
+	DiscardSpace()
+}
+
 // LocksControl 是字节范围文件锁表端口(I14):fcntl 文件锁经此
 // 访问内核锁表。
 type LocksControl interface {

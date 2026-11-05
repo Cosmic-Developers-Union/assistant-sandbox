@@ -25,6 +25,9 @@ type Table struct {
 
 func New(limitBytes uint64) *Table { return &Table{limit: limitBytes} }
 
+// Limit 返回表的总字节上限(0=不限);换绑重建(H12)沿用同一上限。
+func (t *Table) Limit() uint64 { return t.limit }
+
 // SetAnnotation 挂载每地址空间装载状态。
 func (t *Table) SetAnnotation(value any) {
 	t.mu.Lock()
