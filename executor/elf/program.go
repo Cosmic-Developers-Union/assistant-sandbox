@@ -474,10 +474,14 @@ func syscalls(ctx context.Context, process proc.Proc, space *memory.Table, plan 
 		handler.Tracer = processTrace{control: recorder}
 	}
 	if forker, ok := process.Control.(proc.ForkControl); ok {
-		handler.Spawner = processForker{
+		spawner := processForker{
 			parent: process, space: space, plan: plan, core: core,
 			control: forker,
 		}
+		if finisher, ok := process.Control.(proc.FinishCurrentControl); ok {
+			spawner.finisher = finisher
+		}
+		handler.Spawner = spawner
 	}
 	if threader, ok := process.Control.(proc.ThreadControl); ok {
 		handler.Threader = processThreader{
@@ -966,11 +970,12 @@ const (
 // 复制地址空间(E10)后,子进程在自己的核心上从调用边界续接执行,
 // 退出时按 Linux 语义转僵尸并唤醒父进程等待。
 type processForker struct {
-	parent  proc.Proc
-	space   *memory.Table
-	plan    *loaderelf.Plan
-	core    cpu.Port
-	control proc.ForkControl
+	parent   proc.Proc
+	space    *memory.Table
+	plan     *loaderelf.Plan
+	core     cpu.Port
+	control  proc.ForkControl
+	finisher proc.FinishCurrentControl
 }
 
 func (f processForker) Fork(ctx context.Context) (uint64, error) {
@@ -1045,7 +1050,7 @@ func (f processForker) Fork(ctx context.Context) (uint64, error) {
 			// 子进程执行故障:按 fail-closed 以 125 退出并转僵尸。
 			code = 125
 		}
-		_ = child.Control.Finish(f.parent.ID, child.ID, uint8(code))
+		_ = f.finisher.FinishCurrent(child.ID, uint8(code))
 	}()
 	return uint64(child.ID), nil
 }

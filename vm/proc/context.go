@@ -113,6 +113,13 @@ type RobustListControl interface {
 	RobustList(head *uint64, length *uint64) error
 }
 
+// FinishCurrentControl 以当前表内父进程写入终态(K10/H13):fork 子
+// 进程的父进程可能已退出并收养给 init——运行 continuation 查询后
+// 调用;kernel 侧 procControl 实现。
+type FinishCurrentControl interface {
+	FinishCurrent(PID, uint8) error
+}
+
 // LocksControl 是字节范围文件锁表端口(I14):fcntl 文件锁经此
 // 访问内核锁表。
 type LocksControl interface {

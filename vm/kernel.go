@@ -846,7 +846,6 @@ func (k *Kernel) Finish(parent, id proc.PID, status ExitStatus) (err error) {
 	k.emitLocked(scheduler.KindExit, id, scheduler.ExitDetail(status.Code, status.Signal))
 	if closeErr == nil {
 		notified = true
-		return nil
 	}
 	return closeErr
 }
@@ -2045,6 +2044,18 @@ func (c procControl) Begin(parent proc.PID, name string, args []string, dir stri
 
 func (c procControl) Finish(parent, id proc.PID, code uint8) error {
 	return c.k.Finish(parent, id, ExitStatus{Code: code})
+}
+
+// FinishCurrent 以当前表内父进程写入终态(K10/H13):fork 子进程的
+// 父进程可能已退出并收养给 init——运行 continuation 查询后调用。
+func (c procControl) FinishCurrent(id proc.PID, code uint8) error {
+	c.k.mu.Lock()
+	p, err := c.k.table.Get(id)
+	c.k.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	return c.k.Finish(p.Parent, id, ExitStatus{Code: code})
 }
 
 func (c procControl) Tgkill(tgid, tid int64, number signal.Number) error {
