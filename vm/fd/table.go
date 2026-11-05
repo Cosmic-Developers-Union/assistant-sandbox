@@ -13,6 +13,7 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/epoll"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/eventfd"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/inotify"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/pipe"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/signalfd"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/timerfd"
@@ -412,6 +413,48 @@ func (t *Table) SignalFD(pid uint64, mask uint64, options signalfd.Options) (uin
 	}
 	t.releaseLocked(pid, 1)
 	return 0, errno.Limit
+}
+
+// Inotify 创建并安装一个 inotify 实例(I20),语义与 inotify_init1 一致。
+func (t *Table) Inotify(pid uint64, nonblock bool) (uint32, error) {
+	handle := inotify.New(inotify.Options{NonBlock: nonblock})
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	table := t.entries[pid]
+	if table == nil {
+		return 0, errno.NoProcess
+	}
+	if err := t.chargeLocked(pid, 1); err != nil {
+		return 0, err
+	}
+	for id := uint32(3); id < ^uint32(0); id++ {
+		if _, taken := table[id]; !taken {
+			table[id] = newEntry(handle, true)
+			return id, nil
+		}
+	}
+	t.releaseLocked(pid, 1)
+	return 0, errno.Limit
+}
+
+// InotifyAt 取已存在描述符上的 inotify 实例(add_watch/rm_watch 用);
+// 描述符不存在报 EBADF,不是 inotify 报 EINVAL。
+func (t *Table) InotifyAt(pid uint64, id uint32) (*inotify.FD, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	table := t.entries[pid]
+	if table == nil {
+		return nil, errno.NoProcess
+	}
+	e := table[id]
+	if e == nil {
+		return nil, errno.BadHandle
+	}
+	handle, ok := e.ref.handle.(*inotify.FD)
+	if !ok {
+		return nil, errno.Invalid
+	}
+	return handle, nil
 }
 
 // Epoll 创建并安装一个 epoll 实例(L07)。

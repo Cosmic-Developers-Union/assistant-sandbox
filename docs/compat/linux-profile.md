@@ -27,14 +27,14 @@
 ## 2. 系统调用
 
 编号与名称一一对应由 G01 的 `TestRegistryMatchesAdapterMapping` 锁定;
-适配器认识但未实现的 28 个编号(inotify_*、memfd_create、
+适配器认识但未实现的 25 个编号(memfd_create、
 clone3、openat2、faccessat2、
 ptrace、chroot、mount、umount2、sync、acct、reboot、kexec_load、
 syslog、pivot_root、perf_event_open、pidfd_open、pidfd_getfd、
 close_range、fadvise64、fallocate、userfaultfd、accept4)固定登记为
 ENOSYS 清单,归 L/I/H 组后续任务。
 
-### 已交付语义(77 项)
+### 已交付语义(80 项)
 
 | 调用 | 语义来源(任务/测试) |
 | --- | --- |
@@ -42,6 +42,7 @@ ENOSYS 清单,归 L/I/H 组后续任务。
 | clone | 仅 flags==SIGCHLD 即 fork 形态(线程标志 ENOTSUP,K 组);H04;`TestRealELFForkParentChildReturnValues` |
 | execve | H06/H07;`TestRealELFExecve*` |
 | waitid | H09;`TestKernelWaitChild*`、`TestWaitid*` |
+| inotify_init1 / inotify_add_watch / inotify_rm_watch | I20(路径匹配子集:CREATE/MODIFY/DELETE/OPEN/ACCESS/CLOSE/MOVED_FROM/TO/DELETE_SELF/MOVE_SELF/IGNORED/Q_OVERFLOW;rename 后旧路径不跟随为登记差异);`TestInotifyLifecycleAgainstRealFileSystem`、`vm/inotify` |
 | getpid / gettid / getppid | G 组身份查询 |
 | openat / close / read / write | I03/I06;`TestOpenFlag*`、`TestReadWriteShort*` |
 | readv / writev | I07;`TestReadvWritevScatterGather` |

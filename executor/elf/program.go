@@ -458,6 +458,10 @@ func syscalls(ctx context.Context, process proc.Proc, space *memory.Table, plan 
 	if lockTable, ok := process.Control.(proc.LocksControl); ok {
 		handler.Locks = lockTable.Locks()
 	}
+	if notify, ok := process.Control.(proc.NotifyControl); ok {
+		// inotify 事件扇出(I20):文件类系统调用成功后按路径发事件。
+		handler.Notify = notify.NotifyBroker()
+	}
 	if sessions, ok := process.Control.(proc.SessionControl); ok {
 		handler.Sessions = processSessions{control: sessions}
 	}

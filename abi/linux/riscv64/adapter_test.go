@@ -582,8 +582,7 @@ func TestRegistryMatchesAdapterMapping(t *testing.T) {
 	unimplemented := map[string]bool{
 		"accept4": true, "acct": true, "chroot": true, "close_range": true,
 		"clone3":     true,
-		"faccessat2": true, "fadvise64": true, "fallocate": true, "inotify_add_watch": true,
-		"inotify_init1": true, "inotify_rm_watch": true, "kexec_load": true, "memfd_create": true,
+		"faccessat2": true, "fadvise64": true, "fallocate": true, "kexec_load": true, "memfd_create": true,
 		"mount": true, "openat2": true, "perf_event_open": true, "pidfd_getfd": true,
 		"pidfd_open": true, "pivot_root": true,
 		"ptrace": true, "reboot": true, "sync": true,

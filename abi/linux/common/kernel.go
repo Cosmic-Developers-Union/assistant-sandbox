@@ -12,6 +12,7 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/eventfd"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fd"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fs"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/inotify"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/signalfd"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/timerfd"
 )
@@ -296,6 +297,42 @@ func (p ProcessDescriptors) UpdateSignalFD(ctx context.Context, descriptor, mask
 	}
 	handle.SetNonBlock(flags&sfdNonBlock != 0)
 	return nil
+}
+
+func (p ProcessDescriptors) Inotify(ctx context.Context, flags uint64) (uint64, error) {
+	if p.Table == nil {
+		return 0, errno.Wrap(errno.NotImplemented, "描述符端口未装配")
+	}
+	creator, ok := p.Table.(fd.Creator)
+	if !ok {
+		return 0, errno.Wrap(errno.NotSupported, "描述符表不支持 inotify")
+	}
+	descriptor, err := creator.Inotify(p.PID, flags&inoNonBlock != 0)
+	if err != nil {
+		return 0, err
+	}
+	if flags&inoCloexec != 0 {
+		if installer, ok := p.Table.(fd.Installer); ok {
+			if err := installer.SetCloexec(p.PID, descriptor, true); err != nil {
+				return uint64(descriptor), err
+			}
+		}
+	}
+	return uint64(descriptor), nil
+}
+
+func (p ProcessDescriptors) InotifyAt(ctx context.Context, descriptor uint64) (*inotify.FD, error) {
+	if p.Table == nil {
+		return nil, errno.Wrap(errno.NotImplemented, "描述符端口未装配")
+	}
+	if descriptor > math.MaxUint32 {
+		return nil, errno.Wrap(errno.BadHandle, "描述符编号超出表示范围")
+	}
+	creator, ok := p.Table.(fd.Creator)
+	if !ok {
+		return nil, errno.Wrap(errno.NotSupported, "描述符表不支持 inotify")
+	}
+	return creator.InotifyAt(p.PID, uint32(descriptor))
 }
 
 func (p ProcessDescriptors) Epoll(ctx context.Context, flags uint64) (uint64, error) {

@@ -7,6 +7,7 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fd"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/futex"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/inotify"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/locks"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/memory"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/signal"
@@ -146,6 +147,12 @@ type SpaceRebindControl interface {
 // 访问内核锁表。
 type LocksControl interface {
 	Locks() *locks.Table
+}
+
+// NotifyControl 是文件变更事件扇出端口(I20):inotify 实例跨进程
+// 共享内核级扇出注册表,文件类系统调用成功后事件送达全部命中监视。
+type NotifyControl interface {
+	NotifyBroker() *inotify.Broker
 }
 
 // RobustMemory 是 robust 清算所需的客体内存原语(执行器注入

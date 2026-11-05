@@ -6,6 +6,7 @@ import (
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/epoll"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/eventfd"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/inotify"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/signalfd"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/timerfd"
 )
@@ -40,6 +41,12 @@ type Creator interface {
 	TimerFD(pid uint64, clockID uint64, nonblock bool) (uint32, error)
 
 	TimerFDAt(pid uint64, id uint32) (*timerfd.FD, error)
+
+	// Inotify 创建并安装一个 inotify 实例(I20);InotifyAt 取已
+	// 存在实例(add_watch/rm_watch 用)。
+	Inotify(pid uint64, nonblock bool) (uint32, error)
+
+	InotifyAt(pid uint64, id uint32) (*inotify.FD, error)
 
 	DupAt(ctx context.Context, pid, from, min uint64) (uint32, error)
 }

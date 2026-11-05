@@ -15,6 +15,7 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fd"
 	vmfs "github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fs"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/inotify"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/locks"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/trace"
 )
@@ -99,6 +100,17 @@ func (d *fakeDescriptors) EventFD(ctx context.Context, initialValue, flags uint6
 func (d *fakeDescriptors) SignalFD(_ context.Context, mask, flags uint64) (uint64, error) {
 	d.signalfd = append(d.signalfd, [2]uint64{mask, flags})
 	return 34, d.signalfdErr
+}
+
+func (d *fakeDescriptors) Inotify(_ context.Context, flags uint64) (uint64, error) {
+	if d.eventfdErr != nil {
+		return 0, d.eventfdErr
+	}
+	return 30, nil
+}
+
+func (d *fakeDescriptors) InotifyAt(_ context.Context, descriptor uint64) (*inotify.FD, error) {
+	return nil, errno.Invalid
 }
 
 func (d *fakeDescriptors) Epoll(_ context.Context, flags uint64) (uint64, error) {

@@ -19,6 +19,7 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fd"
 	vmfs "github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fs"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/futex"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/inotify"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/ipc"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/job"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/locks"
@@ -94,6 +95,10 @@ type Kernel struct {
 	// prepared 暂存 vfork 子进程 exec 的待提交换绑表(H12):装载
 	// 成功后 Commit 接管,失败 Discard 丢弃。
 	prepared map[proc.PID]*memory.Table
+
+	// notifies 是 inotify 的事件扇出注册表(I20):文件类系统调用
+	// 成功后事件送达全部命中监视,跨进程可见。
+	notifies *inotify.Broker
 
 	jobsMu      sync.Mutex
 	jobsRunning bool
@@ -212,6 +217,7 @@ func New(services Services, maxProcesses int) (*Kernel, error) {
 	k.tidAddresses = map[proc.PID]uint64{}
 	k.robustLists = map[proc.PID]robustList{}
 	k.prepared = map[proc.PID]*memory.Table{}
+	k.notifies = inotify.NewBroker()
 	k.locks = locks.New()
 	k.init = root.ID
 	k.signals.Spawn(uint64(root.ID))
@@ -656,6 +662,7 @@ func (k *Kernel) PrepareSpace(pid proc.PID) (*memory.Table, error) {
 	}
 	if k.prepared == nil {
 		k.prepared = map[proc.PID]*memory.Table{}
+		k.notifies = inotify.NewBroker()
 	}
 	fresh := memory.New(limit)
 	k.prepared[pid] = fresh
@@ -2463,6 +2470,10 @@ func (c procControl) HandleRobustListAtExit(ctx context.Context, mem proc.Robust
 		address = next
 	}
 	return nil
+}
+
+func (c procControl) NotifyBroker() *inotify.Broker {
+	return c.k.notifies
 }
 
 func (c procControl) Locks() *locks.Table {

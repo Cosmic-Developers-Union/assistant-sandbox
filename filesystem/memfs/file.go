@@ -475,3 +475,17 @@ func (h *handle) ResolveGuestPath(name string) (string, error) {
 	}
 	return path.Join(h.fs.pathOf(node), name), nil
 }
+
+// GuestPath 返回句柄当前指向的客体绝对路径(I20):inotify 的 fd 侧
+// 事件(read/write/close)按路径匹配监视;已关闭或路径不可得时
+// ok=false。目录被重命名后返回新位置(pathOf 跟随 inode)。
+func (h *handle) GuestPath() (string, bool) {
+	h.mu.Lock()
+	closed := h.closed
+	node := h.node
+	h.mu.Unlock()
+	if closed {
+		return "", false
+	}
+	return h.fs.pathOf(node), true
+}

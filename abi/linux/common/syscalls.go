@@ -14,6 +14,7 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/epoll"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 	vmfs "github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fs"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/inotify"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/locks"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/memory"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/signalfd"
@@ -55,6 +56,12 @@ type Descriptors interface {
 
 	// UpdateSignalFD 更新已存在 signalfd 的掩码与选项。
 	UpdateSignalFD(ctx context.Context, descriptor, mask, flags uint64) error
+
+	// Inotify 创建新的 inotify 实例(I20);InotifyAt 取已存在实例
+	// (add_watch/rm_watch 用)。
+	Inotify(ctx context.Context, flags uint64) (uint64, error)
+
+	InotifyAt(ctx context.Context, descriptor uint64) (*inotify.FD, error)
 
 	// Epoll 创建新的 epoll 实例(L07);EpollInstance 取已存在实例
 	// (epoll_ctl/epoll_pwait 用)。
@@ -244,6 +251,10 @@ type Syscalls struct {
 	// Vforker 是 clone 的 vfork 形态(H12)端口;未装配时 vfork 形态
 	// 报 ENOTSUP。
 	Vforker Vforker
+
+	// Notify 是文件变更事件扇出端口(I20):文件类系统调用成功后按
+	// 已解析路径发事件;未装配时全部为空操作。
+	Notify inotify.Observer
 
 	// Locks 是字节范围文件锁表(I14);未装配时文件锁命令报 ENOSYS 族。
 	Locks *locks.Table
@@ -534,6 +545,12 @@ func (s Syscalls) dispatch(ctx context.Context, call Call) Reply {
 		return s.eventfd2(ctx, call)
 	case SysSignalfd4:
 		return s.signalfd4(ctx, call)
+	case SysInotifyInit1:
+		return s.inotifyInit1(ctx, call)
+	case SysInotifyAddWatch:
+		return s.inotifyAddWatch(ctx, call)
+	case SysInotifyRmWatch:
+		return s.inotifyRmWatch(ctx, call)
 	case SysDup:
 		return s.dup(ctx, call)
 	case SysDup3:
@@ -622,6 +639,8 @@ func (s Syscalls) write(ctx context.Context, call Call) Reply {
 	if written < 0 || written > len(buffer) {
 		return Reply{Errno: errno.IO}
 	}
+	// I20:成功写入向文件监视发 IN_MODIFY。
+	s.observe(s.descriptorPath(ctx, call.Args[0]), inotify.InModify, 0, false)
 	return Reply{Value: uint64(written)}
 }
 
@@ -660,6 +679,8 @@ func (s Syscalls) read(ctx context.Context, call Call) Reply {
 	if err := s.Memory.Write(ctx, call.Args[1], buffer[:loaded]); err != nil {
 		return Reply{Errno: errno.Fault}
 	}
+	// I20:成功读取向文件监视发 IN_ACCESS。
+	s.observe(s.descriptorPath(ctx, call.Args[0]), inotify.InAccess, 0, false)
 	return Reply{Value: uint64(loaded)}
 }
 
@@ -681,6 +702,33 @@ func (s Syscalls) buffer(call Call) ([]byte, Reply, bool) {
 		return nil, Reply{Errno: errno.Invalid}, false
 	}
 	return make([]byte, count), Reply{}, true
+}
+
+// observe 在成功的文件系统操作后向观察端口发事件(I20):未装配
+// 或空路径为空操作;事件按已解析的客体绝对路径匹配监视。
+func (s Syscalls) observe(path string, mask uint32, cookie uint32, isDir bool) {
+	if s.Notify == nil || path == "" {
+		return
+	}
+	s.Notify.Observe(path, mask, cookie, isDir)
+}
+
+// descriptorPath 查询描述符对应文件的客体绝对路径(I20,fd 侧事件):
+// 句柄不可定位或无路径能力时返回空(尽力而为,不发事件)。
+func (s Syscalls) descriptorPath(ctx context.Context, fd uint64) string {
+	if s.Descriptors == nil {
+		return ""
+	}
+	handle, err := s.Descriptors.Get(ctx, fd)
+	if err != nil {
+		return ""
+	}
+	if pather, ok := handle.(interface{ GuestPath() (string, bool) }); ok {
+		if path, ok := pather.GuestPath(); ok {
+			return path
+		}
+	}
+	return ""
 }
 
 func errnoOf(err error) errno.Code {
@@ -711,6 +759,19 @@ func (s Syscalls) openAt(ctx context.Context, call Call) Reply {
 	if code != "" {
 		return Reply{Errno: code}
 	}
+	// I20:O_CREAT 且此前不存在时先发 IN_CREATE(与内核一致,
+	// 创建打开共发 CREATE+OPEN 两事件)。
+	created := false
+	isDir := false
+	if call.OpenFlags.Create {
+		if info, statErr := s.Files.Stat(ctx, path); statErr != nil || info == nil {
+			created = true
+		} else {
+			isDir = info.IsDir()
+		}
+	} else if info, statErr := s.Files.Stat(ctx, path); statErr == nil && info != nil {
+		isDir = info.IsDir()
+	}
 	descriptor, err := s.Files.Open(ctx, OpenRequest{
 		Path:  path,
 		Flags: *call.OpenFlags,
@@ -719,6 +780,10 @@ func (s Syscalls) openAt(ctx context.Context, call Call) Reply {
 	if err != nil {
 		return Reply{Errno: errnoOf(err)}
 	}
+	if created {
+		s.observe(path, inotify.InCreate, 0, false)
+	}
+	s.observe(path, inotify.InOpen, 0, isDir)
 	return Reply{Value: descriptor}
 }
 
@@ -726,11 +791,29 @@ func (s Syscalls) close(ctx context.Context, call Call) Reply {
 	if s.Descriptors == nil {
 		return Reply{Errno: errno.NotImplemented}
 	}
+	// I20:关闭前取路径与访问模式,按可写性发 IN_CLOSE_WRITE/NOWRITE。
+	path := s.descriptorPath(ctx, call.Args[0])
+	writable := false
+	if handle, err := s.Descriptors.Get(ctx, call.Args[0]); err == nil {
+		if flags, ok := handle.(interface{ StatusFlags() (uint32, error) }); ok {
+			if raw, flagErr := flags.StatusFlags(); flagErr == nil {
+				writable = raw&accmode != 0
+			}
+		}
+	}
 	if err := s.Descriptors.Close(ctx, call.Args[0]); err != nil {
 		return Reply{Errno: errnoOf(err)}
 	}
+	if writable {
+		s.observe(path, inotify.InCloseWrite, 0, false)
+	} else {
+		s.observe(path, inotify.InCloseNowrit, 0, false)
+	}
 	return Reply{}
 }
+
+// accmode 是 O_ACCMODE:0=RDONLY,1=WRONLY,2=RDWR。
+const accmode = 3
 
 // resolveDirPath 按目录句柄解析客体路径(I02):绝对路径忽略 dirfd;
 // AT_FDCWD 的相对路径按进程工作目录(由文件端口解析);有效目录
@@ -1592,6 +1675,10 @@ func (s Syscalls) readv(ctx context.Context, call Call) Reply {
 			break
 		}
 	}
+	// I20:成功读取发 IN_ACCESS(与 read 一致)。
+	if total > 0 {
+		s.observe(s.descriptorPath(ctx, call.Args[0]), inotify.InAccess, 0, false)
+	}
 	return Reply{Value: uint64(total)}
 }
 
@@ -1633,6 +1720,10 @@ func (s Syscalls) writev(ctx context.Context, call Call) Reply {
 		if written < len(buffer) {
 			break
 		}
+	}
+	// I20:成功写入发 IN_MODIFY(与 write 一致)。
+	if total > 0 {
+		s.observe(s.descriptorPath(ctx, call.Args[0]), inotify.InModify, 0, false)
 	}
 	return Reply{Value: uint64(total)}
 }
@@ -2054,6 +2145,8 @@ func (s Syscalls) mkdirat(ctx context.Context, call Call) Reply {
 	if err := s.Files.Mkdir(ctx, path, mode); err != nil {
 		return Reply{Errno: errnoOf(err)}
 	}
+	// I20:新建目录发 IN_CREATE|IN_ISDIR。
+	s.observe(path, inotify.InCreate, 0, true)
 	return Reply{}
 }
 
@@ -2087,6 +2180,8 @@ func (s Syscalls) unlinkat(ctx context.Context, call Call) Reply {
 	if err := s.Files.Remove(ctx, path); err != nil {
 		return Reply{Errno: errnoOf(err)}
 	}
+	// I20:删除按预取的目录标记发 IN_DELETE(自监视转 DELETE_SELF)。
+	s.observe(path, inotify.InDelete, 0, statErr == nil && info != nil && info.IsDir())
 	return Reply{}
 }
 
@@ -2109,6 +2204,8 @@ func (s Syscalls) symlinkat(ctx context.Context, call Call) Reply {
 	if err := s.Files.Symlink(ctx, target, linkpath); err != nil {
 		return Reply{Errno: errnoOf(err)}
 	}
+	// I20:新建符号链接发 IN_CREATE。
+	s.observe(linkpath, inotify.InCreate, 0, false)
 	return Reply{}
 }
 
@@ -2150,11 +2247,13 @@ func (s Syscalls) linkat(ctx context.Context, call Call) Reply {
 		if err := follow.LinkFollowing(ctx, oldpath, newpath); err != nil {
 			return Reply{Errno: errnoOf(err)}
 		}
+		s.observe(newpath, inotify.InCreate, 0, false)
 		return Reply{}
 	}
 	if err := s.Files.Link(ctx, oldpath, newpath); err != nil {
 		return Reply{Errno: errnoOf(err)}
 	}
+	s.observe(newpath, inotify.InCreate, 0, false)
 	return Reply{}
 }
 
@@ -2178,9 +2277,20 @@ func (s Syscalls) renameat(ctx context.Context, call Call) Reply {
 	if code != "" {
 		return Reply{Errno: code}
 	}
+	isDir := false
+	if info, statErr := s.Files.Stat(ctx, oldpath); statErr == nil && info != nil {
+		isDir = info.IsDir()
+	}
 	if err := s.Files.Rename(ctx, oldpath, newpath); err != nil {
 		return Reply{Errno: errnoOf(err)}
 	}
+	// I20:改名为配对的 IN_MOVED_FROM/IN_MOVED_TO(cookie 相同)。
+	cookie := uint32(0)
+	if s.Notify != nil {
+		cookie = s.Notify.NextCookie()
+	}
+	s.observe(oldpath, inotify.InMovedFrom, cookie, isDir)
+	s.observe(newpath, inotify.InMovedTo, cookie, isDir)
 	return Reply{}
 }
 
@@ -3727,6 +3837,81 @@ func (s Syscalls) eventfd2(ctx context.Context, call Call) Reply {
 	}
 	return Reply{Value: descriptor}
 }
+
+// inotifyInit1(flags) 创建 inotify 实例(I20):只接受 IN_NONBLOCK 与
+// IN_CLOEXEC,未知标志 EINVAL。描述符端口未装配报 NotImplemented 族。
+func (s Syscalls) inotifyInit1(ctx context.Context, call Call) Reply {
+	if s.Descriptors == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	if call.Args[0]&^(uint64(inoNonBlock|inoCloexec)) != 0 {
+		return Reply{Errno: errno.Invalid}
+	}
+	descriptor, err := s.Descriptors.Inotify(ctx, call.Args[0])
+	if err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	// 实例登记到扇出注册表(I20):此后其他进程的文件操作经
+	// Observe 到达本实例。描述符关闭后的剔除由扇出方惰性完成
+	// (Closed() 判定)。
+	if s.Notify != nil {
+		if handle, getErr := s.Descriptors.InotifyAt(ctx, descriptor); getErr == nil {
+			s.Notify.Register(handle)
+		}
+	}
+	return Reply{Value: descriptor}
+}
+
+// inotifyAddWatch(fd, path, mask) 登记监视(I20):路径按目录句柄解析,
+// isDir 由 stat 判定(IN_ONLYDIR 用);句柄不是 inotify 报 EINVAL。
+func (s Syscalls) inotifyAddWatch(ctx context.Context, call Call) Reply {
+	if s.Descriptors == nil || s.Files == nil || s.Memory == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	path, code := s.readPath(ctx, call.Args[1])
+	if code != "" {
+		return Reply{Errno: code}
+	}
+	path, code = s.resolveDirPath(ctx, atCurrentWorkingDirectory, path)
+	if code != "" {
+		return Reply{Errno: code}
+	}
+	isDir := false
+	if info, err := s.Files.Stat(ctx, path); err == nil && info != nil {
+		isDir = info.IsDir()
+	}
+	handle, err := s.Descriptors.InotifyAt(ctx, call.Args[0])
+	if err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	wd, err := handle.AddWatch(path, uint32(call.Args[2]), uint32(call.Args[2]>>32), isDir)
+	if err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	return Reply{Value: uint64(wd)}
+}
+
+// inotifyRmWatch(fd, wd) 移除监视(I20);未知 wd 报 EINVAL。
+func (s Syscalls) inotifyRmWatch(ctx context.Context, call Call) Reply {
+	if s.Descriptors == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	handle, err := s.Descriptors.InotifyAt(ctx, call.Args[0])
+	if err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	if err := handle.RemoveWatch(uint32(call.Args[1])); err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	return Reply{}
+}
+
+// asm-generic 的 inotify 标志位(I20):IN_CLOEXEC/IN_NONBLOCK 与
+// eventfd/signalfd 同值。
+const (
+	inoNonBlock = 0o4000
+	inoCloexec  = 0o2000000
+)
 
 // asm-generic 的 signalfd4 标志位与掩码剥离规则。
 const (

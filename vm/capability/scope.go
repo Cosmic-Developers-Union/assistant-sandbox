@@ -15,6 +15,7 @@ import (
 	fs "github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fs"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/identity"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/image"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/inotify"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/ipc"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/language"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/memory"
@@ -219,6 +220,22 @@ func (s scopedFDs) EpollAt(_ uint64, id uint32) (*epoll.FD, error) {
 		return creator.EpollAt(s.pid, id)
 	}
 	return nil, errno.Wrap(errno.NotSupported, "描述符表不支持 epoll")
+}
+
+// Inotify 实现 fd.Creator:以作用域绑定的进程创建 inotify 实例(I20)。
+func (s scopedFDs) Inotify(_ uint64, nonblock bool) (uint32, error) {
+	if creator, ok := s.base.(fd.Creator); ok {
+		return creator.Inotify(s.pid, nonblock)
+	}
+	return 0, errno.Wrap(errno.NotSupported, "描述符表不支持 inotify")
+}
+
+// InotifyAt 实现 fd.Creator:取作用域绑定进程的 inotify 实例。
+func (s scopedFDs) InotifyAt(_ uint64, id uint32) (*inotify.FD, error) {
+	if creator, ok := s.base.(fd.Creator); ok {
+		return creator.InotifyAt(s.pid, id)
+	}
+	return nil, errno.Wrap(errno.NotSupported, "描述符表不支持 inotify")
 }
 
 // DupAt 实现 fd.Creator:以作用域绑定的进程复制到 ≥min 的最低空闲编号。
@@ -460,6 +477,18 @@ func (f *chargeFile) Seek(offset int64, whence int) (int64, error) {
 func (f *chargeFile) Close() error { return f.base.Close() }
 
 func (f *chargeFile) Stat() (stdfs.FileInfo, error) { return f.base.Stat() }
+
+// GuestPath 转发客体路径查询(I20):inotify 的 fd 侧事件按路径
+// 匹配监视;底层句柄无该能力时 ok=false(无事件,尽力而为)。
+func (f *chargeFile) GuestPath() (string, bool) {
+	pather, ok := f.base.(interface {
+		GuestPath() (string, bool)
+	})
+	if !ok {
+		return "", false
+	}
+	return pather.GuestPath()
+}
 
 // LockIdentity 转发锁对象标识(I14):fcntl 文件锁经作用域句柄同样
 // 按 inode 键控。
