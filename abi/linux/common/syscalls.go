@@ -14,6 +14,7 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/epoll"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 	vmfs "github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fs"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/locks"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/memory"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/signalfd"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/trace"
@@ -239,6 +240,9 @@ type Syscalls struct {
 	// Threader 是 clone 线程形态(K02)的端口;未装配时线程形态
 	// clone 报 ENOSYS 族。
 	Threader ThreadSpawner
+
+	// Locks 是字节范围文件锁表(I14);未装配时文件锁命令报 ENOSYS 族。
+	Locks *locks.Table
 
 	// RobustLists 是 robust futex 登记端口(K07);未装配时
 	// set/get_robust_list 报 ENOSYS 族。
@@ -3517,11 +3521,134 @@ func (s Syscalls) fcntl(ctx context.Context, call Call) Reply {
 	if s.Descriptors == nil {
 		return Reply{Errno: errno.NotImplemented}
 	}
+	// I14:文件锁命令(F_GETLK/F_SETLK/F_SETLKW)经锁表处理。
+	switch call.Args[1] {
+	case fGetLK, fSetLK, fSetLKW:
+		return s.fcntlLock(ctx, call)
+	}
 	value, err := s.Descriptors.Fcntl(ctx, call.Args[0], call.Args[1], call.Args[2])
 	if err != nil {
 		return Reply{Errno: errnoOf(err)}
 	}
 	return Reply{Value: value}
+}
+
+// fcntl 文件锁命令(F_GETLK=5/F_SETLK=6/F_SETLKW=7)与锁类型。
+const (
+	fGetLK  = 5
+	fSetLK  = 6
+	fSetLKW = 7
+
+	fRDLCK = 0
+	fWRLCK = 1
+	fUNLCK = 2
+)
+
+// decodeFlock 解析 asm-generic struct flock(32 字节:type@0/whence@2/
+// start@8/len@16/pid@24,qemu-riscv64 实测锁定)。
+func (s Syscalls) decodeFlock(ctx context.Context, address uint64) (typ int, whence uint64, start, length uint64, err errno.Code) {
+	var raw [32]byte
+	if readErr := s.Memory.Read(ctx, address, raw[:]); readErr != nil {
+		return 0, 0, 0, 0, errno.Fault
+	}
+	typ = int(uint16(raw[0]) | uint16(raw[1])<<8)
+	whence = uint64(uint16(raw[2]) | uint16(raw[3])<<8)
+	for i := 0; i < 8; i++ {
+		start |= uint64(raw[8+i]) << (8 * i)
+		length |= uint64(raw[16+i]) << (8 * i)
+	}
+	return typ, whence, start, length, ""
+}
+
+// encodeFlock 写回 struct flock:F_GETLK 的冲突锁或 F_UNLCK。
+func (s Syscalls) encodeFlock(ctx context.Context, address uint64, typ int, start, length, pid uint64) error {
+	var raw [32]byte
+	raw[0] = byte(typ)
+	raw[1] = byte(typ >> 8)
+	for i := 0; i < 8; i++ {
+		raw[8+i] = byte(start >> (8 * i))
+		raw[16+i] = byte(length >> (8 * i))
+		raw[24+i] = byte(pid >> (8 * i))
+	}
+	return s.Memory.Write(ctx, address, raw[:])
+}
+
+func eofEnd(start, length uint64) uint64 {
+	if length == 0 {
+		return 0 // 至 EOF
+	}
+	return start + length
+}
+
+// fcntlLock 实现 F_GETLK(探测冲突)/F_SETLK(非阻塞)/F_SETLKW
+// (阻塞,1ms 切片感知信号,EINTR)。锁对象经句柄 Lockable 能力
+// (inode 号)键控;holder 为调用进程号。
+func (s Syscalls) fcntlLock(ctx context.Context, call Call) Reply {
+	if s.Memory == nil || s.Locks == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	handle, err := s.Descriptors.Get(ctx, call.Args[0])
+	if err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	lockable, ok := handle.(vmfs.Lockable)
+	if !ok {
+		// 管道/epoll 等不可锁对象:Linux 报 EBADF(锁仅文件)。
+		return Reply{Errno: errno.BadHandle}
+	}
+	cmd := call.Args[1]
+	typ, whence, start, length, code := s.decodeFlock(ctx, call.Args[2])
+	if code != "" {
+		return Reply{Errno: code}
+	}
+	if typ != fRDLCK && typ != fWRLCK && typ != fUNLCK {
+		return Reply{Errno: errno.Invalid}
+	}
+	var rng locks.Range
+	switch whence {
+	case 0, 2: // SEEK_SET / SEEK_END:子集不含相对当前偏移
+		rng = locks.Range{Start: start, End: eofEnd(start, length)}
+	default:
+		return Reply{Errno: errno.Invalid}
+	}
+	holder := s.identityPID()
+	key := locks.Key(lockable.LockIdentity())
+	switch cmd {
+	case fGetLK:
+		conflictRange, conflictType, conflictHolder, has := s.Locks.Test(key, holder, rng, typ)
+		writeType := fUNLCK
+		if has {
+			writeType = conflictType
+		}
+		if encodeErr := s.encodeFlock(ctx, call.Args[2], writeType, conflictRange.Start, conflictRange.End, conflictHolder); encodeErr != nil {
+			return Reply{Errno: errno.Fault}
+		}
+		return Reply{}
+	case fSetLK:
+		if setErr := s.Locks.Set(key, holder, rng, typ); setErr != nil {
+			return Reply{Errno: errnoOf(setErr)}
+		}
+		return Reply{}
+	default: // fSetLKW
+		for {
+			setErr := s.Locks.Set(key, holder, rng, typ)
+			if setErr == nil {
+				return Reply{}
+			}
+			if !errors.Is(setErr, errno.WouldBlock) {
+				return Reply{Errno: errnoOf(setErr)}
+			}
+			// 阻塞重试:1ms 切片感知待投递信号(J09)。
+			if s.Interrupts != nil {
+				if _, _, ok := s.Interrupts.DeliverableSignal(); ok {
+					return Reply{Errno: errno.Interrupted}
+				}
+			}
+			if err := s.Sleeper.Sleep(ctx, sleepSlice); err != nil {
+				return Reply{Errno: errno.Interrupted}
+			}
+		}
+	}
 }
 
 // pipe2(fds, flags) 创建匿名管道(I15):O_CLOEXEC/O_NONBLOCK 在

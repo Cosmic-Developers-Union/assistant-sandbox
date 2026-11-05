@@ -15,6 +15,7 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fd"
 	vmfs "github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fs"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/locks"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/trace"
 )
 
@@ -3018,10 +3019,14 @@ func TestKillAndTgkillValidateAndDelegate(t *testing.T) {
 type fakeInterruptor struct {
 	polls  int
 	after  int
+	always bool
 	action SignalAction
 }
 
 func (f *fakeInterruptor) DeliverableSignal() (uint64, SignalAction, bool) {
+	if f.always {
+		return 10, SignalAction{}, true
+	}
 	f.polls++
 	if f.polls < f.after {
 		return 0, SignalAction{}, false
@@ -3558,5 +3563,97 @@ func TestWriteValidatesDescriptorBeforeBuffer(t *testing.T) {
 	good := Syscalls{Memory: newFakeMemory(), Descriptors: &fakeDescriptors{}}
 	if reply := good.Handle(ctx, Call{Syscall: SysWrite, Args: [6]uint64{3, 0, 0}}); reply.Errno != "" || reply.Value != 0 {
 		t.Fatalf("合法 fd 零长度写: %+v want 0", reply)
+	}
+}
+
+// lockableFD 是实现 vmfs.Lockable 的假句柄:文件锁按 inode 号键控。
+type lockableFD struct {
+	fakeDescriptors
+	inode uint64
+}
+
+func (d *lockableFD) LockIdentity() uint64 { return d.inode }
+
+// TestFcntlFileLocks 锁定 I14:fcntl F_SETLK 冲突检测、F_GETLK 写回
+// 冲突锁(F_UNLCK 表示无)、F_UNLCK 释放、F_SETLKW 经 EINTR 打断。
+func TestFcntlFileLocks(t *testing.T) {
+	ctx := context.Background()
+	descriptors := &lockableFD{inode: 77}
+	descriptors.get = descriptors
+	lockTable := locks.New()
+	handler := Syscalls{
+		Memory:      newFakeMemory(),
+		Descriptors: descriptors,
+		Locks:       lockTable,
+		Interrupts:  &fakeInterruptor{always: true},
+		Sleeper:     &fakeSleeper{},
+	}
+	writeFlock := func(typ uint16, start, length uint64) {
+		var raw [32]byte
+		raw[0], raw[1] = byte(typ), byte(typ>>8)
+		for i := 0; i < 8; i++ {
+			raw[8+i] = byte(start >> (8 * i))
+			raw[16+i] = byte(length >> (8 * i))
+			raw[24+i] = byte(9 >> (8 * i))
+		}
+		if err := handler.Memory.Write(ctx, 0x1000, raw[:]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	flockAt := uint64(0x1000)
+
+	// 进程 9 对 [0,∞) 取写锁。
+	writeFlock(fWRLCK, 0, 0)
+	if reply := handler.Handle(ctx, Call{Syscall: SysFcntl, Args: [6]uint64{3, fSetLK, flockAt}}); reply.Errno != "" {
+		t.Fatalf("F_SETLK: %v", reply.Errno)
+	}
+	// F_GETLK:同进程无冲突 → F_UNLCK。
+	writeFlock(fRDLCK, 0, 0)
+	if reply := handler.Handle(ctx, Call{Syscall: SysFcntl, Args: [6]uint64{3, fGetLK, flockAt}}); reply.Errno != "" {
+		t.Fatalf("F_GETLK: %v", reply.Errno)
+	}
+	var raw [32]byte
+	if err := handler.Memory.Read(ctx, flockAt, raw[:]); err != nil {
+		t.Fatal(err)
+	}
+	if got := uint16(raw[0]) | uint16(raw[1])<<8; got != fUNLCK {
+		t.Fatalf("无冲突 l_type=%d want F_UNLCK", got)
+	}
+	// 先释放自己的写锁(F_UNLCK),再登记异持有者锁。
+	writeFlock(fUNLCK, 0, 0)
+	if reply := handler.Handle(ctx, Call{Syscall: SysFcntl, Args: [6]uint64{3, fSetLK, flockAt}}); reply.Errno != "" {
+		t.Fatalf("F_UNLCK: %v", reply.Errno)
+	}
+	// 异持有者(锁表内直接登记)→ F_GETLK 写回冲突锁。
+	if err := lockTable.Set(77, 8, locks.Range{Start: 0}, locks.Write); err != nil {
+		t.Fatal(err)
+	}
+	writeFlock(fRDLCK, 0, 0) // 重写探测锁(上次写的是 F_UNLCK 释放形态)
+	if reply := handler.Handle(ctx, Call{Syscall: SysFcntl, Args: [6]uint64{3, fGetLK, flockAt}}); reply.Errno != "" {
+		t.Fatalf("F_GETLK 冲突: %v", reply.Errno)
+	}
+	if err := handler.Memory.Read(ctx, flockAt, raw[:]); err != nil {
+		t.Fatal(err)
+	}
+	if got := uint16(raw[0]) | uint16(raw[1])<<8; got != fWRLCK {
+		t.Fatalf("冲突 l_type=%d want F_WRLCK", got)
+	}
+	if pid := uint32(raw[24]) | uint32(raw[25])<<8 | uint32(raw[26])<<16 | uint32(raw[27])<<24; pid != 8 {
+		t.Fatalf("冲突 l_pid=%d want 8", pid)
+	}
+	// F_SETLK 冲突 → EAGAIN。
+	writeFlock(fWRLCK, 0, 0)
+
+	if reply := handler.Handle(ctx, Call{Syscall: SysFcntl, Args: [6]uint64{3, fSetLK, flockAt}}); !errors.Is(reply.Errno, errno.WouldBlock) {
+		t.Fatalf("F_SETLK 冲突: %#v want EAGAIN", reply.Errno)
+	}
+	// F_SETLKW 被待投递信号打断 → EINTR。
+	if reply := handler.Handle(ctx, Call{Syscall: SysFcntl, Args: [6]uint64{3, fSetLKW, flockAt}}); !errors.Is(reply.Errno, errno.Interrupted) {
+		t.Fatalf("F_SETLKW EINTR: %v want EINTR", reply.Errno)
+	}
+	// 持有者释放后 F_SETLK 成功。
+	lockTable.ReleaseHolder(8)
+	if reply := handler.Handle(ctx, Call{Syscall: SysFcntl, Args: [6]uint64{3, fSetLK, flockAt}}); reply.Errno != "" {
+		t.Fatalf("释放后 F_SETLK: %v", reply.Errno)
 	}
 }

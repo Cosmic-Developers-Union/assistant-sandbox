@@ -21,6 +21,7 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/futex"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/ipc"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/job"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/locks"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/memory"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/net"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/pipe"
@@ -107,6 +108,10 @@ type Kernel struct {
 	// robustLists 是各线程登记的 robust futex 链表头与长度(K07):
 	// set_robust_list 登记,线程退出时清算;fork 不继承,exec 复位。
 	robustLists map[proc.PID]robustList
+
+	// locks 是字节范围文件锁表(I14):fcntl F_SETLK/F_GETLK 键控,
+	// 进程退出统一释放。
+	locks *locks.Table
 
 	// trace 收集受限的系统调用轨迹(G08):有界,不记录缓冲区内容。
 	trace *trace.Recorder
@@ -202,6 +207,7 @@ func New(services Services, maxProcesses int) (*Kernel, error) {
 	k.futexes = futex.New()
 	k.tidAddresses = map[proc.PID]uint64{}
 	k.robustLists = map[proc.PID]robustList{}
+	k.locks = locks.New()
 	k.init = root.ID
 	k.signals.Spawn(uint64(root.ID))
 	if fdt, ok := services.FD.(*fd.Table); ok {
@@ -359,6 +365,9 @@ func (k *Kernel) Reap(id proc.PID) (proc.Proc, error) {
 // 移除表项;K10:fork 子进程的僵尸由父进程 wait*,不再于 Finish
 // 自动回收——资源必须在退出点释放而非回收点)。
 func (k *Kernel) exitResourcesLocked(p proc.Proc) error {
+	if k.locks != nil {
+		k.locks.ReleaseHolder(uint64(p.ID))
+	}
 	k.signals.Discard(uint64(p.ID))
 	if k.meters != nil {
 
@@ -1726,6 +1735,9 @@ func (k *Kernel) Close(ctx context.Context) error {
 	k.queue.close()
 	// 关闭 futex 等待表:阻塞的 WAIT 以 ECANCELED 放行(K05)。
 	k.futexes.Close()
+	if k.locks != nil {
+		k.locks.Close()
+	}
 	for _, instance := range instances {
 		_ = instance.Interrupt(signal.TERM)
 	}
@@ -2274,6 +2286,10 @@ func (c procControl) HandleRobustListAtExit(ctx context.Context, mem proc.Robust
 		address = next
 	}
 	return nil
+}
+
+func (c procControl) Locks() *locks.Table {
+	return c.k.locks
 }
 
 func (c procControl) TidAddress() uint64 {

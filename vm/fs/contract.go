@@ -52,6 +52,12 @@ type System interface {
 	Readlink(context.Context, string) (string, error)
 }
 
+// Lockable 由可参与字节范围文件锁的句柄实现(I14):返回锁对象标识
+// (通常为 inode 号)——fcntl 锁按此键控,进程退出统一释放。
+type Lockable interface {
+	LockIdentity() uint64
+}
+
 // AccessorFS 由支持多身份检查的文件系统实现(I13/O01):WithAccessor
 // 返回以 (uid,gid) 身份执行后续操作的视图——权限按 owner/group/other
 // 分类判定,新建节点归属该身份;视图共享同一棵树,并发安全。

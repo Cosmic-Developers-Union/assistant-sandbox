@@ -7,6 +7,7 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fd"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/futex"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/locks"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/memory"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/signal"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/trace"
@@ -110,6 +111,12 @@ type RobustListControl interface {
 	SetRobustList(head, length uint64) error
 
 	RobustList(head *uint64, length *uint64) error
+}
+
+// LocksControl 是字节范围文件锁表端口(I14):fcntl 文件锁经此
+// 访问内核锁表。
+type LocksControl interface {
+	Locks() *locks.Table
 }
 
 // RobustMemory 是 robust 清算所需的客体内存原语(执行器注入

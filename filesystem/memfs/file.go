@@ -279,6 +279,9 @@ func (h *handle) Readdir(limit int) ([]stdfs.DirEntry, error) {
 	return out, nil
 }
 
+// LockIdentity 返回锁对象标识(inode 号,I14)。
+func (h *handle) LockIdentity() uint64 { return h.node.id }
+
 // Truncate 以字节长度截断文件:收缩丢弃尾部,扩张补零(空洞)。
 // 需要句柄以可写方式打开;目录报 EISDIR;扩张受单文件与总量预算约束。
 func (h *handle) Truncate(size int64) error {

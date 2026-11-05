@@ -461,6 +461,18 @@ func (f *chargeFile) Close() error { return f.base.Close() }
 
 func (f *chargeFile) Stat() (stdfs.FileInfo, error) { return f.base.Stat() }
 
+// LockIdentity 转发锁对象标识(I14):fcntl 文件锁经作用域句柄同样
+// 按 inode 键控。
+func (f *chargeFile) LockIdentity() uint64 {
+	lockable, ok := f.base.(interface {
+		LockIdentity() uint64
+	})
+	if !ok {
+		return 0
+	}
+	return lockable.LockIdentity()
+}
+
 // 以下为底层句柄可选能力的转发:ABI 处理器按能力类型断言,包装层
 // 不转发会使真实(经 capability 作用域)路径恒 ENOTSUP(L11 同类)。
 // 缺能力时保持与底层一致的不实现错误。

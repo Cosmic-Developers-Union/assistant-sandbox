@@ -455,6 +455,9 @@ func syscalls(ctx context.Context, process proc.Proc, space *memory.Table, plan 
 	if robust, ok := process.Control.(proc.RobustListControl); ok {
 		handler.RobustLists = processRobustList{control: robust}
 	}
+	if lockTable, ok := process.Control.(proc.LocksControl); ok {
+		handler.Locks = lockTable.Locks()
+	}
 	if sessions, ok := process.Control.(proc.SessionControl); ok {
 		handler.Sessions = processSessions{control: sessions}
 	}
