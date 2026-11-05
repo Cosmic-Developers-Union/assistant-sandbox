@@ -77,20 +77,17 @@ func TestSaveCommitsAtomically(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(store.Root(), "s"+sessionSuffix)); err != nil {
 		t.Fatalf("目标文件应存在: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(store.Root(), "s"+sessionSuffix+checksumSuffix)); err != nil {
-		t.Fatalf("摘要文件应存在: %v", err)
-	}
 
-	data, err := os.ReadFile(filepath.Join(store.Root(), "s"+sessionSuffix))
+	raw, err := os.ReadFile(filepath.Join(store.Root(), "s"+sessionSuffix))
 	if err != nil {
 		t.Fatal(err)
 	}
-	checksum, err := os.ReadFile(filepath.Join(store.Root(), "s"+sessionSuffix+checksumSuffix))
-	if err != nil {
-		t.Fatal(err)
+	container, ok := decodeSession(raw)
+	if !ok {
+		t.Fatalf("会话文件应为自校验容器: %q", raw[:min(len(raw), 32)])
 	}
-	if digestOf(data) != strings.TrimSpace(string(checksum)) {
-		t.Fatal("内容与摘要不符")
+	if !container.verify() || string(container.data) != "first" {
+		t.Fatalf("容器校验: verify=%v data=%q", container.verify(), container.data)
 	}
 }
 
@@ -106,14 +103,23 @@ func TestLoadRejectsCorruptedContent(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := store.Load(ctx, "s"); !errors.Is(err, errno.Version) {
-		t.Fatalf("内容被篡改应报校验失败: %v", err)
+		t.Fatalf("无摘要行应报校验失败: %v", err)
 	}
 
-	if err := os.Remove(filepath.Join(store.Root(), "s"+sessionSuffix+checksumSuffix)); err != nil {
+	// 摘要行被破坏(格式非法)。
+	if err := os.WriteFile(target, []byte("not-a-digest\ncontent"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.Load(ctx, "s"); !errors.Is(err, errno.Version) {
-		t.Fatalf("摘要缺失应报校验失败: %v", err)
+		t.Fatalf("摘要行非法应报校验失败: %v", err)
+	}
+
+	// 摘要行合法但内容被篡改。
+	if err := os.WriteFile(target, encodeSession([]byte("original"))[:len(encodeSession([]byte("original")))-1], 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Load(ctx, "s"); !errors.Is(err, errno.Version) {
+		t.Fatalf("内容篡改应报校验失败: %v", err)
 	}
 }
 
@@ -177,7 +183,8 @@ func TestListReportsOnlyCompleteSessions(t *testing.T) {
 		}
 	}
 
-	if err := os.Remove(filepath.Join(store.Root(), "c"+sessionSuffix+checksumSuffix)); err != nil {
+	// 截断容器(无完整摘要行)不算完整会话。
+	if err := os.WriteFile(filepath.Join(store.Root(), "c"+sessionSuffix), []byte("half"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	names, err := store.List(ctx)
