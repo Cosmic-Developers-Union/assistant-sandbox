@@ -15,9 +15,9 @@ func (f *FS) Snapshot(ctx context.Context) (vmfs.Snapshotted, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return &snapshot{root: cloneTree(f.root)}, nil
+	f.st.mu.Lock()
+	defer f.st.mu.Unlock()
+	return &snapshot{root: cloneTree(f.st.root)}, nil
 }
 
 func (s *snapshot) Restore(ctx context.Context, target vmfs.System) error {
@@ -29,23 +29,23 @@ func (s *snapshot) Restore(ctx context.Context, target vmfs.System) error {
 		return errno.NotSupported
 	}
 	copied := cloneTree(s.root)
-	dst.mu.Lock()
-	defer dst.mu.Unlock()
+	dst.st.mu.Lock()
+	defer dst.st.mu.Unlock()
 
 	stale := map[*inode]struct{}{}
-	for node := range dst.live {
+	for node := range dst.st.live {
 		if node.opened == 0 {
 			continue
 		}
 		node.nlink = 0
 		stale[node] = struct{}{}
 	}
-	dst.root = copied
+	dst.st.root = copied
 	fixParents(copied)
-	dst.nodes = countNodes(copied) + uint64(len(stale))
-	dst.live = liveSet(copied)
+	dst.st.nodes = countNodes(copied) + uint64(len(stale))
+	dst.st.live = liveSet(copied)
 	for node := range stale {
-		dst.live[node] = struct{}{}
+		dst.st.live[node] = struct{}{}
 	}
 	return nil
 }

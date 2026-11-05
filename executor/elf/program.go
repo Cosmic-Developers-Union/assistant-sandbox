@@ -19,6 +19,7 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/executable"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fd"
+	vmfs "github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fs"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/memory"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/proc"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/resources"
@@ -410,6 +411,17 @@ func syscalls(ctx context.Context, process proc.Proc, space *memory.Table, plan 
 
 		if installer, ok := descriptors.(fd.Installer); ok {
 			if system, err := process.Resources.Filesystem(); err == nil {
+				// I13/O01:按进程身份包装文件系统——权限按
+				// owner/group/other 判定,新建节点归属该进程身份。
+				if credentials, credErr := process.Resources.Credentials(); credErr == nil {
+					if current, lookupErr := credentials.Lookup(ctx, uint64(process.ID)); lookupErr == nil {
+						if accessor, ok := system.(vmfs.AccessorFS); ok {
+							if scoped, accessErr := accessor.WithAccessor(current.UID, current.GID); accessErr == nil {
+								system = scoped
+							}
+						}
+					}
+				}
 				handler.Files = common.ProcessFiles{
 					System: system,
 					Store:  installer,

@@ -52,6 +52,13 @@ type System interface {
 	Readlink(context.Context, string) (string, error)
 }
 
+// AccessorFS 由支持多身份检查的文件系统实现(I13/O01):WithAccessor
+// 返回以 (uid,gid) 身份执行后续操作的视图——权限按 owner/group/other
+// 分类判定,新建节点归属该身份;视图共享同一棵树,并发安全。
+type AccessorFS interface {
+	WithAccessor(uid, gid uint32) (System, error)
+}
+
 // LinkFollow 是 linkat(2) AT_SYMLINK_FOLLOW 的可选能力:
 // oldpath 为符号链接时解引用,对目标文件建立硬链接。
 type LinkFollow interface {

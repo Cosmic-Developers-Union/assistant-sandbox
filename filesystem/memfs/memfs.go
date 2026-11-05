@@ -31,17 +31,103 @@ type Options struct {
 	TotalBytes int64
 }
 
-type FS struct {
+// fsState 是 memfs 的可变核心:视图(FS 副本)共享同一指针。
+type fsState struct {
 	mu     sync.RWMutex
 	root   *inode
 	nodes  uint64
 	nextID uint64
-	clock  clock.Source
+	live   map[*inode]struct{}
+}
 
-	live          map[*inode]struct{}
+type FS struct {
+	st    *fsState
+	clock clock.Source
+
 	maxNodes      int
 	maxBytes      int
 	maxTotalBytes int64
+
+	// accessor 是多身份检查的调用方身份(I13):nil 表示单用户语义
+	// (调用方视为文件所有者,沿用属主位判定)。
+	accessor *accessorIdentity
+}
+
+// accessorIdentity 是 WithAccessor 绑定的调用方身份。
+type accessorIdentity struct {
+	uid uint32
+	gid uint32
+}
+
+// WithAccessor 返回以 (uid,gid) 身份执行后续操作的视图(I13/O01):
+// 视图共享同一棵树与锁;权限按 owner/group/other 分类判定,新建节点
+// 归属该身份,sticky 目录约束删除/改名。
+func (f *FS) WithAccessor(uid, gid uint32) (vmfs.System, error) {
+	view := *f
+	view.accessor = &accessorIdentity{uid: uid, gid: gid}
+	return &view, nil
+}
+
+// classOf 按 accessor 分类调用方对节点的权限类别:0 属主/1 组/2 其他;
+// 无 accessor 时视为属主(单用户语义)。
+func (f *FS) classOf(node *inode) int {
+	if f.accessor == nil {
+		return 0
+	}
+	if node.uid == f.accessor.uid {
+		return 0
+	}
+	if node.gid == f.accessor.gid {
+		return 1
+	}
+	return 2
+}
+
+// permBits 返回调用方类别对应的 rwx 位组。
+func permBits(node *inode, class int) stdfs.FileMode {
+	perm := node.mode.Perm()
+	switch class {
+	case 0:
+		return (perm >> 6) & 7
+	case 1:
+		return (perm >> 3) & 7
+	default:
+		return perm & 7
+	}
+}
+
+// canRead/canWrite/canExec 按类别判定;root(uid 0)对非属主类别读写
+// 豁免,执行仍需任一 x 位(Linux 语义)。
+func (f *FS) canRead(node *inode) bool {
+	class := f.classOf(node)
+	if f.accessor != nil && f.accessor.uid == 0 && class != 0 {
+		return true
+	}
+	return permBits(node, class)&4 != 0
+}
+
+func (f *FS) canWrite(node *inode) bool {
+	class := f.classOf(node)
+	if f.accessor != nil && f.accessor.uid == 0 && class != 0 {
+		return true
+	}
+	return permBits(node, class)&2 != 0
+}
+
+func (f *FS) canExec(node *inode) bool {
+	return permBits(node, f.classOf(node))&1 != 0
+}
+
+// mayModifyIn 是 sticky 目录的删除/改名约束(I13):目录带 sticky 位
+// 且调用方非目录属主时,仅允许操作属主为调用方的条目;root 豁免。
+func (f *FS) mayModifyIn(dir, node *inode) bool {
+	if dir.mode&stdfs.ModeSticky == 0 {
+		return true
+	}
+	if f.accessor == nil || f.accessor.uid == 0 {
+		return true
+	}
+	return node.uid == f.accessor.uid || dir.uid == f.accessor.uid
 }
 
 type inodeKind uint8
@@ -75,10 +161,10 @@ type inode struct {
 // pathOf 返回节点当前所在的客体绝对路径:沿父指针回溯,目录被
 // 重命名后即时反映新位置(目录句柄跟随 inode,I02)。
 func (f *FS) pathOf(node *inode) string {
-	f.mu.RLock()
-	defer f.mu.RUnlock()
+	f.st.mu.RLock()
+	defer f.st.mu.RUnlock()
 	var parts []string
-	for cur := node; cur != f.root && cur != nil; cur = cur.parent {
+	for cur := node; cur != f.st.root && cur != nil; cur = cur.parent {
 		parts = append(parts, cur.name)
 	}
 	for i, j := 0, len(parts)-1; i < j; i, j = i+1, j-1 {
@@ -98,13 +184,13 @@ func New(clk clock.Source, opts Options) (*FS, error) {
 		opts.MaxFileBytes = defaultMaxBytes
 	}
 	f := &FS{clock: clk, maxNodes: opts.MaxNodes, maxBytes: opts.MaxFileBytes,
-		maxTotalBytes: opts.TotalBytes, nextID: 1, live: map[*inode]struct{}{}}
+		maxTotalBytes: opts.TotalBytes, st: &fsState{nextID: 1, live: map[*inode]struct{}{}}}
 	now, err := clk.Wall(context.Background())
 	if err != nil {
 		return nil, err
 	}
-	f.root = &inode{
-		id:       f.nextID,
+	f.st.root = &inode{
+		id:       f.st.nextID,
 		kind:     kindDir,
 		mode:     stdfs.ModeDir | 0o755,
 		atime:    now,
@@ -113,9 +199,9 @@ func New(clk clock.Source, opts Options) (*FS, error) {
 		children: map[string]*inode{},
 		name:     "/",
 	}
-	f.nodes = 1
-	f.live[f.root] = struct{}{}
-	f.root.parent = f.root
+	f.st.nodes = 1
+	f.st.live[f.st.root] = struct{}{}
+	f.st.root.parent = f.st.root
 	return f, nil
 }
 
@@ -191,7 +277,7 @@ func (f *FS) traversable(dir *inode) error {
 	if dir.kind != kindDir {
 		return errno.NotDirectory
 	}
-	if dir.mode.Perm()&0o100 == 0 {
+	if !f.canExec(dir) {
 		return errno.Permission
 	}
 	return nil
@@ -210,9 +296,9 @@ func (f *FS) linkPath(parent *inode, target string) (*inode, []string, error) {
 	if strings.HasPrefix(target, "/") {
 		trimmed := strings.TrimPrefix(path.Clean(target), "/")
 		if trimmed == "" || trimmed == "." {
-			return f.root, nil, nil
+			return f.st.root, nil, nil
 		}
-		return f.root, strings.Split(trimmed, "/"), nil
+		return f.st.root, strings.Split(trimmed, "/"), nil
 	}
 	cleaned := path.Clean(target)
 	if cleaned == "." {
@@ -227,11 +313,11 @@ func (f *FS) lookup(p string, followLast bool) (*inode, *inode, string, error) {
 		return nil, nil, "", err
 	}
 	if len(comps) == 0 {
-		return f.root, f.root, "/", nil
+		return f.st.root, f.st.root, "/", nil
 	}
 
 	head, tail := comps[:len(comps)-1], comps[len(comps)-1]
-	dir, err := f.resolve(f.root, head, 1, true)
+	dir, err := f.resolve(f.st.root, head, 1, true)
 	if err != nil {
 		return nil, nil, "", err
 	}
@@ -273,33 +359,43 @@ func (f *FS) checkWritable(p string) (*inode, string, error) {
 		return nil, "", errno.Invalid
 	}
 	head, tail := comps[:len(comps)-1], comps[len(comps)-1]
-	dir, err := f.resolve(f.root, head, 1, true)
+	dir, err := f.resolve(f.st.root, head, 1, true)
 	if err != nil {
 		return nil, "", err
 	}
 	if err := f.traversable(dir); err != nil {
 		return nil, "", err
 	}
-	if dir.mode.Perm()&0o200 == 0 {
+	if !f.canWrite(dir) {
 		return nil, "", errno.Permission
 	}
 	return dir, tail, nil
 }
 
+// applyCreateMode 保留创建模式的特殊位( setuid/setgid/sticky ):
+// stdfs 编码下它们高于 9 位,Perm() 会丢弃。
+func applyCreateMode(mode stdfs.FileMode) stdfs.FileMode {
+	return mode.Perm() | mode&(stdfs.ModeSetuid|stdfs.ModeSetgid|stdfs.ModeSticky)
+}
+
 func (f *FS) newNode(kind inodeKind, mode stdfs.FileMode, now int64) (*inode, error) {
-	if f.nodes >= uint64(f.maxNodes) {
+	if f.st.nodes >= uint64(f.maxNodes) {
 		return nil, errno.NoSpace
 	}
-	f.nextID++
-	f.nodes++
-	node := &inode{id: f.nextID, kind: kind, mode: mode, atime: now, mtime: now, nlink: 1}
-	f.live[node] = struct{}{}
+	f.st.nextID++
+	f.st.nodes++
+	node := &inode{id: f.st.nextID, kind: kind, mode: mode, atime: now, mtime: now, nlink: 1}
+	if f.accessor != nil {
+		node.uid = f.accessor.uid
+		node.gid = f.accessor.gid
+	}
+	f.st.live[node] = struct{}{}
 	return node, nil
 }
 
 func (f *FS) release(node *inode) {
-	f.nodes--
-	delete(f.live, node)
+	f.st.nodes--
+	delete(f.st.live, node)
 	node.data = nil
 }
 
@@ -307,8 +403,8 @@ func (f *FS) Open(ctx context.Context, p string, flags uint32, mode stdfs.FileMo
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.st.mu.Lock()
+	defer f.st.mu.Unlock()
 	access := flags & 0b11
 	create := flags&vmfs.Create != 0
 	exclusive := flags&vmfs.Exclusive != 0
@@ -330,7 +426,7 @@ func (f *FS) Open(ctx context.Context, p string, flags uint32, mode stdfs.FileMo
 			return nil, derr
 		}
 		now := f.now()
-		node, err = f.newNode(kindFile, mode.Perm(), now)
+		node, err = f.newNode(kindFile, applyCreateMode(mode), now)
 		if err != nil {
 			return nil, err
 		}
@@ -350,7 +446,7 @@ func (f *FS) Open(ctx context.Context, p string, flags uint32, mode stdfs.FileMo
 			if access != 0 || truncate || append {
 				return nil, errno.IsDirectory
 			}
-			if node.mode.Perm()&0o400 == 0 {
+			if !f.canRead(node) {
 				return nil, errno.Permission
 			}
 			node.opened++
@@ -361,7 +457,7 @@ func (f *FS) Open(ctx context.Context, p string, flags uint32, mode stdfs.FileMo
 
 			return nil, errno.Wrap(errno.NotSupported, "客体没有命名管道的读写语义")
 		}
-		if access == 0 && node.mode.Perm()&0o400 == 0 || access != 0 && node.mode.Perm()&0o200 == 0 {
+		if access == 0 && !f.canRead(node) || access != 0 && !f.canWrite(node) {
 			return nil, errno.Permission
 		}
 	}
@@ -388,8 +484,8 @@ func (f *FS) stat(ctx context.Context, p string, follow bool) (stdfs.FileInfo, e
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	f.mu.RLock()
-	defer f.mu.RUnlock()
+	f.st.mu.RLock()
+	defer f.st.mu.RUnlock()
 	node, _, _, err := f.lookup(p, follow)
 	if err != nil {
 		return nil, err
@@ -401,8 +497,8 @@ func (f *FS) ReadDir(ctx context.Context, p string) ([]stdfs.DirEntry, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	f.mu.RLock()
-	defer f.mu.RUnlock()
+	f.st.mu.RLock()
+	defer f.st.mu.RUnlock()
 	node, _, _, err := f.lookup(p, true)
 	if err != nil {
 		return nil, err
@@ -410,7 +506,7 @@ func (f *FS) ReadDir(ctx context.Context, p string) ([]stdfs.DirEntry, error) {
 	if node.kind != kindDir {
 		return nil, errno.NotDirectory
 	}
-	if node.mode.Perm()&0o400 == 0 {
+	if !f.canRead(node) {
 		return nil, errno.Permission
 	}
 	names := make([]string, 0, len(node.children))
@@ -429,11 +525,11 @@ func (f *FS) Mkdir(ctx context.Context, p string, mode stdfs.FileMode) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.st.mu.Lock()
+	defer f.st.mu.Unlock()
 
 	if node, _, _, err := f.lookup(p, false); err == nil {
-		if node == f.root {
+		if node == f.st.root {
 			return errno.Exist
 		}
 	}
@@ -444,7 +540,7 @@ func (f *FS) Mkdir(ctx context.Context, p string, mode stdfs.FileMode) error {
 	if _, exists := dir.children[tail]; exists {
 		return errno.Exist
 	}
-	node, err := f.newNode(kindDir, stdfs.ModeDir|mode.Perm(), f.now())
+	node, err := f.newNode(kindDir, stdfs.ModeDir|applyCreateMode(mode), f.now())
 	if err != nil {
 		return err
 	}
@@ -461,16 +557,16 @@ func (f *FS) Remove(ctx context.Context, p string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.st.mu.Lock()
+	defer f.st.mu.Unlock()
 	node, parent, name, err := f.lookup(p, false)
 	if err != nil {
 		return err
 	}
-	if node == f.root {
+	if node == f.st.root {
 		return errno.Permission
 	}
-	if parent.mode.Perm()&0o200 == 0 {
+	if !f.canWrite(parent) || !f.mayModifyIn(parent, node) {
 		return errno.Permission
 	}
 	switch node.kind {
@@ -497,27 +593,30 @@ func (f *FS) Rename(ctx context.Context, oldPath, newPath string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.st.mu.Lock()
+	defer f.st.mu.Unlock()
 	src, srcParent, srcName, err := f.lookup(oldPath, false)
 	if err != nil {
 		return err
 	}
-	if src == f.root {
+	if src == f.st.root {
 		return errno.Permission
 	}
 	dstParent, dstName, err := f.checkWritable(newPath)
 	if err != nil {
 		return err
 	}
-	if srcParent.mode.Perm()&0o200 == 0 || dstParent.mode.Perm()&0o200 == 0 {
+	if !f.canWrite(srcParent) || !f.canWrite(dstParent) || !f.mayModifyIn(srcParent, src) {
+		return errno.Permission
+	}
+	if existing, ok := dstParent.children[dstName]; ok && !f.mayModifyIn(dstParent, existing) {
 		return errno.Permission
 	}
 
 	if srcParent == dstParent && srcName == dstName {
 		return errno.Invalid
 	}
-	for dir := dstParent; dir != f.root; dir = dir.parent {
+	for dir := dstParent; dir != f.st.root; dir = dir.parent {
 		if dir == src {
 			return errno.Invalid
 		}
@@ -570,8 +669,8 @@ func (f *FS) link(ctx context.Context, oldPath, newPath string, follow bool) err
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.st.mu.Lock()
+	defer f.st.mu.Unlock()
 	src, _, _, err := f.lookup(oldPath, follow)
 	if err != nil {
 		return err
@@ -600,8 +699,8 @@ func (f *FS) Symlink(ctx context.Context, target, linkPath string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.st.mu.Lock()
+	defer f.st.mu.Unlock()
 	if target == "" {
 		return errno.Invalid
 	}
@@ -634,8 +733,8 @@ func (f *FS) Readlink(ctx context.Context, p string) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	f.mu.RLock()
-	defer f.mu.RUnlock()
+	f.st.mu.RLock()
+	defer f.st.mu.RUnlock()
 	node, _, _, err := f.lookup(p, false)
 	if err != nil {
 		return "", err
@@ -654,8 +753,8 @@ func (f *FS) SetTimesFollow(ctx context.Context, p string, atime, mtime int64, f
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.st.mu.Lock()
+	defer f.st.mu.Unlock()
 	node, _, _, err := f.lookup(p, follow)
 	if err != nil {
 		return err
@@ -669,8 +768,8 @@ func (f *FS) AccessTime(ctx context.Context, p string) (int64, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.st.mu.Lock()
+	defer f.st.mu.Unlock()
 	node, _, _, err := f.lookup(p, true)
 	if err != nil {
 		return 0, err
@@ -682,8 +781,8 @@ func (f *FS) Chown(ctx context.Context, p string, uid, gid int64) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.st.mu.Lock()
+	defer f.st.mu.Unlock()
 	node, _, _, err := f.lookup(p, true)
 	if err != nil {
 		return err
@@ -707,8 +806,8 @@ func (f *FS) Chmod(ctx context.Context, p string, mode stdfs.FileMode) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.st.mu.Lock()
+	defer f.st.mu.Unlock()
 	node, _, _, err := f.lookup(p, true)
 	if err != nil {
 		return err

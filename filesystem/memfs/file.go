@@ -33,8 +33,8 @@ func (h *handle) Read(p []byte) (int, error) {
 	if h.closed {
 		return 0, errno.BadHandle
 	}
-	h.fs.mu.RLock()
-	defer h.fs.mu.RUnlock()
+	h.fs.st.mu.RLock()
+	defer h.fs.st.mu.RUnlock()
 	if h.node.kind == kindDir {
 		// Linux 语义:read(2) 对目录句柄返回 EISDIR,目录内容经 readdir 读取。
 		return 0, errno.IsDirectory
@@ -56,8 +56,8 @@ func (h *handle) Write(p []byte) (int, error) {
 	if h.closed {
 		return 0, errno.BadHandle
 	}
-	h.fs.mu.Lock()
-	defer h.fs.mu.Unlock()
+	h.fs.st.mu.Lock()
+	defer h.fs.st.mu.Unlock()
 	if h.node.kind == kindDir {
 		// 目录句柄只以只读方式打开;write(2) 返回 EBADF。
 		return 0, errno.BadHandle
@@ -111,8 +111,8 @@ func (h *handle) ReadAt(p []byte, off int64) (int, error) {
 	if off < 0 {
 		return 0, errno.Invalid
 	}
-	h.fs.mu.RLock()
-	defer h.fs.mu.RUnlock()
+	h.fs.st.mu.RLock()
+	defer h.fs.st.mu.RUnlock()
 	if h.node.kind == kindDir {
 		return 0, errno.IsDirectory
 	}
@@ -138,8 +138,8 @@ func (h *handle) WriteAt(p []byte, off int64) (int, error) {
 	if !writable {
 		return 0, errno.BadHandle
 	}
-	h.fs.mu.Lock()
-	defer h.fs.mu.Unlock()
+	h.fs.st.mu.Lock()
+	defer h.fs.st.mu.Unlock()
 	if h.node.kind == kindDir {
 		return 0, errno.BadHandle
 	}
@@ -192,12 +192,12 @@ func (h *handle) Seek(offset int64, whence int) (int64, error) {
 	if h.closed {
 		return 0, errno.BadHandle
 	}
-	h.fs.mu.RLock()
+	h.fs.st.mu.RLock()
 	if h.node.kind == kindDir {
 		return h.seekDirectoryLocked(offset, whence)
 	}
 	size := int64(len(h.node.data))
-	h.fs.mu.RUnlock()
+	h.fs.st.mu.RUnlock()
 	switch whence {
 	case 0:
 
@@ -217,9 +217,9 @@ func (h *handle) Seek(offset int64, whence int) (int64, error) {
 
 // seekDirectoryLocked 定位目录游标:SEEK_SET/SEEK_CUR 按条目 cookie
 // (inode 号)重新定位,SEEK_END 不受支持。rewinddir 即 Seek(0, SEEK_SET)。
-// 调用方持有 h.mu 与 f.mu.RLock。
+// 调用方持有 h.mu 与 f.st.mu.RLock。
 func (h *handle) seekDirectoryLocked(offset int64, whence int) (int64, error) {
-	h.fs.mu.RUnlock()
+	h.fs.st.mu.RUnlock()
 	switch whence {
 	case 0:
 		if offset < 0 {
@@ -252,8 +252,8 @@ func (h *handle) Readdir(limit int) ([]stdfs.DirEntry, error) {
 	if h.closed {
 		return nil, errno.BadHandle
 	}
-	h.fs.mu.RLock()
-	defer h.fs.mu.RUnlock()
+	h.fs.st.mu.RLock()
+	defer h.fs.st.mu.RUnlock()
 	if h.node.kind != kindDir {
 		return nil, errno.NotDirectory
 	}
@@ -287,8 +287,8 @@ func (h *handle) Truncate(size int64) error {
 	if h.closed {
 		return errno.BadHandle
 	}
-	h.fs.mu.Lock()
-	defer h.fs.mu.Unlock()
+	h.fs.st.mu.Lock()
+	defer h.fs.st.mu.Unlock()
 	if h.node.kind == kindDir {
 		return errno.IsDirectory
 	}
@@ -378,8 +378,8 @@ func (h *handle) SetTimes(atime, mtime int64) error {
 	if h.closed {
 		return errno.BadHandle
 	}
-	h.fs.mu.Lock()
-	defer h.fs.mu.Unlock()
+	h.fs.st.mu.Lock()
+	defer h.fs.st.mu.Unlock()
 	if h.node.kind == kindSymlink {
 		return errno.Invalid
 	}
@@ -396,8 +396,8 @@ func (h *handle) Close() error {
 	}
 	h.closed = true
 	f := h.fs
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.st.mu.Lock()
+	defer f.st.mu.Unlock()
 	h.node.opened--
 	if h.node.nlink == 0 && h.node.opened == 0 {
 		f.release(h.node)
@@ -411,8 +411,8 @@ func (h *handle) Stat() (stdfs.FileInfo, error) {
 	if h.closed {
 		return nil, errno.BadHandle
 	}
-	h.fs.mu.RLock()
-	defer h.fs.mu.RUnlock()
+	h.fs.st.mu.RLock()
+	defer h.fs.st.mu.RUnlock()
 	return fileInfo{node: h.node}, nil
 }
 

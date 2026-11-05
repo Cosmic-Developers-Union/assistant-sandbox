@@ -10,8 +10,8 @@ func (f *FS) Space(ctx context.Context, p string) (vmfs.Space, error) {
 	if err := ctx.Err(); err != nil {
 		return vmfs.Space{}, err
 	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.st.mu.Lock()
+	defer f.st.mu.Unlock()
 	if _, _, _, err := f.lookup(p, true); err != nil {
 		return vmfs.Space{}, err
 	}
@@ -22,8 +22,8 @@ func (f *FS) Filesystems(ctx context.Context) ([]vmfs.Space, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.st.mu.Lock()
+	defer f.st.mu.Unlock()
 	return []vmfs.Space{f.space()}, nil
 }
 
@@ -34,8 +34,8 @@ func (f *FS) space() vmfs.Space {
 		Inodes: vmfs.Quota{
 			Declared: true,
 			Total:    uint64(f.maxNodes),
-			Used:     f.nodes,
-			Free:     uint64(f.maxNodes) - min(f.nodes, uint64(f.maxNodes)),
+			Used:     f.st.nodes,
+			Free:     uint64(f.maxNodes) - min(f.st.nodes, uint64(f.maxNodes)),
 		},
 	}
 
@@ -52,7 +52,7 @@ func (f *FS) space() vmfs.Space {
 
 func (f *FS) usedBytes() int64 {
 	var total int64
-	for node := range f.live {
+	for node := range f.st.live {
 		total += int64(len(node.data))
 	}
 	return total

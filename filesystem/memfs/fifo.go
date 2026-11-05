@@ -12,8 +12,8 @@ func (f *FS) Mkfifo(ctx context.Context, p string, mode stdfs.FileMode) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.st.mu.Lock()
+	defer f.st.mu.Unlock()
 	dir, tail, err := f.checkWritable(p)
 	if err != nil {
 		return err
