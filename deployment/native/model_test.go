@@ -458,3 +458,96 @@ func TestModelVMBashExitStateAndRestart(t *testing.T) {
 		t.Fatalf("重启后会话=%+v err=%v", result, err)
 	}
 }
+
+// TestModelVMOutputHistoryWithoutConnection 验证 P06/P07:Console 断开
+// 后前后台输出仍累计到带来源与序列的历史;Result 只含前台输出,
+// stdout/stderr 按写入顺序合并。
+func TestModelVMOutputHistoryWithoutConnection(t *testing.T) {
+	machine, err := native.NewModelVM(context.Background(), native.Options{Seed: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := machine.Shutdown(ctx); err != nil {
+			t.Errorf("收尾 Shutdown: %v", err)
+		}
+	}()
+	history, ok := machine.Console().(model.OutputHistory)
+	if !ok {
+		t.Fatal("Console 未实现 model.OutputHistory")
+	}
+	terminal, err := machine.Console().Attach(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := terminal.Bash().Run(context.Background(),
+		"printf front; printf err >&2; (sleep 0.05; printf late) &")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Output != "fronterr" {
+		t.Fatalf("Result.Output=%q want 前台 stdout/stderr 合并", result.Output)
+	}
+	if err := terminal.Disconnect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// 无连接:后台命令的 late 仍进入历史。
+	deadline := time.Now().Add(3 * time.Second)
+	var records []model.OutputRecord
+	for {
+		records, err = history.Output(context.Background(), 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		hasFront, hasLate := false, false
+		for _, record := range records {
+			if record.Source == model.OutputForeground && strings.Contains(string(record.Data), "front") {
+				hasFront = true
+			}
+			if record.Source == model.OutputBackground && strings.Contains(string(record.Data), "late") {
+				hasLate = true
+			}
+		}
+		if hasFront && hasLate {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("无连接输出历史=%+v", records)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	var previous uint64
+	for _, record := range records {
+		if record.Sequence <= previous {
+			t.Fatalf("序列未递增: %+v", records)
+		}
+		previous = record.Sequence
+	}
+	// Result 不含后台 late(sleep 后写入,不在前台返回缓冲中)。
+	if strings.Contains(result.Output, "late") {
+		t.Fatalf("Result 混入后台输出: %q", result.Output)
+	}
+	// 重连后增量读取只看到新前台输出。
+	reconnected, err := machine.Console().Attach(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reconnected.Bash().Run(context.Background(), "printf tail"); err != nil {
+		t.Fatal(err)
+	}
+	delta, err := history.Output(context.Background(), previous)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, record := range delta {
+		if record.Source == model.OutputForeground && string(record.Data) == "tail" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("增量历史=%+v", delta)
+	}
+}

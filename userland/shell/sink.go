@@ -13,6 +13,26 @@ type mutableSink struct {
 	// persistent 是持续输出目标:后台进程在命令返回后仍写入的输出
 	// 也经此送往控制台屏幕(P10)。
 	persistent io.Writer
+
+	// observer 记录来源与序列边界(P06):前台 Write 与后台
+	// persistentWriter 分别上报。
+	observer func(OutputSource, []byte)
+}
+
+// setObserver 登记输出历史记录器。
+func (s *mutableSink) setObserver(observer func(OutputSource, []byte)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.observer = observer
+}
+
+func (s *mutableSink) notify(source OutputSource, p []byte) {
+	s.mu.Lock()
+	observer := s.observer
+	s.mu.Unlock()
+	if observer != nil {
+		observer(source, p)
+	}
 }
 
 // setPersistent 登记持续输出目标。
@@ -43,6 +63,7 @@ func (s *mutableSink) Write(p []byte) (int, error) {
 			return 0, err
 		}
 	}
+	s.notify(OutputForeground, p)
 	return len(p), nil
 }
 
@@ -59,10 +80,14 @@ func (w persistentWriter) Write(p []byte) (int, error) {
 	w.sink.mu.Lock()
 	target := w.sink.persistent
 	w.sink.mu.Unlock()
-	if target == nil {
-		return len(p), nil
+	if target != nil {
+		n, err := target.Write(p)
+		if err != nil {
+			return n, err
+		}
 	}
-	return target.Write(p)
+	w.sink.notify(OutputBackground, p)
+	return len(p), nil
 }
 
 func (s *mutableSink) bytes() []byte {

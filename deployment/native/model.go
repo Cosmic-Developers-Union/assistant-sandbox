@@ -171,6 +171,30 @@ func (c *modelConsole) Screen(ctx context.Context) (model.Screen, error) {
 	return model.Screen{Lines: trimmed, Cursor: model.Position{Row: row, Column: column}}, nil
 }
 
+// Output 返回控制台的增量输出历史(P06):无连接时仍累计,来源与
+// 序列边界随片段返回。
+func (c *modelConsole) Output(ctx context.Context, sequence uint64) ([]model.OutputRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	closed := c.closed
+	c.mu.Unlock()
+	if closed {
+		return nil, model.ErrClosed
+	}
+	chunks := c.slot.Output(sequence)
+	records := make([]model.OutputRecord, 0, len(chunks))
+	for _, chunk := range chunks {
+		records = append(records, model.OutputRecord{
+			Sequence: chunk.Sequence,
+			Source:   string(chunk.Source),
+			Data:     chunk.Data,
+		})
+	}
+	return records, nil
+}
+
 // close 结束控制台。
 func (c *modelConsole) close() {
 	c.mu.Lock()

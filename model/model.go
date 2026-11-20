@@ -67,6 +67,26 @@ type StatefulBash interface {
 	Restart(context.Context) error
 }
 
+// 输出来源(P06)。
+const (
+	OutputForeground = "foreground"
+	OutputBackground = "background"
+)
+
+// OutputRecord 是带序列边界的输出片段副本;Sequence 单调递增,
+// 调用方用上次看到的最大值做增量读取。
+type OutputRecord struct {
+	Sequence uint64
+	Source   string
+	Data     []byte
+}
+
+// OutputHistory 是 Console 的可选输出历史能力(P06):无连接时前台
+// 与后台输出仍按写入顺序记录,来源与序列边界可区分。
+type OutputHistory interface {
+	Output(context.Context, uint64) ([]OutputRecord, error)
+}
+
 // Filesystem 是 VM 级共享文件系统:Console 与全部 Connect 会话
 // 看到同一份数据,路径以授权根为界。
 type Filesystem interface {

@@ -344,7 +344,17 @@ func newRunner(kernel *vm.Kernel, parent proc.Proc, dir string, environment []st
 				status, runErr := kernel.RunRegistered(runCtx, child)
 				finishErr := finishReaped(kernel, child, status)
 				if runErr != nil {
-					return errors.Join(runErr, finishErr)
+					joined := errors.Join(runErr, finishErr)
+					if ctx.Err() != nil {
+						return joined
+					}
+					// 未注册命令经 @wasi 扩展兜底失败时按 Bash 报 127,
+					// 不把解释器整体置为退出(P14/P15)。
+					if !kernel.HasProgram(args[0]) {
+						_, _ = fmt.Fprintf(h.Stderr, "未注册沙箱命令: %s\n", args[0])
+						return interp.ExitStatus(127)
+					}
+					return joined
 				}
 				if finishErr != nil {
 					return finishErr

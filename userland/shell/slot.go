@@ -53,6 +53,9 @@ type Slot struct {
 	exited   bool
 	exitCode int
 
+	// outputs 是 Console 级输出历史(P06):无连接时也累计前后台输出。
+	outputs *outputLog
+
 	// run 是执行权令牌(P04):同一槽位的 Step 串行执行,排队者在
 	// 等待令牌时可被上下文取消,取消的请求不会在之后被执行。
 	run chan struct{}
@@ -80,6 +83,8 @@ func NewSlotWithOutput(kernel *vm.Kernel, parent proc.Proc, dir string, environm
 
 	sink := &mutableSink{}
 	sink.setPersistent(output)
+	outputs := newOutputLog(4096)
+	sink.setObserver(outputs.record)
 	session, err := newSessionWithKernel(kernel, parent, dir, environment, nil, sink, sink)
 	if err != nil {
 		return nil, err
@@ -95,7 +100,14 @@ func NewSlotWithOutput(kernel *vm.Kernel, parent proc.Proc, dir string, environm
 		baseEnv: append([]string(nil), environment...),
 		run:     make(chan struct{}, 1),
 		control: session.control,
+		outputs: outputs,
 	}, nil
+}
+
+// Output 返回序号大于 sequence 的前后台输出片段(P06);sequence=0
+// 从头读取。输出历史归 Console 槽位所有,不依赖连接句柄。
+func (s *Slot) Output(sequence uint64) []OutputChunk {
+	return s.outputs.since(sequence)
 }
 
 // Interrupt 向前台命令进程投递 SIGINT(P05):命令按默认处置终止,
