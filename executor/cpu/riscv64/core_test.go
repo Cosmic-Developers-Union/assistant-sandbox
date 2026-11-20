@@ -1397,19 +1397,22 @@ func TestAmoWritesMemoryWithZeroDestination(t *testing.T) {
 }
 
 func encodeLr(word bool, rs1, rd int) uint32 {
-	funct5, funct3 := uint32(0x12), uint32(0x3)
+	// RISC-V A 扩展:LR.W/LR.D 的 funct5 同为 00010,字宽由 funct3 选择
+	// (.W=010,.D=011)。LLVM 编码锁定:n04 身份探针首次使用真实 LR.D。
+	funct3 := uint32(0x3)
 	if word {
-		funct5, funct3 = 0x02, 0x2
+		funct3 = 0x2
 	}
-	return funct5<<27 | uint32(rs1)<<15 | funct3<<12 | uint32(rd)<<7 | 0x2F
+	return 0x02<<27 | uint32(rs1)<<15 | funct3<<12 | uint32(rd)<<7 | 0x2F
 }
 
 func encodeSc(word bool, rs2, rs1, rd int) uint32 {
-	funct5, funct3 := uint32(0x13), uint32(0x3)
+	// SC.W/SC.D 的 funct5 同为 00011,字宽由 funct3 选择。
+	funct3 := uint32(0x3)
 	if word {
-		funct5, funct3 = 0x03, 0x2
+		funct3 = 0x2
 	}
-	return funct5<<27 | uint32(rs2)<<20 | uint32(rs1)<<15 | funct3<<12 | uint32(rd)<<7 | 0x2F
+	return 0x03<<27 | uint32(rs2)<<20 | uint32(rs1)<<15 | funct3<<12 | uint32(rd)<<7 | 0x2F
 }
 
 func encodeStoreWord(rs2, rs1 int) uint32 {
@@ -1677,7 +1680,7 @@ func TestReservedAccessRejectsMisalignedAndMismatchedEncodings(t *testing.T) {
 	}
 
 	memory2 := newSparse()
-	memory2.load(t, 0, 0x02<<27|uint32(10)<<15|0x3<<12|uint32(5)<<7|0x2F)
+	memory2.load(t, 0, 0x02<<27|uint32(10)<<15|0x1<<12|uint32(5)<<7|0x2F)
 	port2 := newPort(t, memory2, 0)
 	if err := port2.WriteRegister(10, 0x800); err != nil {
 		t.Fatal(err)
@@ -1688,7 +1691,7 @@ func TestReservedAccessRejectsMisalignedAndMismatchedEncodings(t *testing.T) {
 	}
 	var trap2 cpu.Trap
 	if !errors.As(err2, &trap2) || trap2.Kind != cpu.TrapIllegalInstruction {
-		t.Fatalf("funct3 与字长不匹配应产生非法指令: %v", err2)
+		t.Fatalf("保留字宽编码应产生非法指令: %v", err2)
 	}
 }
 

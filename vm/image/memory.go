@@ -58,11 +58,46 @@ func New(abi, entry string, files map[string][]byte) (*Memory, error) {
 		digests[name] = ContentDigest(data)
 	}
 	return &Memory{
-		man:     Manifest{Digest: digest, ABI: abi, Entry: entry},
+		man: Manifest{
+			Version: ManifestVersion, Digest: digest, ABI: abi, Entry: entry,
+			Architecture: ArchitectureRV64, Files: fileEntries(files, entry),
+		},
 		files:   cloned,
 		digests: digests,
 		commit:  digest,
 	}, nil
+}
+
+// fileEntries 按路径排序生成文件清单;入口文件记录可执行权限,其余
+// 文件默认 0644(N01)。
+func fileEntries(files map[string][]byte, entry string) []FileEntry {
+	names := make([]string, 0, len(files))
+	for name := range files {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	entries := make([]FileEntry, 0, len(names))
+	for _, name := range names {
+		mode := uint32(0o644)
+		if name == entry {
+			mode = 0o755
+		}
+		entries = append(entries, FileEntry{
+			Path:   name,
+			Digest: ContentDigest(files[name]),
+			Mode:   mode,
+			Size:   int64(len(files[name])),
+			Kind:   "file",
+		})
+	}
+	return entries
+}
+
+// DeclareDependencies 记录镜像运行所需的外部组件(N01)。
+func (m *Memory) DeclareDependencies(dependencies ...Dependency) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.man.Dependencies = append([]Dependency(nil), dependencies...)
 }
 
 func ContentDigest(data []byte) string { return contentdigest.Content(data) }

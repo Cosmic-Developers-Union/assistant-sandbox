@@ -11,6 +11,7 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/deployment"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/executor/elf"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/filesystem/memfs"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/guest/rootfs"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/inspect"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/userland/shell"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm"
@@ -60,6 +61,9 @@ type Runtime struct {
 	Sequencer *scheduler.Sequencer
 	Meters    *resources.Meters
 
+	// Env 是客体会话的默认环境(HOME/PATH/LANG 等,N04)。
+	Env map[string]string
+
 	// Parent 是常驻客体会话(Bash):控制台与连接的子进程都挂在它下面。
 	Parent proc.Proc
 }
@@ -69,13 +73,11 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	if opts.RealClock {
 		clk = clock.NewReal()
 	}
-	filesystem, err := memfs.New(clk, memfs.Options{})
+	layout, err := rootfs.Build(ctx, rootfs.Options{Clock: clk, Workdir: workRoot})
 	if err != nil {
 		return nil, err
 	}
-	if err := filesystem.Mkdir(ctx, workRoot, 0o755); err != nil {
-		return nil, err
-	}
+	filesystem := layout.System
 	if opts.MaxProcesses <= 0 {
 		opts.MaxProcesses = defaultMaxProcesses
 	}
@@ -135,11 +137,11 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
-	parent, err = kernel.Begin(0, "bash", nil, workRoot, map[string]string{"HOME": workRoot, "TMPDIR": workRoot}, fd.Streams{})
+	parent, err = kernel.Begin(0, "bash", nil, workRoot, layout.Environment(), fd.Streams{})
 	if err != nil {
 		return nil, err
 	}
-	return &Runtime{Kernel: kernel, FS: filesystem, Store: store, Clock: clk, Entropy: seeded, Sequencer: sequencer, Meters: meters, Parent: parent}, nil
+	return &Runtime{Kernel: kernel, FS: filesystem, Store: store, Clock: clk, Entropy: seeded, Sequencer: sequencer, Meters: meters, Env: layout.Environment(), Parent: parent}, nil
 }
 
 func (r *Runtime) Session() contract.Session {

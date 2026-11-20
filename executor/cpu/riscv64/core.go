@@ -637,10 +637,11 @@ func (c *Core) csr(pc uint64, instruction uint32, funct3 uint32, rd, rs1 int) (c
 	return cpu.Continued, nil, nil
 }
 
-// funct5 0x02/0x12 是 LR.W/D,0x03/0x13 是 SC.W/D,其余为 AMO 操作码。
+// funct5 0x02 是 LR,0x03 是 SC,funct3 选择字宽(.W=2,.D=3);
+// 其余 funct5 为 AMO 操作码。
 func (c *Core) atomic(ctx context.Context, pc uint64, instruction uint32, rd, rs1, rs2 int) (cpu.Outcome, *cpu.Trap, error) {
 	switch instruction >> 27 {
-	case 0x02, 0x03, 0x12, 0x13:
+	case 0x02, 0x03:
 		return c.reservedAccess(ctx, pc, instruction, rd, rs1, rs2)
 	default:
 		return c.amo(ctx, pc, instruction, rd, rs1, rs2)
@@ -649,17 +650,14 @@ func (c *Core) atomic(ctx context.Context, pc uint64, instruction uint32, rd, rs
 
 func (c *Core) reservedAccess(ctx context.Context, pc uint64, instruction uint32, rd, rs1, rs2 int) (cpu.Outcome, *cpu.Trap, error) {
 	funct5 := instruction >> 27
-	word := funct5 == 0x02 || funct5 == 0x03
-	width := 8
-	if word {
-		width = 4
-	}
-	funct3 := (instruction >> 12) & 0x7
-	wantFunct3 := uint32(0x3)
-	if word {
-		wantFunct3 = 0x2
-	}
-	if funct3 != wantFunct3 {
+	var word bool
+	var width int
+	switch (instruction >> 12) & 0x7 {
+	case 0x2:
+		word, width = true, 4
+	case 0x3:
+		word, width = false, 8
+	default:
 		return 0, illegal(pc, instruction), nil
 	}
 	address := c.read(rs1)
@@ -669,7 +667,7 @@ func (c *Core) reservedAccess(ctx context.Context, pc uint64, instruction uint32
 			Cause: errno.Wrap(errno.Invalid, "原子访存地址未对齐"),
 		}, nil
 	}
-	if funct5 == 0x02 || funct5 == 0x12 {
+	if funct5 == 0x02 {
 		return c.loadReserved(ctx, pc, instruction, rd, address, width, word)
 	}
 	return c.storeConditional(ctx, pc, instruction, rd, rs2, address, width, word)

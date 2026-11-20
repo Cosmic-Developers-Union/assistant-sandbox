@@ -13,6 +13,7 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/filesystem/devfs"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/filesystem/memfs"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/filesystem/mountfs"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/guest/rootfs"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/platform/entropy"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/userland/shell"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm"
@@ -61,6 +62,9 @@ type Options struct {
 
 	// faults 是初始化失败注入点(仅供同包测试)。
 	faults initFaults
+
+	// env 是根文件系统生成的客体会话环境(N04,仅供同包装配)。
+	env map[string]string
 }
 
 // VM 是一台虚拟机:拥有自己的内核实例、根文件系统与挂载表、时钟、
@@ -75,6 +79,9 @@ type VM struct {
 	devices *devfs.FS
 	clock   clock.Source
 	entropy vmentropy.Source
+
+	// env 是客体会话默认环境(N04)。
+	env map[string]string
 
 	mu          sync.Mutex
 	closed      bool
@@ -96,16 +103,12 @@ func New(ctx context.Context, opts Options) (*VM, error) {
 		return nil, err
 	}
 	source := clockFor(opts)
-	root, err := memfs.New(source, memfs.Options{})
+	layout, err := rootfs.Build(ctx, rootfs.Options{Clock: source, Workdir: WorkRoot})
 	if err != nil {
 		return nil, err
 	}
-	for _, dir := range []string{WorkRoot, TempRoot} {
-		if err := root.Mkdir(ctx, dir, 0o755); err != nil {
-			return nil, err
-		}
-	}
-	return newVM(ctx, opts, root, source)
+	opts.env = layout.Environment()
+	return newVM(ctx, opts, layout.System, source)
 }
 
 // clockFor 按选项选择 VM 的时钟来源:确定性模式用虚拟时钟,否则用
@@ -153,9 +156,12 @@ func newVM(ctx context.Context, opts Options, root *memfs.FS, source clock.Sourc
 
 	machine := &VM{
 		root: root, mounts: mounts, devices: devices,
-		clock: source, entropy: random,
+		clock: source, entropy: random, env: opts.env,
 		connections: map[uint64]*Connection{},
 		running:     map[proc.PID]context.CancelFunc{},
+	}
+	if machine.env == nil {
+		machine.env = map[string]string{"HOME": WorkRoot, "TMPDIR": TempRoot}
 	}
 	var parent proc.Proc
 	factory := func(dir string, environment []string, in io.Reader, out, diagnostic io.Writer) (*interp.Runner, error) {
@@ -207,7 +213,7 @@ func newVM(ctx context.Context, opts Options, root *memfs.FS, source clock.Sourc
 		return nil, err
 	}
 	// 客体 Shell 会话:作为内核的常驻父进程,连接的子进程都挂在它下面。
-	parent, err = kernel.Begin(0, "bash", nil, WorkRoot, map[string]string{"HOME": WorkRoot, "TMPDIR": TempRoot}, fd.Streams{})
+	parent, err = kernel.Begin(0, "bash", nil, WorkRoot, machine.env, fd.Streams{})
 	if err != nil {
 		_ = kernel.Close(ctx)
 		return nil, err

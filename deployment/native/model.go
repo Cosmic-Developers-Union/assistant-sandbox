@@ -71,7 +71,7 @@ func (m *ModelVM) Connect(ctx context.Context) (model.Terminal, error) {
 	}
 	// 每个会话拥有自己的 Bash 父进程:断开一个会话只结束它自己的
 	// 会话进程,不影响其他会话。
-	parent, err := m.runtime.Kernel.Begin(0, "bash", nil, workRoot, map[string]string{"HOME": workRoot, "TMPDIR": workRoot}, fd.Streams{})
+	parent, err := m.runtime.Kernel.Begin(0, "bash", nil, workRoot, m.runtime.Env, fd.Streams{})
 	if err != nil {
 		return nil, err
 	}
