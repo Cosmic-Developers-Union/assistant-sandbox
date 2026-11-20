@@ -13,6 +13,7 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/filesystem/devfs"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/filesystem/memfs"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/filesystem/mountfs"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/filesystem/procfs"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/guest/rootfs"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/platform/entropy"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/userland/shell"
@@ -207,6 +208,16 @@ func newVM(ctx context.Context, opts Options, root *memfs.FS, source clock.Sourc
 	}
 	if opts.TraceLimit > 0 {
 		kernel.SetTraceLimit(opts.TraceLimit)
+	}
+	// /proc 是内核动态视图(N06/N07):每台 VM 只看到自己的进程表。
+	procView, err := procfs.New(kernelProcfs{kernel: kernel})
+	if err != nil {
+		_ = kernel.Close(ctx)
+		return nil, err
+	}
+	if err := mounts.Mount("/proc", procView); err != nil {
+		_ = kernel.Close(ctx)
+		return nil, err
 	}
 	if err := opts.faults.afterKernel(); err != nil {
 		_ = kernel.Close(ctx)

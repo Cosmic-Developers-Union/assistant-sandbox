@@ -27,6 +27,11 @@ type Entry struct {
 	PGID       proc.PID
 	SID        proc.PID
 
+	// Exe 是 /proc/<pid>/exe 链接目标;为空时使用 Program。
+	Exe string
+	// Maps 是 /proc/<pid>/maps 的文本内容(N07),由来源按实际映射生成。
+	Maps string
+
 	OpenFDs []uint32
 }
 
@@ -53,6 +58,10 @@ const (
 	fdDir       = "fd"
 	statusName  = "status"
 	cmdlineName = "cmdline"
+	exeLink     = "exe"
+	cwdLink     = "cwd"
+	mapsName    = "maps"
+	statName    = "stat"
 )
 
 func isProcPath(path string) bool { return true }
@@ -184,6 +193,15 @@ func (f *FS) stat(ctx context.Context, path string, follow bool) (stdfs.FileInfo
 	case name == cmdlineName && len(rest) == 1:
 		content := cmdlineOf(entry)
 		return info{name: cmdlineName, mode: 0o444, size: int64(len(content))}, nil
+	case name == statName && len(rest) == 1:
+		content := statOf(entry)
+		return info{name: statName, mode: 0o444, size: int64(len(content))}, nil
+	case name == mapsName && len(rest) == 1:
+		return info{name: mapsName, mode: 0o444, size: int64(len(entry.Maps))}, nil
+	case name == exeLink && len(rest) == 1:
+		return info{name: exeLink, mode: stdfs.ModeSymlink | 0o777}, nil
+	case name == cwdLink && len(rest) == 1:
+		return info{name: cwdLink, mode: stdfs.ModeSymlink | 0o777}, nil
 	case name == fdDir && len(rest) == 1:
 		return info{name: fdDir, mode: stdfs.ModeDir | 0o555}, nil
 	case name == fdDir && len(rest) == 2:
@@ -226,6 +244,10 @@ func (f *FS) ReadDir(ctx context.Context, path string) ([]stdfs.DirEntry, error)
 			dirEntry{name: fdDir, mode: stdfs.ModeDir | 0o555},
 			dirEntry{name: cmdlineName, mode: 0o444},
 			dirEntry{name: statusName, mode: 0o444},
+			dirEntry{name: statName, mode: 0o444},
+			dirEntry{name: mapsName, mode: 0o444},
+			dirEntry{name: exeLink, mode: stdfs.ModeSymlink | 0o777},
+			dirEntry{name: cwdLink, mode: stdfs.ModeSymlink | 0o777},
 		}
 		sortEntries(out)
 		return out, nil
@@ -264,6 +286,18 @@ func (f *FS) Readlink(ctx context.Context, path string) (string, error) {
 
 		return "fd:" + rest[1], nil
 	}
+	if len(rest) == 1 && rest[0] == exeLink {
+		if entry.Exe != "" {
+			return entry.Exe, nil
+		}
+		return entry.Program, nil
+	}
+	if len(rest) == 1 && rest[0] == cwdLink {
+		if entry.Dir == "" {
+			return "/", nil
+		}
+		return entry.Dir, nil
+	}
 	return "", errno.Wrap(errno.Invalid, "不是符号链接: "+path)
 }
 
@@ -282,6 +316,14 @@ func (f *FS) Open(ctx context.Context, path string, flags uint32, mode stdfs.Fil
 
 	if flags&(vmfs.WriteOnly|vmfs.ReadWrite|vmfs.Create|vmfs.Truncate|vmfs.Append) != 0 {
 		return nil, errno.Wrap(errno.Permission, "procfs 是只读视图: "+path)
+	}
+	// 目录以可 Readdir 的句柄打开(getdents64/opendir 入口,N07)。
+	if st, err := f.Stat(ctx, path); err == nil && st.IsDir() {
+		entries, err := f.ReadDir(ctx, path)
+		if err != nil {
+			return nil, err
+		}
+		return newDirHandle(st.Name(), entries), nil
 	}
 	segments, err := splitPath(path)
 	if err != nil {
@@ -313,6 +355,18 @@ func (f *FS) Open(ctx context.Context, path string, flags uint32, mode stdfs.Fil
 			return nil, errno.Wrap(errno.NotFound, "没有该条目: "+path)
 		}
 		return newFile(cmdlineName, []byte(cmdlineOf(entry))), nil
+	case statName:
+		if len(rest) != 1 {
+			return nil, errno.Wrap(errno.NotFound, "没有该条目: "+path)
+		}
+		return newFile(statName, []byte(statOf(entry))), nil
+	case mapsName:
+		if len(rest) != 1 {
+			return nil, errno.Wrap(errno.NotFound, "没有该条目: "+path)
+		}
+		return newFile(mapsName, []byte(entry.Maps)), nil
+	case exeLink, cwdLink:
+		return nil, errno.Wrap(errno.IsDirectory, "符号链接不能直接打开: "+path)
 	default:
 		return nil, errno.Wrap(errno.NotFound, "没有该条目: "+path)
 	}
@@ -351,6 +405,39 @@ func (f *FS) Symlink(ctx context.Context, target, link string) error {
 		return err
 	}
 	return errno.Wrap(errno.ReadOnlyFS, "procfs 是只读视图")
+}
+
+func statOf(entry Entry) string {
+	state := "R"
+	if entry.State != "" {
+		state = entry.State[:1]
+	}
+	comm := entry.Program
+	comm = strings.ReplaceAll(comm, ")", "_")
+	fields := make([]string, 0, 52)
+	fields = append(fields,
+		itoa(uint64(entry.ID)),
+		"("+comm+")",
+		state,
+		itoa(uint64(entry.Parent)),
+		itoa(uint64(entry.PGID)),
+		itoa(uint64(entry.SID)),
+		"0",                // tty_nr
+		"0",                // tpgid
+		"0",                // flags
+		"0", "0", "0", "0", // faults
+		"0", "0", "0", "0", // times
+		"0", "0", // priority, nice
+		"1", // num_threads
+		"0", // itrealvalue
+		"0", // starttime
+		"0", // vsize
+		"0", // rss
+	)
+	for len(fields) < 52 {
+		fields = append(fields, "0")
+	}
+	return strings.Join(fields, " ") + "\n"
 }
 
 func statusOf(entry Entry) string {

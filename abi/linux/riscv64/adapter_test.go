@@ -367,7 +367,7 @@ func TestOpenFlagTranslation(t *testing.T) {
 		{"只写加创建加截断", 1 | openCreate | openTruncate, &common.OpenFlags{Mode: common.OpenWrite, Create: true, Truncate: true}},
 		{"读写加追加加 cloexec", 2 | openAppend | openCloseOnExec, &common.OpenFlags{Mode: common.OpenReadWrite, Append: true, CloseOnExec: true}},
 		{"独占加创建", openCreate | openExclusive, &common.OpenFlags{Mode: common.OpenRead, Create: true, Exclusive: true}},
-		{"O_DIRECTORY 未实现", 0o200000, nil},
+		{"O_DIRECTORY 接受(目录性由文件系统判定)", 0o200000, &common.OpenFlags{Mode: common.OpenRead}},
 		{"O_NOFOLLOW 未实现", 0o400000, nil},
 	} {
 		got := openFlags(tc.raw)

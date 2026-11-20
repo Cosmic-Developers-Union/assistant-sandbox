@@ -331,15 +331,27 @@ func TestReadOnlyViewRejectsAllWrites(t *testing.T) {
 func TestDirectoryPathsRejectOpen(t *testing.T) {
 	ctx := context.Background()
 	fs := newFS(t, sampleProvider())
-	if _, err := fs.Open(ctx, "/", vmfs.ReadOnly, 0); !errors.Is(err, errno.IsDirectory) {
-		t.Fatalf("根目录应报 EISDIR: %v", err)
-	}
-	if _, err := fs.Open(ctx, "/7", vmfs.ReadOnly, 0); !errors.Is(err, errno.IsDirectory) {
-		t.Fatalf("进程目录应报 EISDIR: %v", err)
-	}
-
-	if _, err := fs.Open(ctx, "/self", vmfs.ReadOnly, 0); !errors.Is(err, errno.IsDirectory) {
-		t.Fatalf("self 应报 EISDIR: %v", err)
+	for _, path := range []string{"/", "/7", "/self"} {
+		handle, err := fs.Open(ctx, path, vmfs.ReadOnly, 0)
+		if err != nil {
+			t.Fatalf("目录 %s 应可打开: %v", path, err)
+		}
+		reader, ok := handle.(interface {
+			Readdir(int) ([]stdfs.DirEntry, error)
+		})
+		if !ok {
+			t.Fatalf("目录 %s 句柄必须支持 Readdir", path)
+		}
+		entries, err := reader.Readdir(64)
+		if err != nil || len(entries) == 0 {
+			t.Fatalf("目录 %s Readdir=%v err=%v", path, entries, err)
+		}
+		if _, err := handle.Read(make([]byte, 1)); !errors.Is(err, errno.IsDirectory) {
+			t.Fatalf("目录 %s Read 应报 EISDIR: %v", path, err)
+		}
+		if err := handle.Close(); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	if _, err := fs.ReadDir(ctx, "/7/status"); !errors.Is(err, errno.NotDirectory) {
