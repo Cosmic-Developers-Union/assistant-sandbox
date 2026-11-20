@@ -214,12 +214,81 @@ func (t *modelTerminal) Run(ctx context.Context, script string) (model.Result, e
 	}
 	output, err := t.session.Step(ctx, []byte(script))
 	if err != nil {
+		if errors.Is(err, shell.ErrExited) {
+			return model.Result{}, model.ErrBashExited
+		}
 		if errors.Is(err, errno.Cancelled) {
 			return model.Result{}, model.ErrClosed
 		}
 		return model.Result{}, err
 	}
 	return model.Result{Output: string(output.Data), ExitCode: output.Status}, nil
+}
+
+// State 查询 Bash 是否已执行 exit(P14)。
+func (t *modelTerminal) State(ctx context.Context) (model.BashState, error) {
+	if err := t.ready(ctx); err != nil {
+		return model.BashState{}, err
+	}
+	state, err := t.session.State(ctx)
+	if err != nil {
+		return model.BashState{}, err
+	}
+	return model.BashState{Exited: state.Exited, ExitCode: state.ExitCode}, nil
+}
+
+// Restart 显式重建 Bash(P14):返回槽位初始目录与环境,不继承旧
+// 会话的变量与函数;不静默发生。
+func (t *modelTerminal) Restart(ctx context.Context) error {
+	if err := t.ready(ctx); err != nil {
+		return err
+	}
+	return t.session.Restart(ctx)
+}
+
+// ready 检查句柄、控制台与整机状态。
+func (t *modelTerminal) ready(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	t.mu.Lock()
+	closed := t.closed
+	t.mu.Unlock()
+	if closed || (t.vm != nil && t.vm.isClosed()) {
+		return model.ErrClosed
+	}
+	if t.console != nil {
+		t.console.mu.Lock()
+		consoleClosed := t.console.closed
+		t.console.mu.Unlock()
+		if consoleClosed {
+			return model.ErrClosed
+		}
+	}
+	return nil
+}
+
+// Interrupt 向当前前台命令投递 SIGINT(P05):命令以非零退出码结束,
+// 会话状态保持;无前台命令时为空操作。
+func (t *modelTerminal) Interrupt(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	t.mu.Lock()
+	closed := t.closed
+	t.mu.Unlock()
+	if closed || (t.vm != nil && t.vm.isClosed()) {
+		return model.ErrClosed
+	}
+	if t.console != nil {
+		t.console.mu.Lock()
+		consoleClosed := t.console.closed
+		t.console.mu.Unlock()
+		if consoleClosed {
+			return model.ErrClosed
+		}
+	}
+	return t.session.Interrupt(ctx)
 }
 
 // Disconnect 断开会话:控制台接入只释放本句柄(控制台继续可用),

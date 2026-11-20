@@ -20,6 +20,16 @@ import (
 
 const LanguageID = "bash"
 
+// ErrExited 是 Bash 自身执行 exit 后的稳定错误:会话不会静默重建,
+// 调用方必须先读取退出状态并显式 Restart(P14)。
+var ErrExited = errors.New("Bash 会话已退出")
+
+// ExitState 是 Bash 会话的退出状态(P14)。
+type ExitState struct {
+	Exited   bool
+	ExitCode int
+}
+
 type slotState struct {
 	Dir string            `json:"dir"`
 	Env map[string]string `json:"env,omitempty"`
@@ -33,6 +43,26 @@ type Slot struct {
 	sink    *mutableSink
 	dir     string
 	env     []string
+	baseDir string
+	baseEnv []string
+	control *sessionControl
+
+	// exitMu 保护退出状态:Step 串行执行,但 State/Restart 可被其他
+	// 句柄并发查询(P14)。
+	exitMu   sync.Mutex
+	exited   bool
+	exitCode int
+
+	// run 是执行权令牌(P04):同一槽位的 Step 串行执行,排队者在
+	// 等待令牌时可被上下文取消,取消的请求不会在之后被执行。
+	run chan struct{}
+
+	// interrupt 是当前前台 Run 的取消与中断标记(P05):Interrupt 先
+	// 向前台进程投递 SIGINT,再取消解释器避免继续执行同一条命令行
+	// 的后续语句;退出码固定为 130。
+	interruptMu     sync.Mutex
+	interruptCancel context.CancelFunc
+	interrupted     bool
 
 	closed bool
 }
@@ -61,7 +91,46 @@ func NewSlotWithOutput(kernel *vm.Kernel, parent proc.Proc, dir string, environm
 		sink:    sink,
 		dir:     dir,
 		env:     append([]string(nil), environment...),
+		baseDir: dir,
+		baseEnv: append([]string(nil), environment...),
+		run:     make(chan struct{}, 1),
+		control: session.control,
 	}, nil
+}
+
+// Interrupt 向前台命令进程投递 SIGINT(P05):命令按默认处置终止,
+// 解释器停止当前命令行剩余语句,Shell 槽位、目录与变量保持,不重建
+// 会话。没有前台命令时仍取消当前 Run(状态 130)。
+func (s *Slot) Interrupt(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if s.control == nil {
+		return errno.Wrap(errno.NotSupported, "槽位未接入前台命令控制")
+	}
+	signalErr := s.control.interrupt(ctx)
+	s.interruptMu.Lock()
+	if s.interruptCancel != nil {
+		s.interrupted = true
+		s.interruptCancel()
+	}
+	s.interruptMu.Unlock()
+	return signalErr
+}
+
+// acquire 取得执行权;排队期间上下文取消直接返回,不执行命令(P04)。
+func (s *Slot) acquire(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case s.run <- struct{}{}:
+		return nil
+	}
+}
+
+// release 归还执行权。
+func (s *Slot) release() {
+	<-s.run
 }
 
 func (s *Slot) Language() string { return LanguageID }
@@ -69,6 +138,13 @@ func (s *Slot) Language() string { return LanguageID }
 const stepBaseCost = 1
 
 func (s *Slot) Step(ctx context.Context, source []byte) (language.Output, error) {
+	if err := ctx.Err(); err != nil {
+		return language.Output{}, err
+	}
+	if err := s.acquire(ctx); err != nil {
+		return language.Output{}, err
+	}
+	defer s.release()
 	if err := ctx.Err(); err != nil {
 		return language.Output{}, err
 	}
@@ -83,6 +159,12 @@ func (s *Slot) Step(ctx context.Context, source []byte) (language.Output, error)
 	}
 	if s.session == nil {
 		return language.Output{}, errno.Wrap(errno.Busy, "槽位已结束")
+	}
+	s.exitMu.Lock()
+	exited := s.exited
+	s.exitMu.Unlock()
+	if exited {
+		return language.Output{}, ErrExited
 	}
 
 	var buffer bytes.Buffer
@@ -99,8 +181,31 @@ func (s *Slot) Step(ctx context.Context, source []byte) (language.Output, error)
 	if background != nil {
 		s.runBackground(ctx, background)
 	}
-	runErr := s.session.runner.Run(proc.WithContext(ctx, s.parent), foreground)
+	runCtx, cancel := context.WithCancel(ctx)
+	s.interruptMu.Lock()
+	s.interruptCancel = cancel
+	s.interrupted = false
+	s.interruptMu.Unlock()
+	defer func() {
+		s.interruptMu.Lock()
+		s.interruptCancel = nil
+		s.interruptMu.Unlock()
+		cancel()
+	}()
+	runErr := s.session.runner.Run(proc.WithContext(runCtx, s.parent), foreground)
 	status, done := exitStatus(runErr)
+	s.interruptMu.Lock()
+	interrupted := s.interrupted
+	s.interruptMu.Unlock()
+	if interrupted {
+		status = 130
+	}
+	if s.session.runner.Exited() && !interrupted && ctx.Err() == nil {
+		s.exitMu.Lock()
+		s.exited = true
+		s.exitCode = status
+		s.exitMu.Unlock()
+	}
 	s.dir = s.session.runner.Dir
 
 	_ = s.kernel.RunDueJobs(ctx)
@@ -161,6 +266,47 @@ func (s *Slot) charge(ctx context.Context, size int) error {
 	}
 	cost := uint64(size) + stepBaseCost
 	return meter.ChargeKind(ctx, uint64(s.parent.ID), resources.KindWork, cost)
+}
+
+// State 查询 Bash 会话是否已执行 exit(P14)。退出不会自动重建。
+func (s *Slot) State(ctx context.Context) (ExitState, error) {
+	if err := ctx.Err(); err != nil {
+		return ExitState{}, err
+	}
+	s.exitMu.Lock()
+	defer s.exitMu.Unlock()
+	return ExitState{Exited: s.exited, ExitCode: s.exitCode}, nil
+}
+
+// Restart 显式重建 Bash 解释器(P14):新会话使用槽位创建时的工作
+// 目录与环境,原会话的目录、变量与函数不继承;调用方必须观察到
+// State.Exited 后自行决定重启,系统不静默重建。
+func (s *Slot) Restart(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := s.acquire(ctx); err != nil {
+		return err
+	}
+	defer s.release()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return errno.Wrap(errno.Cancelled, "槽位已关闭")
+	}
+	session, err := newSessionWithKernel(s.kernel, s.parent, s.baseDir, s.baseEnv, nil, s.sink, s.sink)
+	if err != nil {
+		return err
+	}
+	s.session = session
+	s.control = session.control
+	s.dir = s.baseDir
+	s.env = append([]string(nil), s.baseEnv...)
+	s.exitMu.Lock()
+	s.exited = false
+	s.exitCode = 0
+	s.exitMu.Unlock()
+	return nil
 }
 
 func (s *Slot) Encode(ctx context.Context) (language.State, error) {

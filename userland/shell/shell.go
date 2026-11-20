@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/userland/commandio"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/userland/commands"
@@ -18,6 +19,7 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fd"
 	vmfs "github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fs"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/proc"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/signal"
 	"mvdan.cc/sh/v3/expand"
 	"mvdan.cc/sh/v3/interp"
 	"mvdan.cc/sh/v3/syntax"
@@ -40,6 +42,8 @@ type session struct {
 	runner *interp.Runner
 	kernel *vm.Kernel
 	parent proc.Proc
+
+	control *sessionControl
 
 	sink *mutableSink
 }
@@ -85,11 +89,12 @@ func Programs(factory bash.RunnerFactory) (executable.Registry, error) {
 }
 
 func newSessionWithKernel(kernel *vm.Kernel, parent proc.Proc, dir string, environment []string, stdin io.Reader, stdout, stderr io.Writer) (*session, error) {
-	runner, err := NewRunner(kernel, parent, dir, environment, stdin, stdout, stderr)
+	control := &sessionControl{kernel: kernel}
+	runner, err := newRunner(kernel, parent, dir, environment, stdin, stdout, stderr, control)
 	if err != nil {
 		return nil, err
 	}
-	current := &session{runner: runner, kernel: kernel, parent: parent}
+	current := &session{runner: runner, kernel: kernel, parent: parent, control: control}
 
 	if sink, ok := stdout.(*mutableSink); ok {
 		current.sink = sink
@@ -97,7 +102,47 @@ func newSessionWithKernel(kernel *vm.Kernel, parent proc.Proc, dir string, envir
 	return current, nil
 }
 
+// sessionControl 跟踪前台命令进程(P05):Interrupt 只向当前前台子进程
+// 投递 SIGINT,不取消 Shell 会话本身。
+type sessionControl struct {
+	mu         sync.Mutex
+	kernel     *vm.Kernel
+	foreground proc.PID
+}
+
+func (c *sessionControl) set(pid proc.PID) {
+	c.mu.Lock()
+	c.foreground = pid
+	c.mu.Unlock()
+}
+
+func (c *sessionControl) clear(pid proc.PID) {
+	c.mu.Lock()
+	if c.foreground == pid {
+		c.foreground = 0
+	}
+	c.mu.Unlock()
+}
+
+func (c *sessionControl) interrupt(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	pid := c.foreground
+	kernel := c.kernel
+	c.mu.Unlock()
+	if pid == 0 || kernel == nil {
+		return nil
+	}
+	return kernel.Signal(pid, signal.INT)
+}
+
 func NewRunner(kernel *vm.Kernel, parent proc.Proc, dir string, environment []string, stdin io.Reader, stdout, stderr io.Writer) (*interp.Runner, error) {
+	return newRunner(kernel, parent, dir, environment, stdin, stdout, stderr, nil)
+}
+
+func newRunner(kernel *vm.Kernel, parent proc.Proc, dir string, environment []string, stdin io.Reader, stdout, stderr io.Writer, control *sessionControl) (*interp.Runner, error) {
 	environment = append([]string{"HOME=" + dir, "TMPDIR=" + dir}, environment...)
 	credentials, err := parent.Resources.Credentials()
 	if err != nil {
@@ -291,6 +336,10 @@ func NewRunner(kernel *vm.Kernel, parent proc.Proc, dir string, environment []st
 					}
 				}
 				runCtx := proc.WithContext(ctx, child)
+				if control != nil {
+					control.set(child.ID)
+					defer control.clear(child.ID)
+				}
 
 				status, runErr := kernel.RunRegistered(runCtx, child)
 				finishErr := finishReaped(kernel, child, status)

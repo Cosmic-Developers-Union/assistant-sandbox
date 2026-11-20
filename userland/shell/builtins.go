@@ -5,12 +5,15 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm"
 	"mvdan.cc/sh/v3/interp"
 )
 
 type shellState struct {
+	mu sync.Mutex
+
 	history []historyEntry
 	hits    map[string]int
 
@@ -27,6 +30,8 @@ func (s *shellState) record(words []string) {
 	if len(words) == 0 {
 		return
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if len(s.history) >= maxHistoryEntries {
 		s.history = s.history[1:]
 	}
@@ -43,6 +48,8 @@ func (s *shellState) record(words []string) {
 const maxHistoryEntries = 500
 
 func builtinHash(ctx context.Context, kernel *vm.Kernel, state *shellState, args []string) error {
+	state.mu.Lock()
+	defer state.mu.Unlock()
 	h := interp.HandlerCtx(ctx)
 	clear := false
 	var operands []string
@@ -106,6 +113,8 @@ func contains(names []string, name string) bool {
 }
 
 func builtinFC(ctx context.Context, state *shellState, args []string) ([]string, error) {
+	state.mu.Lock()
+	defer state.mu.Unlock()
 	h := interp.HandlerCtx(ctx)
 	list, silent, reverse, suppressNumbers := false, false, false, false
 	var substitutions [][2]string

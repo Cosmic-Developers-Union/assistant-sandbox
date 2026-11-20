@@ -14,6 +14,10 @@ import (
 // ReadFile/WriteFile)必须返回的可识别错误;实现以 errors.Is 关联。
 var ErrClosed = errors.New("closed")
 
+// ErrBashExited 是 Bash 自身执行 exit 后 Run 返回的稳定错误(P14):
+// 会话不会静默重建,调用方通过 State 查询退出码并显式 Restart。
+var ErrBashExited = errors.New("bash exited")
+
 // VM 是新模型的根对象:Console 持久存在,Connect 建立独立会话,
 // Filesystem 为共享文件系统,Shutdown 幂等结束整机。
 type VM interface {
@@ -40,6 +44,27 @@ type Terminal interface {
 // Bash 在该 Terminal 上执行脚本;非零退出码不结束会话。
 type Bash interface {
 	Run(context.Context, string) (Result, error)
+}
+
+// Interrupter 是 Bash 的可选能力(P05):向当前前台命令投递 SIGINT,
+// 命令以非零退出码结束,Shell 会话状态保持;与取消等待(调用方不再
+// 等待)和 Shutdown(结束整机)语义不同。
+type Interrupter interface {
+	Interrupt(context.Context) error
+}
+
+// BashState 是 Bash 会话的退出状态(P14):Exited 为真后 Run 返回
+// ErrBashExited,直到显式 Restart。
+type BashState struct {
+	Exited   bool
+	ExitCode int
+}
+
+// StatefulBash 是 Bash 的可选生命周期能力(P14):查询自身退出状态
+// 并显式重启。重启是显式操作,不静默替换会话。
+type StatefulBash interface {
+	State(context.Context) (BashState, error)
+	Restart(context.Context) error
 }
 
 // Filesystem 是 VM 级共享文件系统:Console 与全部 Connect 会话
