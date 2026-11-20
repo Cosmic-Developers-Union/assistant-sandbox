@@ -264,6 +264,26 @@ func (s scopedInstaller) Cloexec(_ uint64, id uint32) (bool, error) {
 	return s.installer.Cloexec(s.pid, id)
 }
 
+// Retain 实现 fd.RightsTransfer:以作用域绑定进程取 SCM_RIGHTS 引用
+// (M08)。
+func (s scopedInstaller) Retain(_ uint64, id uint32) (*fd.Passed, error) {
+	transfer, ok := s.installer.(fd.RightsTransfer)
+	if !ok {
+		return nil, errno.Wrap(errno.NotSupported, "描述符表不支持 SCM_RIGHTS 传递")
+	}
+	return transfer.Retain(s.pid, id)
+}
+
+// InstallPassed 实现 fd.RightsTransfer:把传递引用安装到作用域绑定
+// 进程(M08)。
+func (s scopedInstaller) InstallPassed(_ uint64, passed *fd.Passed) (uint32, error) {
+	transfer, ok := s.installer.(fd.RightsTransfer)
+	if !ok {
+		return 0, errno.Wrap(errno.NotSupported, "描述符表不支持 SCM_RIGHTS 接收")
+	}
+	return transfer.InstallPassed(s.pid, passed)
+}
+
 type scopedIdentity struct {
 	source identity.Source
 	pid    uint64
@@ -670,5 +690,7 @@ func (c chargeFS) Snapshot(ctx context.Context) (fs.Snapshotted, error) {
 }
 
 var _ fd.Installer = scopedInstaller{}
+
+var _ fd.RightsTransfer = scopedInstaller{}
 
 var _ Spaces = scopedSpaces{}

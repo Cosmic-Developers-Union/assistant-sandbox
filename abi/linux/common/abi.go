@@ -145,6 +145,8 @@ const (
 	SysGetsockopt
 	SysGetsockname
 	SysGetpeername
+	SysSendmsg
+	SysRecvmsg
 
 	SysAccept4
 
@@ -400,6 +402,10 @@ func (s Syscall) String() string {
 		return "getsockname"
 	case SysGetpeername:
 		return "getpeername"
+	case SysSendmsg:
+		return "sendmsg"
+	case SysRecvmsg:
+		return "recvmsg"
 	case SysAccept4:
 		return "accept4"
 	case SysMemfdCreate:

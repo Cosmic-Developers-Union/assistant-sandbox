@@ -22,6 +22,11 @@ type fakeSockets struct {
 	nextFD                uint64
 	optionLevel           uint64
 	optionName            uint64
+	msgBuffers            [][]byte
+	msgAddr               *net.Addr
+	msgHandles            []any
+	returnHandles         []any
+	passed                []any
 }
 
 func (f *fakeSockets) Socket(domain, typ, protocol uint64, nonblock, cloexec bool) (uint64, error) {
@@ -87,6 +92,29 @@ func (f *fakeSockets) GetOption(fd uint64, level, name uint64) (uint64, error) {
 func (f *fakeSockets) SetOption(fd uint64, level, name, value uint64) error {
 	f.optionLevel, f.optionName = level, name
 	return nil
+}
+
+func (f *fakeSockets) SendMsg(_ context.Context, fd uint64, buffers [][]byte, to *net.Addr, handles []any) (int, error) {
+	f.msgBuffers = buffers
+	f.msgAddr = to
+	f.msgHandles = handles
+	total := 0
+	for _, buffer := range buffers {
+		total += len(buffer)
+	}
+	return total, nil
+}
+
+func (f *fakeSockets) RecvMsg(_ context.Context, fd uint64, buffer []byte) (int, *net.Addr, []any, error) {
+	copy(buffer, "msg")
+	from := net.Addr{Domain: net.AFInet, IP: net.LoopbackIPv4, Port: 7002}
+	return min(3, len(buffer)), &from, f.returnHandles, nil
+}
+
+func (f *fakeSockets) InstallPassed(handle any) (uint64, error) {
+	f.passed = append(f.passed, handle)
+	f.nextFD++
+	return f.nextFD, nil
 }
 
 // TestSocketSyscallsDispatchWithSockaddrEncoding 验证 M02-M06 的 ABI
@@ -253,3 +281,13 @@ func (f *errSockets) GetOption(uint64, uint64, uint64) (uint64, error) {
 }
 
 func (f *errSockets) SetOption(uint64, uint64, uint64, uint64) error { return errors.New("boom") }
+
+func (f *errSockets) SendMsg(context.Context, uint64, [][]byte, *net.Addr, []any) (int, error) {
+	return 0, errors.New("boom")
+}
+
+func (f *errSockets) RecvMsg(context.Context, uint64, []byte) (int, *net.Addr, []any, error) {
+	return 0, nil, nil, errors.New("boom")
+}
+
+func (f *errSockets) InstallPassed(any) (uint64, error) { return 0, errors.New("boom") }

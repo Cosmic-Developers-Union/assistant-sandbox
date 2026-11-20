@@ -31,10 +31,89 @@ type streamCore struct {
 	eofRead    bool
 	noReader   bool
 	discarding bool
+
+	// watchers 是就绪变化订阅(M07):互联两端的 socket 各自订阅
+	// 共享核心,数据到达/对端关闭经此接入各自的 poll/epoll 等待图。
+	watchers []*coreWatcher
+
+	// written/consumed 是流位置;controls 携带 SCM_RIGHTS 控制消息,
+	// 附着于发送时的流位置,读取覆盖该位置时交付(M08)。
+	written  uint64
+	consumed uint64
+	controls []attachedControl
+}
+
+// attachedControl 是附着于流位置的控制消息。
+type attachedControl struct {
+	position uint64
+	rights   ControlRights
+}
+
+// ControlRights 是 SCM_RIGHTS 的传递载荷:句柄对象由系统调用层换算
+// fd 编号,net 层只承载对象引用(接收方获得独立描述符引用)。Release
+// 在控制消息被丢弃(未安装)时归还发送侧取得的引用,可为空。
+type ControlRights struct {
+	Handles []any
+	Release func()
+}
+
+// releaseRights 归还未交付的控制引用。
+func releaseRights(rights *ControlRights) {
+	if rights != nil && rights.Release != nil {
+		rights.Release()
+	}
+}
+
+type coreWatcher struct{ fn func() }
+
+// onChange 订阅核心就绪变化。
+func (c *streamCore) onChange(fn func()) (cancel func()) {
+	c.mu.Lock()
+	w := &coreWatcher{fn: fn}
+	c.watchers = append(c.watchers, w)
+	c.mu.Unlock()
+	return func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		for index, registered := range c.watchers {
+			if registered == w {
+				c.watchers = append(c.watchers[:index], c.watchers[index+1:]...)
+				return
+			}
+		}
+	}
 }
 
 func (c *streamCore) notify() {
 	c.wake.WakeAll(wait.Data)
+	c.mu.Lock()
+	watchers := make([]*coreWatcher, len(c.watchers))
+	copy(watchers, c.watchers)
+	c.mu.Unlock()
+	for _, w := range watchers {
+		w.fn()
+	}
+}
+
+// dropControlsLocked 取出并清空尚未交付的控制消息;调用方持有核心
+// 锁,须在锁外 releaseControls 归还传递引用。
+func (c *streamCore) dropControlsLocked() []ControlRights {
+	if len(c.controls) == 0 {
+		return nil
+	}
+	dropped := make([]ControlRights, 0, len(c.controls))
+	for _, control := range c.controls {
+		dropped = append(dropped, control.rights)
+	}
+	c.controls = nil
+	return dropped
+}
+
+// releaseControls 归还被丢弃控制消息的 SCM_RIGHTS 引用。
+func releaseControls(controls []ControlRights) {
+	for index := range controls {
+		releaseRights(&controls[index])
+	}
 }
 
 // streamConn 是流式 socket 连接的一端(TCP 与 AF_UNIX 共用):rx 从
@@ -101,8 +180,9 @@ func (c *streamConn) ReadContext(ctx context.Context, p []byte) (int, error) {
 		if len(c.rx.buf) > 0 {
 			n := copy(p, c.rx.buf)
 			c.rx.buf = c.rx.buf[n:]
+			c.rx.consumed += uint64(n)
 			c.rx.mu.Unlock()
-			c.rx.notify()
+			c.activity()
 			return n, nil
 		}
 		if c.rx.eofRead {
@@ -145,8 +225,9 @@ func (c *streamConn) WriteContext(ctx context.Context, p []byte) (int, error) {
 			n := min(free, len(p)-written)
 			c.tx.buf = append(c.tx.buf, p[written:written+n]...)
 			written += n
+			c.tx.written += uint64(n)
 			c.tx.mu.Unlock()
-			c.tx.notify()
+			c.activity()
 			continue
 		}
 		c.tx.mu.Unlock()
@@ -182,25 +263,27 @@ func (c *streamConn) Shutdown(how ShutdownHow) error {
 		c.rx.mu.Lock()
 		c.rx.discarding = true
 		c.rx.buf = nil
+		dropped := c.rx.dropControlsLocked()
 		c.rx.mu.Unlock()
-		c.tx.mu.Lock()
-		c.tx.notify()
-		c.tx.mu.Unlock()
+		releaseControls(dropped)
+		c.activity()
 	case ShutdownWrite:
 		c.tx.mu.Lock()
 		c.tx.eofRead = true
 		c.tx.mu.Unlock()
-		c.tx.notify()
+		c.activity()
 	case ShutdownAll:
 		c.readOff = true
 		c.rx.mu.Lock()
 		c.rx.discarding = true
 		c.rx.buf = nil
+		dropped := c.rx.dropControlsLocked()
 		c.rx.mu.Unlock()
+		releaseControls(dropped)
 		c.tx.mu.Lock()
 		c.tx.eofRead = true
 		c.tx.mu.Unlock()
-		c.tx.notify()
+		c.activity()
 	default:
 		return errno.Invalid
 	}
@@ -220,12 +303,13 @@ func (c *streamConn) Close() error {
 	c.tx.mu.Lock()
 	c.tx.eofRead = true
 	c.tx.mu.Unlock()
-	c.tx.notify()
 	c.rx.mu.Lock()
 	c.rx.noReader = true
 	c.rx.buf = nil
+	dropped := c.rx.dropControlsLocked()
 	c.rx.mu.Unlock()
-	c.rx.notify()
+	releaseControls(dropped)
+	c.activity()
 	c.base.markClosed()
 	c.base.notify()
 	return nil
@@ -238,10 +322,19 @@ func (c *streamConn) reset() {
 	c.rx.noReader = true
 	c.rx.eofRead = true
 	c.rx.buf = nil
+	dropped := c.rx.dropControlsLocked()
 	c.rx.mu.Unlock()
-	c.rx.notify()
+	releaseControls(dropped)
+	c.activity()
 	c.base.markClosed()
 	c.base.notify()
+}
+
+// activity 通知核心等待者与就绪订阅者(两端 socket 各自被唤醒);
+// 调用方不得持有核心或端点锁。
+func (c *streamConn) activity() {
+	c.rx.notify()
+	c.tx.notify()
 }
 
 // Ready 实现 poll 就绪(M07 前置):有数据或对端已关闭时可读;

@@ -583,6 +583,10 @@ func (s Syscalls) dispatch(ctx context.Context, call Call) Reply {
 		return s.getsockopt(ctx, call)
 	case SysSetsockopt:
 		return s.setsockopt(ctx, call)
+	case SysSendmsg:
+		return s.sendmsg(ctx, call)
+	case SysRecvmsg:
+		return s.recvmsg(ctx, call)
 	case SysDup:
 		return s.dup(ctx, call)
 	case SysDup3:

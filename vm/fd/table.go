@@ -285,6 +285,93 @@ func (t *Table) Fork(parent, child uint64) (int, error) {
 	return count, nil
 }
 
+// Passed 是经 SCM_RIGHTS 传递的打开文件描述(M08)。发送侧 Retain
+// 增加底层句柄引用;接收侧 InstallPassed 把它安装为独立描述符槽。
+// 两侧共享同一打开文件描述(偏移与状态一致,与 Linux 相同)。传输
+// 失败或控制消息被丢弃时 Release 归还这次引用;安装后 Release 为空
+// 操作(引用已转交描述符槽)。
+type Passed struct {
+	ref *reference
+
+	mu      sync.Mutex
+	settled bool
+}
+
+// Handle 返回被传递的底层句柄(只读用途)。
+func (p *Passed) Handle() Stream { return p.ref.handle }
+
+// Release 归还未安装的传递引用;重复调用幂等。
+func (p *Passed) Release() error {
+	if p == nil {
+		return nil
+	}
+	p.mu.Lock()
+	if p.settled {
+		p.mu.Unlock()
+		return nil
+	}
+	p.settled = true
+	p.mu.Unlock()
+	return p.ref.release()
+}
+
+// RightsTransfer 是描述符表的 SCM_RIGHTS 能力(M08):Retain 取得
+// 发送侧引用,InstallPassed 在接收进程安装。
+type RightsTransfer interface {
+	Retain(pid uint64, id uint32) (*Passed, error)
+
+	InstallPassed(pid uint64, passed *Passed) (uint32, error)
+}
+
+// Retain 按 fd 取底层打开文件描述并增加一次引用(SCM_RIGHTS 发送
+// 侧);发送方随后关闭自己的描述符不影响接收方。
+func (t *Table) Retain(pid uint64, id uint32) (*Passed, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	table := t.entries[pid]
+	if table == nil {
+		return nil, errno.NoProcess
+	}
+	e := table[id]
+	if e == nil {
+		return nil, errno.BadHandle
+	}
+	e.ref.refs++
+	return &Passed{ref: e.ref}, nil
+}
+
+// InstallPassed 把传递引用安装为接收进程的新描述符(M08):编号取
+// ≥3 的最低空闲槽位,占用一个描述符预算;失败时引用仍归调用方,
+// 由 Release 归还。同一传递引用只能安装一次。
+func (t *Table) InstallPassed(pid uint64, passed *Passed) (uint32, error) {
+	if passed == nil {
+		return 0, errno.Invalid
+	}
+	passed.mu.Lock()
+	defer passed.mu.Unlock()
+	if passed.settled {
+		return 0, errno.Invalid
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	table := t.entries[pid]
+	if table == nil {
+		return 0, errno.NoProcess
+	}
+	if err := t.chargeLocked(pid, 1); err != nil {
+		return 0, err
+	}
+	for id := uint32(3); id < ^uint32(0); id++ {
+		if _, taken := table[id]; !taken {
+			table[id] = &entry{ref: passed.ref}
+			passed.settled = true
+			return id, nil
+		}
+	}
+	t.releaseLocked(pid, 1)
+	return 0, errno.Limit
+}
+
 // DupAt 把 from 复制到 ≥ min 的最低空闲编号并返回该编号;
 // 复制共享同一底层句柄(偏移与状态共享),与 dup/fcntl F_DUPFD 一致。
 func (t *Table) DupAt(ctx context.Context, pid, from, min uint64) (uint32, error) {

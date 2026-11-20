@@ -118,6 +118,9 @@ func (n *Namespace) removeUnixListener(listener *UnixListener) {
 
 func (l *UnixListener) closeByNamespace() { _ = l.Close() }
 
+// OnChange 订阅就绪变化(poll/epoll 等待图,M07)。
+func (l *UnixListener) OnChange(fn func()) (cancel func()) { return l.base.OnChange(fn) }
+
 // Ready 实现 poll 就绪:有待接受连接时可读。
 func (l *UnixListener) Ready() poll.Readiness {
 	l.mu.Lock()

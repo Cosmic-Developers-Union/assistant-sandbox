@@ -109,6 +109,8 @@ var handled = map[Syscall]bool{
 	SysSetrlimit:        true,
 	SysSetsid:           true,
 	SysSetsockopt:       true,
+	SysSendmsg:          true,
+	SysRecvmsg:          true,
 	SysSetuid:           true,
 	SysSocket:           true,
 	SysSocketpair:       true,

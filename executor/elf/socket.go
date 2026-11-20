@@ -4,16 +4,16 @@ import (
 	"context"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
-	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fd"
+	vfd "github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fd"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/net"
 )
 
 // processSockets 把内核网络命名空间与描述符表适配为 socket 系统调用
 // 端口(M01–M05):端点创建经命名空间(VM 独立,端口互不冲突),
-// 描述符安装经 fd.Installer 能力,既有 fd 经描述符表回查端点。
+// 描述符安装经 vfd.Installer 能力,既有 fd 经描述符表回查端点。
 type processSockets struct {
 	ns          *net.Namespace
-	installer   fd.Installer
+	installer   vfd.Installer
 	descriptors func(ctx context.Context, fd uint64) (any, error)
 	pid         uint64
 }
@@ -23,7 +23,7 @@ func (p processSockets) lookup(ctx context.Context, fd uint64) (any, error) {
 }
 
 // install 安装端点为新描述符。
-func (p processSockets) install(handle fd.Stream, nonblock, cloexec bool) (uint64, error) {
+func (p processSockets) install(handle vfd.Stream, nonblock, cloexec bool) (uint64, error) {
 	if p.installer == nil {
 		return 0, errno.Wrap(errno.NotSupported, "描述符表不支持安装 socket")
 	}
@@ -192,6 +192,105 @@ func (p processSockets) RecvFrom(ctx context.Context, fd uint64, buffer []byte) 
 	default:
 		return 0, net.Addr{}, errno.NotSock
 	}
+}
+
+func (p processSockets) SendMsg(ctx context.Context, fd uint64, buffers [][]byte, to *net.Addr, handles []any) (int, error) {
+	handle, err := p.lookup(ctx, fd)
+	if err != nil {
+		return 0, err
+	}
+	// SCM_RIGHTS 传入的是客体 fd 编号:换成保留引用随流传递,接收侧
+	// 安装为独立描述符槽(共享同一打开文件描述,M08)。
+	var rights *net.ControlRights
+	if handles != nil {
+		transfer, ok := p.installer.(vfd.RightsTransfer)
+		if !ok {
+			return 0, errno.Wrap(errno.NotSupported, "描述符表不支持 SCM_RIGHTS 传递")
+		}
+		objects := make([]any, 0, len(handles))
+		release := func() {
+			for _, object := range objects {
+				if passed, ok := object.(*vfd.Passed); ok {
+					_ = passed.Release()
+				}
+			}
+		}
+		for _, candidate := range handles {
+			number, ok := candidate.(uint64)
+			if !ok {
+				release()
+				return 0, errno.BadHandle
+			}
+			passed, err := transfer.Retain(p.pid, uint32(number))
+			if err != nil {
+				release()
+				return 0, err
+			}
+			objects = append(objects, passed)
+		}
+		rights = &net.ControlRights{Handles: objects, Release: release}
+	}
+	switch socket := handle.(type) {
+	case *net.INETSocket:
+		return socket.SendMsg(ctx, buffers, to, rights)
+	case *net.UnixSocket:
+		if to != nil {
+			releaseRights(rights)
+			return 0, errno.NotSupported
+		}
+		return socket.SendMsg(ctx, buffers, rights)
+	default:
+		releaseRights(rights)
+		return 0, errno.NotSock
+	}
+}
+
+// releaseRights 归还未交付的 SCM_RIGHTS 引用(M08)。
+func releaseRights(rights *net.ControlRights) {
+	if rights != nil && rights.Release != nil {
+		rights.Release()
+	}
+}
+
+func (p processSockets) RecvMsg(ctx context.Context, fd uint64, buffer []byte) (int, *net.Addr, []any, error) {
+	handle, err := p.lookup(ctx, fd)
+	if err != nil {
+		return 0, nil, nil, err
+	}
+	switch socket := handle.(type) {
+	case *net.INETSocket:
+		n, from, rights, err := socket.RecvMsg(ctx, buffer)
+		if rights != nil {
+			return n, from, rights.Handles, err
+		}
+		return n, from, nil, err
+	case *net.UnixSocket:
+		n, rights, err := socket.RecvMsg(ctx, buffer)
+		if rights != nil {
+			return n, nil, rights.Handles, err
+		}
+		return n, nil, nil, err
+	default:
+		return 0, nil, nil, errno.NotSock
+	}
+}
+
+// InstallPassed 把传递来的引用安装为当前进程的新描述符(M08):共享
+// 同一打开文件描述(偏移与状态一致)。同一引用不能安装两次。
+func (p processSockets) InstallPassed(handle any) (uint64, error) {
+	passed, ok := handle.(*vfd.Passed)
+	if !ok {
+		return 0, errno.BadHandle
+	}
+	transfer, ok := p.installer.(vfd.RightsTransfer)
+	if !ok {
+		return 0, errno.Wrap(errno.NotSupported, "描述符表不支持 SCM_RIGHTS 接收")
+	}
+	installed, err := transfer.InstallPassed(p.pid, passed)
+	if err != nil {
+		return 0, err
+	}
+	return uint64(installed), nil
 }
 
 func (p processSockets) Shutdown(fd uint64, how net.ShutdownHow) error {

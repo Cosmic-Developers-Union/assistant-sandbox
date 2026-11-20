@@ -117,6 +117,8 @@ const (
 	numberGetsockname      = 204
 	numberGetpeername      = 205
 	numberAccept4          = 242
+	numberSendmsg          = 211
+	numberRecvmsg          = 212
 	numberMemfdCreate      = 279
 	numberUserfaultfd      = 282
 	numberPerfEventOpen    = 241
@@ -472,6 +474,10 @@ func syscallOf(number uint64) common.Syscall {
 		return common.SysGetpeername
 	case numberAccept4:
 		return common.SysAccept4
+	case numberSendmsg:
+		return common.SysSendmsg
+	case numberRecvmsg:
+		return common.SysRecvmsg
 	case numberMemfdCreate:
 		return common.SysMemfdCreate
 	case numberUserfaultfd:

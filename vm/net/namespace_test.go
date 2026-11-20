@@ -410,3 +410,224 @@ func TestSocketPollWaitsViaOnChange(t *testing.T) {
 		t.Fatalf("读=%q err=%v", buffer[:n], err)
 	}
 }
+
+// TestPollNotifiesConnectionDataAndHangup 验证 M07:连接完成、接收、
+// 发送与断连经 OnChange 通知等待者——不忙等、不丢失。
+func TestPollNotifiesConnectionDataAndHangup(t *testing.T) {
+	ctx := context.Background()
+	ns := New()
+	defer ns.Close()
+
+	server, _ := ns.NewINETSocket(SockStream)
+	if err := server.Bind(loopback(9100)); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.Listen(8); err != nil {
+		t.Fatal(err)
+	}
+	server.SetNonBlock(true)
+
+	// 连接完成通知。
+	events := make(chan string, 8)
+	cancelServer := server.OnChange(func() { events <- "connect" })
+	client, _ := ns.NewINETSocket(SockStream)
+	if err := client.Connect(ctx, loopback(9100)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-events:
+		if got != "connect" {
+			t.Fatalf("事件=%s", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("连接完成应触发通知")
+	}
+	accepted, err := server.Accept(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelServer()
+
+	// 接收通知(数据到达)。
+	cancelAccepted := accepted.OnChange(func() { events <- "readable" })
+	if _, err := client.Write([]byte("data")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-events:
+		if got != "readable" {
+			t.Fatalf("事件=%s", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("数据到达应触发通知")
+	}
+	buffer := make([]byte, 16)
+	if _, err := accepted.Read(buffer); err != nil {
+		t.Fatal(err)
+	}
+	cancelAccepted()
+	// 排空读取消费触发的残留通知。
+	for {
+		select {
+		case <-events:
+			continue
+		default:
+		}
+		break
+	}
+
+	// 断连通知(对端关闭 → 可读(EOF)+HUP)。
+	cancelAccepted = accepted.OnChange(func() { events <- "hangup" })
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-events:
+		if got != "hangup" {
+			t.Fatalf("事件=%s", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("断连应触发通知")
+	}
+	if accepted.Ready()&poll.Hangup == 0 {
+		t.Fatalf("就绪应含 HUP: %v", accepted.Ready())
+	}
+	cancelAccepted()
+}
+
+// TestUnixControlRightsDelivery 验证 M08:SCM_RIGHTS 控制消息随流
+// 位置交付——发端关闭自己的引用后,接收方仍持有可用句柄对象。
+func TestUnixControlRightsDelivery(t *testing.T) {
+	ctx := context.Background()
+	ns := New()
+	defer ns.Close()
+
+	a, b := ns.SocketPairUnix()
+	rights := &ControlRights{Handles: []any{"pipe-handle", "file-handle"}}
+	if n, err := a.SendMsg(ctx, [][]byte{[]byte("x"), []byte("yz")}, rights); err != nil || n != 3 {
+		t.Fatalf("发送=%d err=%v", n, err)
+	}
+	buffer := make([]byte, 8)
+	n, delivered, err := b.RecvMsg(ctx, buffer)
+	if err != nil || n != 3 || string(buffer[:n]) != "xyz" {
+		t.Fatalf("接收=%q n=%d err=%v", buffer[:n], n, err)
+	}
+	if delivered == nil || len(delivered.Handles) != 2 {
+		t.Fatalf("控制交付=%+v", delivered)
+	}
+	// 排空后再次读取(非阻塞):无控制。
+	b.SetNonBlock(true)
+	n, delivered, err = b.RecvMsg(ctx, buffer)
+	if !errors.Is(err, errno.WouldBlock) || delivered != nil {
+		t.Fatalf("第二次接收 n=%d rights=%v err=%v", n, delivered, err)
+	}
+	_ = ctx
+}
+
+// TestPollNotifiesWritableAfterPeerDrains 验证 M07 的发送方向通知:
+// 写缓冲填满后端点不可写,对端读取释放空间触发 OnChange,写端重新
+// 可写且不忙等。
+func TestPollNotifiesWritableAfterPeerDrains(t *testing.T) {
+	ctx := context.Background()
+	ns := New()
+	defer ns.Close()
+
+	server, _ := ns.NewINETSocket(SockStream)
+	if err := server.Bind(loopback(9101)); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.Listen(8); err != nil {
+		t.Fatal(err)
+	}
+	client, _ := ns.NewINETSocket(SockStream)
+	if err := client.Connect(ctx, loopback(9101)); err != nil {
+		t.Fatal(err)
+	}
+	accepted, err := server.Accept(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	notified := make(chan struct{}, 8)
+	cancel := client.OnChange(func() {
+		select {
+		case notified <- struct{}{}:
+		default:
+		}
+	})
+	defer cancel()
+
+	// 填满写方向(容量 64KiB):写端随后不可写。
+	filled := make(chan error, 1)
+	go func() {
+		payload := make([]byte, streamBufCapacity)
+		_, writeErr := client.Write(payload)
+		filled <- writeErr
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for client.Ready()&poll.Writable != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("写端应因缓冲满而不可写")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err := <-filled; err != nil {
+		t.Fatalf("填充写入: %v", err)
+	}
+	// 排空已到达的通知(填充过程产生的活动)。
+	for {
+		select {
+		case <-notified:
+			continue
+		default:
+		}
+		break
+	}
+
+	// 对端读取一个字节:释放容量触发通知。
+	if _, err := accepted.Read(make([]byte, 1)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-notified:
+	case <-time.After(2 * time.Second):
+		t.Fatal("对端读取应触发写端通知")
+	}
+	if client.Ready()&poll.Writable == 0 {
+		t.Fatal("对端读取后写端应可写")
+	}
+}
+
+type trackedRight struct{ releases *int }
+
+func (r *trackedRight) Release() error {
+	*r.releases++
+	return nil
+}
+
+// TestUnixControlRightsDroppedOnClose 验证 M08:接收端未读取即关闭时,
+// 在途的 SCM_RIGHTS 引用被归还,不泄漏发送侧的所有权。
+func TestUnixControlRightsDroppedOnClose(t *testing.T) {
+	ctx := context.Background()
+	ns := New()
+	defer ns.Close()
+
+	a, b := ns.SocketPairUnix()
+	releases := 0
+	rights := &ControlRights{
+		Handles: []any{&trackedRight{releases: &releases}},
+		Release: func() { releases++ },
+	}
+	if n, err := a.SendMsg(ctx, [][]byte{[]byte("x")}, rights); err != nil || n != 1 {
+		t.Fatalf("发送=%d err=%v", n, err)
+	}
+	if releases != 0 {
+		t.Fatalf("交付前不应归还: %d", releases)
+	}
+	if err := b.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if releases != 1 {
+		t.Fatalf("关闭应归还一次: %d", releases)
+	}
+}

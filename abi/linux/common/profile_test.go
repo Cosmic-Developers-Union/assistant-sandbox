@@ -41,12 +41,12 @@ func profileSections(t *testing.T) (delivered, unsupported, declared map[string]
 			if name == "" || strings.HasPrefix(name, "-") || name == "调用" {
 				continue
 			}
-			switch section {
-			case "已交付语义(94 项)":
+			switch {
+			case strings.HasPrefix(section, "已交付语义"):
 				delivered[name] = true
-			case "明确 ENOTSUP(31 项:在册、语义未交付)":
+			case strings.HasPrefix(section, "明确 ENOTSUP"):
 				unsupported[name] = true
-			case "声明语义(4 项:返回值即配置,不是缺陷)":
+			case strings.HasPrefix(section, "声明语义"):
 				declared[name] = true
 			}
 		}

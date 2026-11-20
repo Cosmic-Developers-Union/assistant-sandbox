@@ -72,6 +72,13 @@ func (s *INETSocket) KeepAlive() bool {
 // SetNonBlock 切换非阻塞(M02,fcntl F_SETFL 与 SOCK_NONBLOCK 生效)。
 func (s *INETSocket) SetNonBlock(on bool) { s.base.SetNonBlock(on) }
 
+// watchConn 订阅连接两个方向核心的就绪变化(数据到达/对端关闭经
+// 共享核心通知到本 socket 的 poll/epoll 等待图,M07)。
+func (s *INETSocket) watchConn(conn *TCPConn) {
+	conn.rx.onChange(s.base.notify)
+	conn.tx.onChange(s.base.notify)
+}
+
 // OnChange 订阅就绪变化(poll/epoll 等待图,M07)。
 func (s *INETSocket) OnChange(fn func()) (cancel func()) { return s.base.OnChange(fn) }
 
@@ -122,12 +129,14 @@ func (s *INETSocket) Bind(addr Addr) error {
 		if err := listener.Listen(0); err != nil {
 			return err
 		}
+		listener.OnChange(s.base.notify)
 		s.listener = listener
 	} else {
 		endpoint, err := s.ns.BindUDP(addr)
 		if err != nil {
 			return err
 		}
+		endpoint.OnChange(s.base.notify)
 		s.udp = endpoint
 	}
 	s.local = addr
@@ -186,11 +195,24 @@ func (s *INETSocket) Accept(ctx context.Context) (*INETSocket, error) {
 		conn:  conn,
 	}
 	accepted.conn.blockCheck = accepted.base.blocked
+	accepted.watchConn(accepted.conn)
 	if nonblock {
 		// accept4(SOCK_NONBLOCK) 语义:新 socket 继承非阻塞。
 		accepted.base.SetNonBlock(true)
 	}
 	return accepted, nil
+}
+
+// Adopt 把已接受的连接装配为 socket(accept 流程的装配侧,M07 测试
+// 与执行器共用)。
+func (s *INETSocket) Adopt(conn *TCPConn) {
+	s.mu.Lock()
+	conn.blockCheck = s.base.blocked
+	s.watchConn(conn)
+	s.conn = conn
+	s.local = conn.local
+	s.state = stateConnected
+	s.mu.Unlock()
 }
 
 // Connect 连接到回环地址(M04):TCP 建立连接;UDP 记录默认目标
@@ -206,6 +228,7 @@ func (s *INETSocket) Connect(ctx context.Context, addr Addr) error {
 			return err
 		}
 		conn.blockCheck = s.base.blocked
+		s.watchConn(conn)
 		s.conn = conn
 		s.local = local
 		s.state = stateConnected
@@ -216,12 +239,59 @@ func (s *INETSocket) Connect(ctx context.Context, addr Addr) error {
 			return err
 		}
 		conn.blockCheck = s.base.blocked
+		s.watchConn(conn)
 		s.conn = conn
 		s.state = stateConnected
 		return nil
 	default:
 		return errno.NotSupported
 	}
+}
+
+// SendMsg 发送消息(M08):TCP 为拼接写;UDP 按数据报投递;控制
+// 消息仅 AF_UNIX 支持(接收方获得独立描述符引用)。
+func (s *INETSocket) SendMsg(ctx context.Context, buffers [][]byte, to *Addr, rights *ControlRights) (int, error) {
+	s.mu.Lock()
+	conn := s.conn
+	udp := s.udp
+	state := s.state
+	s.mu.Unlock()
+	if rights != nil {
+		return 0, errno.Invalid // SCM_RIGHTS 仅 AF_UNIX
+	}
+	if state == stateConnected && conn != nil {
+		return conn.WriteMsg(ctx, buffers, nil)
+	}
+	if udp != nil || s.typ == SockDatagram {
+		if to == nil {
+			return 0, errno.DestAddrReq
+		}
+		// 数据报:多 iovec 拼接为单个报文,不能拆成多个数据报。
+		total := 0
+		payload := make([]byte, 0, 64)
+		for _, buffer := range buffers {
+			payload = append(payload, buffer...)
+			total += len(buffer)
+		}
+		if _, err := s.SendTo(ctx, payload, *to); err != nil {
+			return 0, err
+		}
+		return total, nil
+	}
+	return 0, errno.NotConn
+}
+
+// RecvMsg 接收消息(M08)。
+func (s *INETSocket) RecvMsg(ctx context.Context, buffer []byte) (int, *Addr, *ControlRights, error) {
+	s.mu.Lock()
+	conn := s.conn
+	state := s.state
+	s.mu.Unlock()
+	if state != stateConnected || conn == nil {
+		return 0, nil, nil, errno.NotConn
+	}
+	n, rights, err := conn.ReadMsg(ctx, buffer)
+	return n, nil, rights, err
 }
 
 // Read 读 TCP 接收方向(连接形态);其余形态报 ENOTCONN/ENOTSUP。
@@ -278,6 +348,7 @@ func (s *INETSocket) SendTo(ctx context.Context, data []byte, to Addr) (int, err
 			s.state = stateBound
 		}
 		s.mu.Unlock()
+		endpoint.OnChange(s.base.notify)
 		udp = endpoint
 	}
 	return s.ns.SendTo(ctx, udp, data, to)
@@ -304,6 +375,7 @@ func (s *INETSocket) RecvFrom(ctx context.Context, buffer []byte) (int, Addr, er
 			s.state = stateBound
 		}
 		s.mu.Unlock()
+		endpoint.OnChange(s.base.notify)
 		udp = endpoint
 	}
 	// 非阻塞状态传递:端点与 socket 共享同一非阻塞旗标来源。
@@ -428,6 +500,12 @@ type UnixSocket struct {
 // SetNonBlock 切换非阻塞(M02)。
 func (s *UnixSocket) SetNonBlock(on bool) { s.base.SetNonBlock(on) }
 
+// watchConn 订阅连接两个方向核心的就绪变化(M07)。
+func (s *UnixSocket) watchConn(conn *UnixConn) {
+	conn.rx.onChange(s.base.notify)
+	conn.tx.onChange(s.base.notify)
+}
+
 // OnChange 订阅就绪变化(poll/epoll 等待图,M07)。
 func (s *UnixSocket) OnChange(fn func()) (cancel func()) { return s.base.OnChange(fn) }
 
@@ -471,6 +549,7 @@ func (s *UnixSocket) Bind(path string) error {
 	if err := listener.Listen(0); err != nil {
 		return err
 	}
+	listener.OnChange(s.base.notify)
 	s.listener = listener
 	s.local = Addr{Domain: AFUnix, Path: path}
 	s.state = stateBound
@@ -521,6 +600,7 @@ func (s *UnixSocket) Accept(ctx context.Context) (*UnixSocket, error) {
 		conn:  conn,
 	}
 	accepted.conn.blockCheck = accepted.base.blocked
+	accepted.watchConn(accepted.conn)
 	if nonblock {
 		accepted.base.SetNonBlock(true)
 	}
@@ -539,6 +619,7 @@ func (s *UnixSocket) Connect(ctx context.Context, path string) error {
 		return err
 	}
 	conn.blockCheck = s.base.blocked
+	s.watchConn(conn)
 	s.conn = conn
 	s.state = stateConnected
 	return nil
@@ -553,6 +634,8 @@ func (n *Namespace) SocketPairUnix() (*UnixSocket, *UnixSocket) {
 	b.conn = server
 	a.conn.blockCheck = a.base.blocked
 	b.conn.blockCheck = b.base.blocked
+	a.watchConn(a.conn)
+	b.watchConn(b.conn)
 	return a, b
 }
 
@@ -586,6 +669,31 @@ func (s *UnixSocket) WriteContext(ctx context.Context, p []byte) (int, error) {
 		return 0, errno.NotConn
 	}
 	return conn.WriteContext(ctx, p)
+}
+
+// SendMsg 发送消息(M08):拼接写;SCM_RIGHTS 随数据交付,接收方
+// 获得独立描述符引用。
+func (s *UnixSocket) SendMsg(ctx context.Context, buffers [][]byte, rights *ControlRights) (int, error) {
+	s.mu.Lock()
+	conn := s.conn
+	state := s.state
+	s.mu.Unlock()
+	if state != stateConnected || conn == nil {
+		return 0, errno.NotConn
+	}
+	return conn.WriteMsg(ctx, buffers, rights)
+}
+
+// RecvMsg 接收消息(M08)。
+func (s *UnixSocket) RecvMsg(ctx context.Context, buffer []byte) (int, *ControlRights, error) {
+	s.mu.Lock()
+	conn := s.conn
+	state := s.state
+	s.mu.Unlock()
+	if state != stateConnected || conn == nil {
+		return 0, nil, errno.NotConn
+	}
+	return conn.ReadMsg(ctx, buffer)
 }
 
 // Shutdown 半关闭(M03)。

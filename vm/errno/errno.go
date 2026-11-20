@@ -64,6 +64,7 @@ const (
 	InProgress      Code = "EINPROGRESS：操作正在进行"
 	MessageSize     Code = "EMSGSIZE：报文过长"
 	HostUnreachable Code = "EHOSTUNREACH：主机不可达"
+	DestAddrReq     Code = "EDESTADDRREQ：缺少目标地址"
 )
 
 var declared = []Code{
@@ -72,7 +73,7 @@ var declared = []Code{
 	LinkLoop, NoDevice, NoSpace, NoMemory, CrossDevice, Cancelled, Interrupted, WouldBlock, Range, Overflow,
 	TimedOut, NoExec, Version, Fault, IO, Seek, TooBig,
 	AddressInUse, AddressNotAvail, IsConn, NotConn, NotSock, ConnRefused, ConnReset, ConnAborted, Already,
-	InProgress, MessageSize, HostUnreachable,
+	InProgress, MessageSize, HostUnreachable, DestAddrReq,
 }
 
 func Codes() []Code { return slices.Clone(declared) }
@@ -132,6 +133,7 @@ var wasiNumbers = map[Code]uint16{
 	InProgress:      26,
 	MessageSize:     35,
 	HostUnreachable: 23,
+	DestAddrReq:     17,
 }
 
 func WASI(code Code) (uint16, string) {
@@ -192,6 +194,7 @@ var linuxNumbers = map[Code]int32{
 	InProgress:         115,
 	MessageSize:        90,
 	HostUnreachable:    113,
+	DestAddrReq:        89,
 }
 
 func Linux(code Code) (int32, string) {
