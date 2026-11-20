@@ -39,6 +39,12 @@ const (
 
 const defaultMaxProcesses = 128
 
+const (
+	defaultMemoryBytes = 256 << 20
+	defaultCPUs        = 1
+	defaultShmBytes    = 64 << 20
+)
+
 // Options 是 VM 的构造参数。
 type Options struct {
 	// MaxProcesses 是进程表上限;非正时使用默认值。
@@ -53,6 +59,15 @@ type Options struct {
 
 	// TraceLimit 是系统调用轨迹保留上限;非正时使用默认值。
 	TraceLimit int
+
+	// MemoryBytes 是 /proc/meminfo 报告的客体内存配置;非正时 256MiB。
+	MemoryBytes uint64
+
+	// ShmBytes 是 /dev/shm 共享内存容量;非正时 64MiB。
+	ShmBytes int64
+
+	// CPUs 是 /proc/cpuinfo 报告的客体处理器数;非正时 1。
+	CPUs int
 
 	// Programs 是追加到内置 Shell 程序表之上的客体程序;同名条目
 	// 覆盖内置实现。
@@ -78,8 +93,13 @@ type VM struct {
 	root    *memfs.FS
 	mounts  *mountfs.Mounts
 	devices *devfs.FS
+	shm     *memfs.FS
 	clock   clock.Source
 	entropy vmentropy.Source
+
+	// memoryBytes/cpus 是系统视图报告的客体配置(N08)。
+	memoryBytes uint64
+	cpus        int
 
 	// env 是客体会话默认环境(N04)。
 	env map[string]string
@@ -136,6 +156,15 @@ func newVM(ctx context.Context, opts Options, root *memfs.FS, source clock.Sourc
 	if opts.MaxProcesses <= 0 {
 		opts.MaxProcesses = defaultMaxProcesses
 	}
+	if opts.MemoryBytes == 0 {
+		opts.MemoryBytes = defaultMemoryBytes
+	}
+	if opts.CPUs <= 0 {
+		opts.CPUs = defaultCPUs
+	}
+	if opts.ShmBytes <= 0 {
+		opts.ShmBytes = defaultShmBytes
+	}
 	random := entropyFor(opts)
 	mounts := &mountfs.Mounts{}
 	if err := mounts.Mount("/", root); err != nil {
@@ -144,7 +173,11 @@ func newVM(ctx context.Context, opts Options, root *memfs.FS, source clock.Sourc
 	if err := opts.faults.afterMounts(); err != nil {
 		return nil, err
 	}
-	devices, err := devfs.New(devfs.Options{Entropy: random})
+	shm, err := memfs.New(source, memfs.Options{TotalBytes: opts.ShmBytes})
+	if err != nil {
+		return nil, err
+	}
+	devices, err := devfs.New(devfs.Options{Entropy: random, Subdirs: map[string]vmfs.System{"shm": shm}})
 	if err != nil {
 		return nil, err
 	}
@@ -156,8 +189,9 @@ func newVM(ctx context.Context, opts Options, root *memfs.FS, source clock.Sourc
 	}
 
 	machine := &VM{
-		root: root, mounts: mounts, devices: devices,
+		root: root, mounts: mounts, devices: devices, shm: shm,
 		clock: source, entropy: random, env: opts.env,
+		memoryBytes: opts.MemoryBytes, cpus: opts.CPUs,
 		connections: map[uint64]*Connection{},
 		running:     map[proc.PID]context.CancelFunc{},
 	}
@@ -210,7 +244,7 @@ func newVM(ctx context.Context, opts Options, root *memfs.FS, source clock.Sourc
 		kernel.SetTraceLimit(opts.TraceLimit)
 	}
 	// /proc 是内核动态视图(N06/N07):每台 VM 只看到自己的进程表。
-	procView, err := procfs.New(kernelProcfs{kernel: kernel})
+	procView, err := procfs.New(kernelProcfs{kernel: kernel, machine: machine})
 	if err != nil {
 		_ = kernel.Close(ctx)
 		return nil, err

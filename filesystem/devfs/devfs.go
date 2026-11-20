@@ -46,6 +46,10 @@ type Options struct {
 	Owner uint32
 
 	Mode map[string]stdfs.FileMode
+
+	// Subdirs 暴露可读写的子目录(如 N09 的 /dev/shm),按名称委托给
+	// 目标文件系统;其余设备节点仍只读。
+	Subdirs map[string]vmfs.System
 }
 
 func defaultMode(name string) stdfs.FileMode {
@@ -61,6 +65,7 @@ type FS struct {
 	provider Provider
 	owner    uint32
 	modes    map[string]stdfs.FileMode
+	subdirs  map[string]vmfs.System
 }
 
 func New(options Options) (*FS, error) {
@@ -72,12 +77,19 @@ func New(options Options) (*FS, error) {
 	for name, mode := range options.Mode {
 		modes[name] = mode
 	}
+	subdirs := make(map[string]vmfs.System, len(options.Subdirs))
+	for name, system := range options.Subdirs {
+		if system != nil {
+			subdirs[name] = system
+		}
+	}
 	return &FS{
 		entropy:  options.Entropy,
 		terminal: options.Terminal,
 		provider: options.Provider,
 		owner:    options.Owner,
 		modes:    modes,
+		subdirs:  subdirs,
 	}, nil
 }
 
@@ -154,6 +166,12 @@ func (f *FS) stat(ctx context.Context, path string) (stdfs.FileInfo, error) {
 	}
 	if len(segments) == 0 {
 		return info{name: "dev", mode: stdfs.ModeDir | 0o555}, nil
+	}
+	if system, ok := f.subdirs[segments[0]]; ok {
+		if len(segments) == 1 {
+			return info{name: segments[0], mode: stdfs.ModeDir | 0o755}, nil
+		}
+		return system.Stat(ctx, "/"+strings.Join(segments[1:], "/"))
 	}
 	name := segments[0]
 	if !isDevice(name) {
@@ -242,16 +260,21 @@ func (f *FS) ReadDir(ctx context.Context, path string) ([]stdfs.DirEntry, error)
 		return f.readFDDir(ctx)
 	}
 	if len(segments) != 0 {
-
+		if system, ok := f.subdirs[segments[0]]; ok {
+			return system.ReadDir(ctx, "/"+strings.Join(segments[1:], "/"))
+		}
 		return nil, errno.Wrap(errno.NotDirectory, "不是目录: "+path)
 	}
-	out := make([]stdfs.DirEntry, 0, len(deviceNames))
+	out := make([]stdfs.DirEntry, 0, len(deviceNames)+len(f.subdirs))
 	for _, name := range deviceNames {
 		if isDirectoryName(name) {
 			out = append(out, dirEntry{name: name, mode: stdfs.ModeDir | 0o555})
 			continue
 		}
 		out = append(out, dirEntry{name: name, mode: f.deviceMode(name)})
+	}
+	for name := range f.subdirs {
+		out = append(out, dirEntry{name: name, mode: stdfs.ModeDir | 0o755})
 	}
 	sortEntries(out)
 	return out, nil
@@ -274,6 +297,22 @@ func (f *FS) readFDDir(ctx context.Context) ([]stdfs.DirEntry, error) {
 	}
 	sortEntries(out)
 	return out, nil
+}
+
+func splitMust(path string) []string {
+	segments, _ := splitPath(path)
+	return segments
+}
+
+func (f *FS) subdirPath(segments []string) (vmfs.System, string, bool) {
+	if len(segments) == 0 {
+		return nil, "", false
+	}
+	system, ok := f.subdirs[segments[0]]
+	if !ok {
+		return nil, "", false
+	}
+	return system, "/" + strings.Join(segments[1:], "/"), true
 }
 
 func itoa(value uint32) string {
@@ -300,6 +339,9 @@ func (f *FS) Open(ctx context.Context, path string, flags uint32, mode stdfs.Fil
 	}
 	if len(segments) == 0 {
 		return nil, errno.Wrap(errno.IsDirectory, "是目录: "+path)
+	}
+	if system, ok := f.subdirs[segments[0]]; ok {
+		return system.Open(ctx, "/"+strings.Join(segments[1:], "/"), flags, mode)
 	}
 	if !isDevice(segments[0]) {
 		return nil, errno.Wrap(errno.NotFound, "没有该设备节点: "+path)
@@ -374,12 +416,26 @@ func (f *FS) Mkdir(ctx context.Context, path string, mode stdfs.FileMode) error 
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	segments, err := splitPath(path)
+	if err != nil {
+		return err
+	}
+	if system, relative, ok := f.subdirPath(segments); ok {
+		return system.Mkdir(ctx, relative, mode)
+	}
 	return errno.Wrap(errno.ReadOnlyFS, "devfs 是只读设备视图")
 }
 
 func (f *FS) Remove(ctx context.Context, path string) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	segments, err := splitPath(path)
+	if err != nil {
+		return err
+	}
+	if system, relative, ok := f.subdirPath(segments); ok {
+		return system.Remove(ctx, relative)
 	}
 	return errno.Wrap(errno.ReadOnlyFS, "devfs 是只读设备视图")
 }
@@ -388,12 +444,22 @@ func (f *FS) Rename(ctx context.Context, from, to string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	source, fromRelative, ok := f.subdirPath(splitMust(from))
+	target, toRelative, targetOK := f.subdirPath(splitMust(to))
+	if ok && targetOK && source == target {
+		return source.Rename(ctx, fromRelative, toRelative)
+	}
 	return errno.Wrap(errno.ReadOnlyFS, "devfs 是只读设备视图")
 }
 
 func (f *FS) Link(ctx context.Context, from, to string) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	source, fromRelative, ok := f.subdirPath(splitMust(from))
+	target, toRelative, targetOK := f.subdirPath(splitMust(to))
+	if ok && targetOK && source == target {
+		return source.Link(ctx, fromRelative, toRelative)
 	}
 	return errno.Wrap(errno.ReadOnlyFS, "devfs 是只读设备视图")
 }
@@ -402,12 +468,26 @@ func (f *FS) Symlink(ctx context.Context, target, link string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	segments, err := splitPath(link)
+	if err != nil {
+		return err
+	}
+	if system, relative, ok := f.subdirPath(segments); ok {
+		return system.Symlink(ctx, target, relative)
+	}
 	return errno.Wrap(errno.ReadOnlyFS, "devfs 是只读设备视图")
 }
 
 func (f *FS) Readlink(ctx context.Context, path string) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
+	}
+	segments, err := splitPath(path)
+	if err != nil {
+		return "", err
+	}
+	if system, relative, ok := f.subdirPath(segments); ok {
+		return system.Readlink(ctx, relative)
 	}
 	return "", errno.Wrap(errno.Invalid, "设备视图没有符号链接: "+path)
 }

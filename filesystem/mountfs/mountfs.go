@@ -50,6 +50,19 @@ func (m *Mounts) Mount(point string, system vmfs.System) error {
 	return nil
 }
 
+// Points 返回已挂载的客体路径(按挂载深度排序),供 /proc/mounts 等
+// 系统视图使用(N08)。
+func (m *Mounts) Points() []string {
+	if m == nil {
+		return nil
+	}
+	out := make([]string, 0, len(m.mounts))
+	for _, entry := range m.mounts {
+		out = append(out, entry.point)
+	}
+	return out
+}
+
 func (m *Mounts) parentMount(point string) (mount, bool) {
 	for candidate := path.Dir(point); ; candidate = path.Dir(candidate) {
 		for _, entry := range m.mounts {

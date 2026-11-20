@@ -170,3 +170,31 @@ func TestGuestReadsProcSelf(t *testing.T) {
 		t.Fatalf("输出=%q", got)
 	}
 }
+
+// TestProcSystemViewsReflectVMConfiguration 验证 N08:meminfo/cpuinfo/
+// mounts 报告客体配置与挂载表,不读取宿主 /proc。
+func TestProcSystemViewsReflectVMConfiguration(t *testing.T) {
+	machine, err := New(t.Context(), Options{
+		Deterministic: true, Seed: 1,
+		MemoryBytes: 64 << 20,
+		CPUs:        2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = machine.Close(context.Background()) }()
+	meminfo := readProcFile(t, machine, t.Context(), "/proc/meminfo")
+	if !strings.Contains(meminfo, "MemTotal:") || !strings.Contains(meminfo, "65536 kB") {
+		t.Fatalf("meminfo=%q", meminfo)
+	}
+	cpuinfo := readProcFile(t, machine, t.Context(), "/proc/cpuinfo")
+	if strings.Count(cpuinfo, "processor") != 2 || !strings.Contains(cpuinfo, "rv64imafdc") {
+		t.Fatalf("cpuinfo=%q", cpuinfo)
+	}
+	mounts := readProcFile(t, machine, t.Context(), "/proc/mounts")
+	for _, point := range []string{"/", "/dev", "/proc"} {
+		if !strings.Contains(mounts, " "+point+" ") {
+			t.Fatalf("mounts 缺少 %s:\n%s", point, mounts)
+		}
+	}
+}

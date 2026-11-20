@@ -14,7 +14,35 @@ import (
 // kernelProcfs 把 VM 内核的动态进程表与地址空间投影为 /proc(N06/N07):
 // 每台 VM 独立,条目随进程退出/回收实时消失。
 type kernelProcfs struct {
-	kernel *vm.Kernel
+	kernel  *vm.Kernel
+	machine *VM
+}
+
+// SystemFiles 生成 /proc/meminfo、/proc/cpuinfo 与 /proc/mounts(N08):
+// 数值来自 VM 配置与挂载表,不读取宿主/proc。
+func (p kernelProcfs) SystemFiles(ctx context.Context) (map[string][]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	memoryKB := p.machine.memoryBytes / 1024
+	meminfo := fmt.Sprintf("MemTotal:       %d kB\nMemFree:        %d kB\nMemAvailable:   %d kB\nBuffers:        0 kB\nCached:         0 kB\n",
+		memoryKB, memoryKB, memoryKB)
+	var cpu strings.Builder
+	for index := 0; index < p.machine.cpus; index++ {
+		fmt.Fprintf(&cpu, "processor\t: %d\nmodel name\t: Assistant Sandbox RV64GC\nisa\t\t: rv64imafdc\nmmu\t\t: none\n\n", index)
+	}
+	var mounts strings.Builder
+	for _, point := range p.machine.mounts.Points() {
+		fmt.Fprintf(&mounts, "sandbox %s vmfs rw 0 0\n", point)
+	}
+	if p.machine.shm != nil {
+		fmt.Fprintf(&mounts, "tmpfs /dev/shm tmpfs rw,nosuid,nodev 0 0\n")
+	}
+	return map[string][]byte{
+		"meminfo": []byte(meminfo),
+		"cpuinfo": []byte(cpu.String()),
+		"mounts":  []byte(mounts.String()),
+	}, nil
 }
 
 func (p kernelProcfs) Processes(ctx context.Context) ([]procfs.Entry, error) {

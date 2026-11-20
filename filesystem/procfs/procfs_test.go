@@ -524,3 +524,48 @@ func containsName(names []string, want string) bool {
 	}
 	return false
 }
+
+type systemProvider struct {
+	*fixedProvider
+	files map[string][]byte
+}
+
+func (p *systemProvider) SystemFiles(context.Context) (map[string][]byte, error) {
+	return p.files, nil
+}
+
+// TestSystemFilesExposeMeminfoCPUInfoAndMounts 验证 N08:系统视图
+// 文件出现在 /proc 根目录,可读且大小/内容一致。
+func TestSystemFilesExposeMeminfoCPUInfoAndMounts(t *testing.T) {
+	ctx := context.Background()
+	provider := &systemProvider{
+		fixedProvider: sampleProvider(),
+		files: map[string][]byte{
+			"meminfo": []byte("MemTotal: 1024 kB\n"),
+			"cpuinfo": []byte("processor\t: 0\n"),
+			"mounts":  []byte("sandbox / vmfs rw 0 0\n"),
+		},
+	}
+	fs := newFS(t, provider)
+	entries, err := fs.ReadDir(ctx, "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := strings.Join(entryNames(entries), ",")
+	for _, name := range []string{"meminfo", "cpuinfo", "mounts"} {
+		if !strings.Contains(names, name) {
+			t.Fatalf("根目录缺少 %s: %s", name, names)
+		}
+		if got := readFile(t, fs, "/"+name); got != string(provider.files[name]) {
+			t.Fatalf("%s=%q", name, got)
+		}
+		info, err := fs.Stat(ctx, "/"+name)
+		if err != nil || info.Size() != int64(len(provider.files[name])) {
+			t.Fatalf("%s stat=%+v err=%v", name, info, err)
+		}
+	}
+	// procfs 仍只读。
+	if _, err := fs.Open(ctx, "/meminfo", vmfs.ReadWrite, 0); !errors.Is(err, errno.Permission) {
+		t.Fatalf("写打开应 EACCES: %v", err)
+	}
+}

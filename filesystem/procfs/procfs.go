@@ -41,6 +41,12 @@ type Provider interface {
 	Self(context.Context) (proc.PID, error)
 }
 
+// SystemViewer 是可选的系统级视图来源(N08):键为 /proc 顶层文件名
+// (如 meminfo/cpuinfo/mounts),值为完整文本内容。
+type SystemViewer interface {
+	SystemFiles(context.Context) (map[string][]byte, error)
+}
+
 type FS struct {
 	provider Provider
 }
@@ -133,6 +139,18 @@ func (f *FS) lookup(ctx context.Context, path string) (Entry, []string, error) {
 	return entry, segments[1:], nil
 }
 
+func (f *FS) systemFiles(ctx context.Context) map[string][]byte {
+	viewer, ok := f.provider.(SystemViewer)
+	if !ok {
+		return nil
+	}
+	files, err := viewer.SystemFiles(ctx)
+	if err != nil {
+		return nil
+	}
+	return files
+}
+
 func (f *FS) entryOf(ctx context.Context, pid proc.PID) (Entry, error) {
 	entries, err := f.provider.Processes(ctx)
 	if err != nil {
@@ -164,6 +182,11 @@ func (f *FS) stat(ctx context.Context, path string, follow bool) (stdfs.FileInfo
 	}
 	if len(segments) == 0 {
 		return info{name: "proc", mode: stdfs.ModeDir | 0o555, size: 0}, nil
+	}
+	if len(segments) == 1 {
+		if data, ok := f.systemFiles(ctx)[segments[0]]; ok {
+			return info{name: segments[0], mode: 0o444, size: int64(len(data))}, nil
+		}
 	}
 
 	if segments[0] == selfLink {
@@ -230,6 +253,10 @@ func (f *FS) ReadDir(ctx context.Context, path string) ([]stdfs.DirEntry, error)
 		out := []stdfs.DirEntry{dirEntry{name: selfLink, mode: stdfs.ModeSymlink | 0o777}}
 		for _, entry := range entries {
 			out = append(out, dirEntry{name: itoa(uint64(entry.ID)), mode: stdfs.ModeDir | 0o555})
+		}
+		for name, data := range f.systemFiles(ctx) {
+			out = append(out, dirEntry{name: name, mode: 0o444})
+			_ = data
 		}
 		sortEntries(out)
 		return out, nil
@@ -332,6 +359,11 @@ func (f *FS) Open(ctx context.Context, path string, flags uint32, mode stdfs.Fil
 
 	if len(segments) == 0 {
 		return nil, errno.Wrap(errno.IsDirectory, "是目录: "+path)
+	}
+	if len(segments) == 1 {
+		if data, ok := f.systemFiles(ctx)[segments[0]]; ok {
+			return newFile(segments[0], data), nil
+		}
 	}
 	if len(segments) == 1 && segments[0] == selfLink {
 

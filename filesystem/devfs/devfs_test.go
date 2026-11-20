@@ -6,9 +6,12 @@ import (
 	"errors"
 	"io"
 	stdfs "io/fs"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/filesystem/memfs"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/clock"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/entropy"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 	vmfs "github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fs"
@@ -421,5 +424,54 @@ func TestLstatMatchesStat(t *testing.T) {
 	}
 	if stat.Mode() != lstat.Mode() || stat.Name() != lstat.Name() {
 		t.Fatalf("Stat 与 Lstat 应等价: %v vs %v", stat.Mode(), lstat.Mode())
+	}
+}
+
+// TestSubdirDelegatesSharedMemory 验证 N09 的设备侧:/dev/shm 由可写
+// 子目录承载,设备节点仍只读,子目录内可创建/读取/删除。
+func TestSubdirDelegatesSharedMemory(t *testing.T) {
+	ctx := context.Background()
+	shm, err := memfs.New(&clock.Virtual{}, memfs.Options{TotalBytes: 256})
+	if err != nil {
+		t.Fatal(err)
+	}
+	devices, err := New(Options{Entropy: &entropy.Counter{}, Subdirs: map[string]vmfs.System{"shm": shm}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := devices.ReadDir(ctx, "/")
+	if err != nil || !slices.ContainsFunc(entries, func(entry stdfs.DirEntry) bool { return entry.Name() == "shm" && entry.IsDir() }) {
+		t.Fatalf("根目录缺少 shm: %v err=%v", entries, err)
+	}
+	file, err := devices.Open(ctx, "/shm/a", vmfs.Create|vmfs.ReadWrite, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write([]byte("shared")); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	content, err := devices.Open(ctx, "/shm/a", vmfs.ReadOnly, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(content)
+	if err != nil || string(data) != "shared" {
+		t.Fatalf("内容=%q err=%v", data, err)
+	}
+	if err := content.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := devices.Remove(ctx, "/shm/a"); err != nil {
+		t.Fatal(err)
+	}
+	// 设备节点本身仍不可写。
+	if _, err := devices.Open(ctx, "/null", vmfs.ReadWrite, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := devices.Mkdir(ctx, "/other", 0o755); !errors.Is(err, errno.ReadOnlyFS) {
+		t.Fatalf("设备视图根仍只读: %v", err)
 	}
 }
