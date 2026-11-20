@@ -2,6 +2,9 @@ package tty
 
 import (
 	"strings"
+	"unicode/utf8"
+
+	"github.com/mattn/go-runewidth"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 )
@@ -16,12 +19,19 @@ const (
 
 type screen struct {
 	rows, cols int
-	cells      [][]byte
+	cells      [][]string
 	row, col   int
 
 	stops map[int]bool
 
 	savedRow, savedCol int
+
+	// 解析器状态跨 Write 调用保持:转义序列与多字节 UTF-8 字符可能
+	// 被拆分到两次输出(P11)。
+	state         parserState
+	params        strings.Builder
+	intermediates strings.Builder
+	pending       []byte
 }
 
 func newScreen(rows, cols int) *screen {
@@ -31,94 +41,101 @@ func newScreen(rows, cols int) *screen {
 }
 
 func (s *screen) clear() {
-	s.cells = make([][]byte, s.rows)
+	s.cells = make([][]string, s.rows)
 	for i := range s.cells {
-		s.cells[i] = bytesOf(' ', s.cols)
+		s.cells[i] = blankCells(s.cols)
 	}
 	s.row, s.col = 0, 0
 }
 
-func bytesOf(b byte, n int) []byte {
-	out := make([]byte, n)
+func blankCells(n int) []string {
+	out := make([]string, n)
 	for i := range out {
-		out[i] = b
+		out[i] = " "
 	}
 	return out
 }
 
 func (s *screen) parse(p []byte) {
-	state := parserGround
-	var params strings.Builder
-	var intermediates strings.Builder
-	var final byte
-	for _, b := range p {
-		switch state {
-		case parserGround:
-			switch {
-			case b == 0x1B:
-				state = parserEscape
-			case b < 0x20:
-				s.control(b)
-			default:
-				s.put(b)
-			}
-		case parserEscape:
-			switch b {
-			case '[':
-				params.Reset()
-				intermediates.Reset()
-				state = parserCSI
-			case ']':
-				state = parserOSC
-			case 'c':
-				s.clear()
-				s.resetStops()
-				state = parserGround
-			case '7':
-				s.savedRow, s.savedCol = s.row, s.col
-				state = parserGround
-			case '8':
-				s.row, s.col = s.savedRow, s.savedCol
-				s.clampCursor()
-				state = parserGround
-			case '(', ')':
-				intermediates.WriteByte(b)
-				state = parserCharset
-			default:
+	data := append([]byte(nil), s.pending...)
+	data = append(data, p...)
+	s.pending = nil
+	for len(data) > 0 {
+		r, size := utf8.DecodeRune(data)
+		if r == utf8.RuneError && size == 1 && !utf8.FullRune(data) {
+			// 不完整的多字节序列:留给下一次 Write。
+			s.pending = append([]byte(nil), data...)
+			return
+		}
+		data = data[size:]
+		s.advance(r)
+	}
+}
 
-				state = parserGround
-			}
-		case parserCharset:
-
-			state = parserGround
-		case parserOSC:
-
-			switch b {
-			case 0x07:
-				state = parserGround
-			case 0x1B:
-				state = parserOSCEscape
-			}
-		case parserOSCEscape:
-			if b == '\\' {
-				state = parserGround
-			} else {
-				state = parserOSC
-			}
-		case parserCSI:
-			switch {
-			case b >= '0' && b <= '9' || b == ';' || b == '?' || b == ':' || b == '<' || b == '=' || b == '>':
-				params.WriteByte(b)
-			case b >= 0x20 && b <= 0x2F:
-				intermediates.WriteByte(b)
-			case b >= 0x40 && b <= 0x7E:
-				final = b
-				s.csi(params.String(), intermediates.String(), final)
-				state = parserGround
-			default:
-
-				state = parserGround
-			}
+func (s *screen) advance(r rune) {
+	switch s.state {
+	case parserGround:
+		switch {
+		case r == 0x1B:
+			s.state = parserEscape
+		case r < 0x20:
+			s.control(byte(r))
+		case r == 0x7F:
+			// DEL 不可见。
+		default:
+			s.putRune(r)
+		}
+	case parserEscape:
+		switch r {
+		case '[':
+			s.params.Reset()
+			s.intermediates.Reset()
+			s.state = parserCSI
+		case ']':
+			s.state = parserOSC
+		case 'c':
+			s.clear()
+			s.resetStops()
+			s.state = parserGround
+		case '7':
+			s.savedRow, s.savedCol = s.row, s.col
+			s.state = parserGround
+		case '8':
+			s.row, s.col = s.savedRow, s.savedCol
+			s.clampCursor()
+			s.state = parserGround
+		case '(', ')':
+			s.intermediates.WriteRune(r)
+			s.state = parserCharset
+		default:
+			s.state = parserGround
+		}
+	case parserCharset:
+		s.state = parserGround
+	case parserOSC:
+		switch r {
+		case 0x07:
+			s.state = parserGround
+		case 0x1B:
+			s.state = parserOSCEscape
+		}
+	case parserOSCEscape:
+		if r == '\\' {
+			s.state = parserGround
+		} else {
+			s.state = parserOSC
+		}
+	case parserCSI:
+		switch {
+		case r >= '0' && r <= '9' || r == ';' || r == '?' || r == ':' || r == '<' || r == '=' || r == '>':
+			s.params.WriteRune(r)
+		case r >= 0x20 && r <= 0x2F:
+			s.intermediates.WriteRune(r)
+		case r >= 0x40 && r <= 0x7E:
+			s.csi(s.params.String(), s.intermediates.String(), byte(r))
+			s.state = parserGround
+		default:
+			s.state = parserGround
 		}
 	}
 }
@@ -153,19 +170,48 @@ func (s *screen) control(b byte) {
 	}
 }
 
-func (s *screen) put(b byte) {
-	if s.col >= s.cols {
+func (s *screen) putRune(r rune) {
+	width := runewidth.RuneWidth(r)
+	switch {
+	case width == 0:
+		s.combine(r)
+		return
+	case width < 0:
+		width = 1
+	case r == utf8.RuneError && width <= 0:
+		width = 1
+	}
+	if s.col+width > s.cols {
 		s.col = 0
 		s.lineFeed()
 	}
-	s.cells[s.row][s.col] = b
-	s.col++
+	if width > s.cols {
+		width = s.cols
+	}
+	s.cells[s.row][s.col] = string(r)
+	for offset := 1; offset < width && s.col+offset < s.cols; offset++ {
+		s.cells[s.row][s.col+offset] = ""
+	}
+	s.col += width
+}
+
+// combine 把宽度为 0 的组合字符附加到前一个可见单元格(P11):宽字符
+// 的续格为空串,需回退到其起始格。
+func (s *screen) combine(r rune) {
+	column := s.col - 1
+	for column >= 0 && s.cells[s.row][column] == "" {
+		column--
+	}
+	if column < 0 {
+		return
+	}
+	s.cells[s.row][column] += string(r)
 }
 
 func (s *screen) lineFeed() {
 	if s.row+1 >= s.rows {
 		copy(s.cells, s.cells[1:])
-		s.cells[s.rows-1] = bytesOf(' ', s.cols)
+		s.cells[s.rows-1] = blankCells(s.cols)
 		s.row = s.rows - 1
 		return
 	}
@@ -241,11 +287,11 @@ func (s *screen) csi(params, intermediates string, final byte) {
 		case 0:
 			s.eraseLineRight()
 			for i := s.row + 1; i < s.rows; i++ {
-				s.cells[i] = bytesOf(' ', s.cols)
+				s.cells[i] = blankCells(s.cols)
 			}
 		case 1:
 			for i := 0; i < s.row; i++ {
-				s.cells[i] = bytesOf(' ', s.cols)
+				s.cells[i] = blankCells(s.cols)
 			}
 			s.eraseLineLeft()
 		default:
@@ -258,20 +304,46 @@ func (s *screen) csi(params, intermediates string, final byte) {
 		case 1:
 			s.eraseLineLeft()
 		default:
-			s.cells[s.row] = bytesOf(' ', s.cols)
+			s.cells[s.row] = blankCells(s.cols)
 		}
 	}
 }
 
 func (s *screen) eraseLineRight() {
-	for i := s.col; i < s.cols; i++ {
-		s.cells[s.row][i] = ' '
+	for column := s.col; column < s.cols; {
+		content := s.cells[s.row][column]
+		s.clearCell(s.row, column)
+		if content == "" {
+			column++
+			continue
+		}
+		width := runewidth.StringWidth(content)
+		if width < 1 {
+			width = 1
+		}
+		column += width
 	}
 }
 
 func (s *screen) eraseLineLeft() {
-	for i := 0; i <= s.col && i < s.cols; i++ {
-		s.cells[s.row][i] = ' '
+	for column := 0; column <= s.col && column < s.cols; column++ {
+		s.clearCell(s.row, column)
+	}
+}
+
+// clearCell 清除一个完整字符格(P11):宽字符的前导格与空续格一起
+// 清除,避免擦除后留下半个宽字符。
+func (s *screen) clearCell(row, column int) {
+	start := column
+	for start > 0 && s.cells[row][start] == "" {
+		start--
+	}
+	width := runewidth.StringWidth(s.cells[row][start])
+	if width < 1 {
+		width = 1
+	}
+	for offset := 0; offset < width && start+offset < s.cols; offset++ {
+		s.cells[row][start+offset] = " "
 	}
 }
 
@@ -294,7 +366,7 @@ func (s *screen) clampCursor() {
 func (s *screen) View() ([]string, int, int) {
 	lines := make([]string, s.rows)
 	for i, row := range s.cells {
-		lines[i] = string(row)
+		lines[i] = strings.Join(row, "")
 	}
 	return lines, s.row, s.col
 }

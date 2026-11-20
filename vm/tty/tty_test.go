@@ -412,3 +412,47 @@ func TestSetStateAppliesSizeAndRaisesWINCH(t *testing.T) {
 		t.Fatalf("不应再投递 WINCH: %v", raised)
 	}
 }
+
+// TestScreenSnapshotIsAtomicUnderConcurrentWrites 验证 P12:ScreenView
+// 是锁内构建的原子副本,并发写入只会看到写入前或写入后的完整帧;
+// 返回的行可被调用方修改而不影响终端。
+func TestScreenSnapshotIsAtomicUnderConcurrentWrites(t *testing.T) {
+	term, err := New(Flags{}, Size{Rows: 2, Cols: 8}, 1<<20, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for index := 0; index < 500; index++ {
+			frame := "\x1b[1;1HAAAA"
+			if index%2 == 1 {
+				frame = "\x1b[1;1HBBBB"
+			}
+			if _, writeErr := term.Write([]byte(frame)); writeErr != nil {
+				return
+			}
+		}
+	}()
+	for {
+		lines, row, column := term.ScreenView()
+		if row != 0 || column < 0 || column > 8 {
+			t.Fatalf("光标=(%d,%d)", row, column)
+		}
+		prefix := lines[0][:4]
+		if prefix != "AAAA" && prefix != "BBBB" && prefix != "    " {
+			t.Fatalf("撕裂的屏幕快照=%q", lines[0])
+		}
+		lines[0] = "mutated"
+		select {
+		case <-done:
+			// 快照内容与终端状态解耦:再次读取不受修改影响。
+			again, _, _ := term.ScreenView()
+			if again[0] == "mutated" {
+				t.Fatal("ScreenView 返回了终端内部行")
+			}
+			return
+		default:
+		}
+	}
+}

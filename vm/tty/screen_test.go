@@ -226,3 +226,68 @@ func TestScreenEraseLeftAndMesgAccessors(t *testing.T) {
 		t.Fatal("SetMesg(false) 未生效")
 	}
 }
+
+// TestScreenWideCharactersOccupyTwoColumns 验证 P11:宽字符按显示宽度
+// 占两格,后续字符落在正确列,折行发生在列边界。
+func TestScreenWideCharactersOccupyTwoColumns(t *testing.T) {
+	s := newTestScreen(t, 3, 6)
+	s.parse([]byte("a你b"))
+	lines, row, col := s.View()
+	if lines[0] != "a你b  " || row != 0 || col != 4 {
+		t.Fatalf("宽字符渲染=%q 光标=(%d,%d) want a你b / (0,4)", lines[0], row, col)
+	}
+
+	// 剩余 1 列放不下宽字符:整体折到下一行。
+	wide := newTestScreen(t, 3, 4)
+	wide.parse([]byte("abc你"))
+	lines, row, col = wide.View()
+	if lines[0] != "abc " || lines[1] != "你  " || row != 1 || col != 2 {
+		t.Fatalf("宽字符折行=%q/%q 光标=(%d,%d)", lines[0], lines[1], row, col)
+	}
+}
+
+// TestScreenCombiningMarksAttachToBaseCell 验证 P11:组合字符不占
+// 新格,附加到前一个可见字符;跨 Write 的 UTF-8 序列不丢失。
+func TestScreenCombiningMarksAttachToBaseCell(t *testing.T) {
+	s := newTestScreen(t, 2, 8)
+	s.parse([]byte("e"))
+	s.parse([]byte("\u0301f"))
+	lines, _, col := s.View()
+	if lines[0] != "e\u0301f      " || col != 2 {
+		t.Fatalf("组合字符渲染=%q 光标=%d", lines[0], col)
+	}
+
+	// 多字节字符被拆到两次 Write。
+	split := newTestScreen(t, 2, 4)
+	encoded := []byte("你")
+	split.parse(encoded[:1])
+	if lines, _, _ := split.View(); lines[0] != "    " {
+		t.Fatalf("不完整 UTF-8 不应渲染: %q", lines[0])
+	}
+	split.parse(encoded[1:])
+	lines, _, col = split.View()
+	if lines[0] != "你  " || col != 2 {
+		t.Fatalf("拆分 UTF-8 渲染=%q 光标=%d", lines[0], col)
+	}
+}
+
+// TestScreenEraseClearsWholeWideCharacter 验证 P11:擦除命中宽字符的
+// 任一格都清除整个字符,不留下半个字形。
+func TestScreenEraseClearsWholeWideCharacter(t *testing.T) {
+	s := newTestScreen(t, 1, 6)
+	s.parse([]byte("你x"))
+	// 光标移到宽字符的续格上再擦除到行尾。
+	s.parse([]byte("\x1b[1;2H\x1b[K"))
+	lines, _, _ := s.View()
+	if lines[0] != "      " {
+		t.Fatalf("擦除宽字符后=%q want 全空", lines[0])
+	}
+
+	back := newTestScreen(t, 1, 6)
+	back.parse([]byte("你x"))
+	back.parse([]byte("\x1b[1;1H\x1b[1K"))
+	lines, _, _ = back.View()
+	if lines[0] != "  x   " {
+		t.Fatalf("向左擦除宽字符后=%q want 两个空格的续格+保留 x", lines[0])
+	}
+}
