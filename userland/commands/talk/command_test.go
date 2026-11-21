@@ -178,7 +178,7 @@ func (f *fixture) start(args ...string) <-chan error {
 }
 
 // awaitDeadline 覆盖满负载 CI 的调度延迟;这些是功能等待而非性能门禁。
-const awaitDeadline = 30 * time.Second
+const awaitDeadline = 2 * time.Minute
 
 func (f *fixture) run(args ...string) <-chan error {
 	done := f.start(args...)
