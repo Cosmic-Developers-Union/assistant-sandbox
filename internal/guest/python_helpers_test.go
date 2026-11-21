@@ -24,6 +24,13 @@ const python312LibsDigest = "f8831c8c9716c74cac6e2d950ccac7585d64e5f3dfbebad7667
 // 标准库字节码与运行时共享库的 VM,返回连接。调用方负责关闭 VM。
 func python312Guest(t *testing.T) (*instance.VM, *instance.Connection) {
 	t.Helper()
+	return python312GuestWith(t, nil)
+}
+
+// python312GuestWith 与 python312Guest 相同,但允许测试装配宿主网络、
+// 出口策略等 VM 选项(M10/M11)。
+func python312GuestWith(t *testing.T, configure func(*instance.Options)) (*instance.VM, *instance.Connection) {
+	t.Helper()
 	apk := python312Asset(t, "testdata/python312/python3-3.12.16-r0.apk", python312APKDigest)
 	pyc := python312Asset(t, "testdata/python312/python312-pyc.tar.gz", python312PycDigest)
 	libs := python312Asset(t, "testdata/python312/python312-libs.tar.gz", python312LibsDigest)
@@ -31,12 +38,16 @@ func python312Guest(t *testing.T) (*instance.VM, *instance.Connection) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	machine, err := instance.New(t.Context(), instance.Options{
+	options := instance.Options{
 		Deterministic: false,
 		Seed:          1,
 		Session:       resources.Limits{Memory: 2 << 30, Work: 1 << 38},
 		Process:       resources.Limits{Memory: 1 << 30, Work: 1 << 38},
-	})
+	}
+	if configure != nil {
+		configure(&options)
+	}
+	machine, err := instance.New(t.Context(), options)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,17 +67,27 @@ func python312Guest(t *testing.T) (*instance.VM, *instance.Connection) {
 // runPython312 在客体中运行 python3.12 -S -c script,返回合并输出与退出码。
 func runPython312(t *testing.T, connection *instance.Connection, script string, timeout time.Duration) (string, uint8) {
 	t.Helper()
+	return runPython312Env(t, connection, script, timeout, nil)
+}
+
+// runPython312Env 在 runPython312 的基础上追加客体环境变量(M11 CA 配置)。
+func runPython312Env(t *testing.T, connection *instance.Connection, script string, timeout time.Duration, extra map[string]string) (string, uint8) {
+	t.Helper()
 	output := &bytes.Buffer{}
 	diagnostic := &bytes.Buffer{}
 	runCtx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
+	env := map[string]string{
+		"PATH": "/usr/bin:/bin", "HOME": "/work", "LANG": "C.UTF-8", "PYTHONHOME": "/usr",
+	}
+	for name, value := range extra {
+		env[name] = value
+	}
 	process, err := connection.Exec(runCtx, instance.ExecSpec{
 		Program: "/usr/bin/python3.12",
 		Args:    []string{"-S", "-c", script},
 		Dir:     "/work",
-		Env: map[string]string{
-			"PATH": "/usr/bin:/bin", "HOME": "/work", "LANG": "C.UTF-8", "PYTHONHOME": "/usr",
-		},
+		Env:     env,
 		Streams: fd.Streams{Output: output, Error: diagnostic},
 	})
 	if err != nil {

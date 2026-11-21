@@ -29,10 +29,14 @@ type INETSocket struct {
 	mu    sync.Mutex
 	state socketState
 	local Addr
+	peer  Addr
 
 	listener *TCPListener // TCP 监听形态
 	conn     *TCPConn     // TCP 连接形态
 	udp      *UDPEndpoint // UDP 形态
+
+	shutdownRead  bool // UDP 连接形态的 SHUT_RD
+	shutdownWrite bool // UDP 连接形态的 SHUT_WR
 
 	mu2       sync.Mutex
 	reuse     bool // SO_REUSEADDR 记录(M06)
@@ -215,8 +219,8 @@ func (s *INETSocket) Adopt(conn *TCPConn) {
 	s.mu.Unlock()
 }
 
-// Connect 连接到回环地址(M04):TCP 建立连接;UDP 记录默认目标
-// (无连接收发子集不支持 connect 形态,报 ENOTSUP)。
+// Connect 连接到回环地址(M04):TCP 建立连接;UDP 记录默认目标,
+// 之后的 send/recv/write/read 使用该对端(M10 的 c-ares DNS 路径)。
 func (s *INETSocket) Connect(ctx context.Context, addr Addr) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -243,8 +247,21 @@ func (s *INETSocket) Connect(ctx context.Context, addr Addr) error {
 		s.conn = conn
 		s.state = stateConnected
 		return nil
+	case s.typ == SockDatagram && (s.state == stateUnbound || s.state == stateBound):
+		if s.udp == nil {
+			endpoint, err := s.ns.BindUDP(Addr{Domain: AFInet, IP: s.ns.Loopback()})
+			if err != nil {
+				return err
+			}
+			endpoint.OnChange(s.base.notify)
+			s.udp = endpoint
+			s.local = endpoint.local
+		}
+		s.peer = addr
+		s.state = stateConnected
+		return nil
 	default:
-		return errno.NotSupported
+		return errno.Invalid
 	}
 }
 
@@ -255,6 +272,7 @@ func (s *INETSocket) SendMsg(ctx context.Context, buffers [][]byte, to *Addr, ri
 	conn := s.conn
 	udp := s.udp
 	state := s.state
+	peer := s.peer
 	s.mu.Unlock()
 	if rights != nil {
 		return 0, errno.Invalid // SCM_RIGHTS 仅 AF_UNIX
@@ -264,7 +282,10 @@ func (s *INETSocket) SendMsg(ctx context.Context, buffers [][]byte, to *Addr, ri
 	}
 	if udp != nil || s.typ == SockDatagram {
 		if to == nil {
-			return 0, errno.DestAddrReq
+			if state != stateConnected || !peer.IP.IsValid() {
+				return 0, errno.DestAddrReq
+			}
+			to = &peer
 		}
 		// 数据报:多 iovec 拼接为单个报文,不能拆成多个数据报。
 		total := 0
@@ -312,7 +333,15 @@ func (s *INETSocket) ReadContext(ctx context.Context, p []byte) (int, error) {
 	s.mu.Lock()
 	conn := s.conn
 	state := s.state
+	typ := s.typ
 	s.mu.Unlock()
+	if typ == SockDatagram {
+		if state != stateConnected {
+			return 0, errno.NotConn
+		}
+		loaded, _, err := s.RecvFrom(ctx, p)
+		return loaded, err
+	}
 	if state != stateConnected || conn == nil {
 		return 0, errno.NotConn
 	}
@@ -328,7 +357,19 @@ func (s *INETSocket) WriteContext(ctx context.Context, p []byte) (int, error) {
 	s.mu.Lock()
 	conn := s.conn
 	state := s.state
+	typ := s.typ
+	peer := s.peer
+	shutdownWrite := s.shutdownWrite
 	s.mu.Unlock()
+	if typ == SockDatagram {
+		if state != stateConnected || !peer.IP.IsValid() {
+			return 0, errno.NotConn
+		}
+		if shutdownWrite {
+			return 0, errno.BrokenPipe
+		}
+		return s.SendTo(ctx, p, peer)
+	}
 	if state != stateConnected || conn == nil {
 		return 0, errno.NotConn
 	}
@@ -342,12 +383,20 @@ func (s *INETSocket) Send(ctx context.Context, data []byte, to *Addr) (int, erro
 		typ := s.typ
 		state := s.state
 		conn := s.conn
+		peer := s.peer
+		shutdownWrite := s.shutdownWrite
 		s.mu.Unlock()
 		if typ == SockStream && state == stateConnected && conn != nil {
 			return conn.WriteContext(ctx, data)
 		}
 		if typ == SockDatagram {
-			return 0, errno.DestAddrReq
+			if state != stateConnected || !peer.IP.IsValid() {
+				return 0, errno.DestAddrReq
+			}
+			if shutdownWrite {
+				return 0, errno.BrokenPipe
+			}
+			return s.SendTo(ctx, data, peer)
 		}
 		return 0, errno.NotConn
 	}
@@ -360,10 +409,14 @@ func (s *INETSocket) Recv(ctx context.Context, buffer []byte) (int, Addr, error)
 	typ := s.typ
 	state := s.state
 	conn := s.conn
+	shutdownRead := s.shutdownRead
 	s.mu.Unlock()
 	if typ == SockStream && state == stateConnected && conn != nil {
 		loaded, err := conn.ReadContext(ctx, buffer)
 		return loaded, Addr{}, err
+	}
+	if typ == SockDatagram && state == stateConnected && shutdownRead {
+		return 0, Addr{}, nil
 	}
 	return s.RecvFrom(ctx, buffer)
 }
@@ -373,9 +426,14 @@ func (s *INETSocket) SendTo(ctx context.Context, data []byte, to Addr) (int, err
 	s.mu.Lock()
 	udp := s.udp
 	state := s.state
+	shutdownWrite := s.shutdownWrite
 	s.mu.Unlock()
-	if s.typ != SockDatagram || (state != stateBound && state != stateUnbound) {
+	if s.typ != SockDatagram ||
+		(state != stateBound && state != stateUnbound && state != stateConnected) {
 		return 0, errno.NotConn
+	}
+	if state == stateConnected && shutdownWrite {
+		return 0, errno.BrokenPipe
 	}
 	if udp == nil {
 		// 未绑定发送:自动绑定临时端口(发送端地址可见)。
@@ -401,9 +459,15 @@ func (s *INETSocket) SendTo(ctx context.Context, data []byte, to Addr) (int, err
 func (s *INETSocket) RecvFrom(ctx context.Context, buffer []byte) (int, Addr, error) {
 	s.mu.Lock()
 	udp := s.udp
+	state := s.state
+	peer := s.peer
+	shutdownRead := s.shutdownRead
 	s.mu.Unlock()
 	if s.typ != SockDatagram {
 		return 0, Addr{}, errno.NotConn
+	}
+	if state == stateConnected && shutdownRead {
+		return 0, Addr{}, nil
 	}
 	if udp == nil {
 		endpoint, err := s.ns.BindUDP(Addr{Domain: AFInet, IP: s.ns.Loopback()})
@@ -422,7 +486,18 @@ func (s *INETSocket) RecvFrom(ctx context.Context, buffer []byte) (int, Addr, er
 	}
 	// 非阻塞状态传递:端点与 socket 共享同一非阻塞旗标来源。
 	endpoint := &delegatingUDP{inner: udp, base: &s.base}
-	return endpoint.RecvFrom(ctx, buffer)
+	for {
+		loaded, from, err := endpoint.RecvFrom(ctx, buffer)
+		if err != nil {
+			return 0, Addr{}, err
+		}
+		// 已连接 UDP 只接收对端报文(Linux 语义);其他来源丢弃后继续等待。
+		if state == stateConnected && peer.IP.IsValid() &&
+			(from.IP != peer.IP || from.Port != peer.Port) {
+			continue
+		}
+		return loaded, from, nil
+	}
 }
 
 // delegatingUDP 把 socket 的非阻塞状态接到端点接收等待上。
@@ -468,6 +543,9 @@ func (s *INETSocket) PeerAddr() (Addr, bool) {
 	if s.state == stateConnected && s.conn != nil {
 		return s.conn.remote, true
 	}
+	if s.state == stateConnected && s.peer.IP.IsValid() {
+		return s.peer, true
+	}
 	return Addr{}, false
 }
 
@@ -476,6 +554,28 @@ func (s *INETSocket) Shutdown(how ShutdownHow) error {
 	s.mu.Lock()
 	conn := s.conn
 	state := s.state
+	typ := s.typ
+	if typ == SockDatagram {
+		if state != stateConnected {
+			s.mu.Unlock()
+			return errno.NotConn
+		}
+		switch how {
+		case ShutdownRead:
+			s.shutdownRead = true
+		case ShutdownWrite:
+			s.shutdownWrite = true
+		case ShutdownAll:
+			s.shutdownRead = true
+			s.shutdownWrite = true
+		default:
+			s.mu.Unlock()
+			return errno.Invalid
+		}
+		s.mu.Unlock()
+		s.base.notify()
+		return nil
+	}
 	s.mu.Unlock()
 	if state != stateConnected || conn == nil {
 		return errno.NotConn

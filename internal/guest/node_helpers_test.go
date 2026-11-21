@@ -23,13 +23,24 @@ const node22RuntimeDigest = "49c1cca5b16b0ada706083d8e50b003a3e79723d9d2e760cf34
 // node22Guest 启动一台装配真实 riscv64 Node.js 22.23.5 的 VM。
 func node22Guest(t *testing.T) (*instance.VM, *instance.Connection) {
 	t.Helper()
+	return node22GuestWith(t, nil)
+}
+
+// node22GuestWith 与 node22Guest 相同,但允许测试装配宿主网络、
+// 出口策略等 VM 选项(M10/M11)。
+func node22GuestWith(t *testing.T, configure func(*instance.Options)) (*instance.VM, *instance.Connection) {
+	t.Helper()
 	archive := python312Asset(t, "testdata/nodejs/node22-runtime.tar.gz", node22RuntimeDigest)
-	machine, err := instance.New(t.Context(), instance.Options{
+	options := instance.Options{
 		Deterministic: true,
 		Seed:          1,
 		Session:       resources.Limits{Memory: 4 << 30, Work: 1 << 38},
 		Process:       resources.Limits{Memory: 2 << 30, Work: 1 << 38},
-	})
+	}
+	if configure != nil {
+		configure(&options)
+	}
+	machine, err := instance.New(t.Context(), options)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,18 +95,28 @@ func extractNodeRuntime(t *testing.T, machine *instance.VM, archive []byte) {
 // runNode22 在客体中运行 /usr/bin/node,分别返回 stdout 与 stderr。
 func runNode22(t *testing.T, connection *instance.Connection, args []string, timeout time.Duration) (string, string, uint8) {
 	t.Helper()
+	return runNode22Env(t, connection, args, timeout, nil)
+}
+
+// runNode22Env 在 runNode22 的基础上追加客体环境变量(M11 CA 配置)。
+func runNode22Env(t *testing.T, connection *instance.Connection, args []string, timeout time.Duration, extra map[string]string) (string, string, uint8) {
+	t.Helper()
 	output := &bytes.Buffer{}
 	diagnostic := &bytes.Buffer{}
 	runCtx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
+	env := map[string]string{
+		"PATH": "/usr/bin:/bin", "HOME": "/work", "LANG": "C.UTF-8",
+		"NODE_ICU_DATA": "/usr/share/icu/76.1",
+	}
+	for name, value := range extra {
+		env[name] = value
+	}
 	process, err := connection.Exec(runCtx, instance.ExecSpec{
 		Program: "/usr/bin/node",
 		Args:    args,
 		Dir:     "/work",
-		Env: map[string]string{
-			"PATH": "/usr/bin:/bin", "HOME": "/work", "LANG": "C.UTF-8",
-			"NODE_ICU_DATA": "/usr/share/icu/76.1",
-		},
+		Env:     env,
 		Streams: fd.Streams{Output: output, Error: diagnostic},
 	})
 	if err != nil {

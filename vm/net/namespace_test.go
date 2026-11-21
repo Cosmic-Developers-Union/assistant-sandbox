@@ -311,6 +311,84 @@ func TestUDPDatagramBoundaries(t *testing.T) {
 	}
 }
 
+// TestUDPConnectedSendRecvFiltersPeer 验证 M10 前置:UDP connect 后
+// send/recv/write/read 使用默认对端,并丢弃其他来源的报文;shutdown
+// 分别停止发送与接收。
+func TestUDPConnectedSendRecvFiltersPeer(t *testing.T) {
+	ctx := context.Background()
+	ns := New()
+	defer ns.Close()
+
+	server, err := ns.BindUDP(loopback(5354))
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := ns.BindUDP(loopback(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := ns.NewINETSocket(SockDatagram)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Connect(ctx, loopback(5354)); err != nil {
+		t.Fatal(err)
+	}
+	if peer, ok := client.PeerAddr(); !ok || peer.Port != 5354 {
+		t.Fatalf("connected UDP peer=%+v ok=%v", peer, ok)
+	}
+	if _, err := client.Send(ctx, []byte("connected"), nil); err != nil {
+		t.Fatal(err)
+	}
+	buffer := make([]byte, 64)
+	n, _, err := server.RecvFrom(ctx, buffer)
+	if err != nil || string(buffer[:n]) != "connected" {
+		t.Fatalf("server 收到=%q err=%v", buffer[:n], err)
+	}
+	local, _ := client.LocalAddr()
+
+	// 非对端来源先到达,必须被已连接 socket 丢弃。
+	if _, err := ns.SendTo(ctx, other, []byte("stranger"), local); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ns.SendTo(ctx, server, []byte("peer"), local); err != nil {
+		t.Fatal(err)
+	}
+	n, from, err := client.Recv(ctx, buffer)
+	if err != nil || string(buffer[:n]) != "peer" || from.Port != 5354 {
+		t.Fatalf("connected recv=%q from=%+v err=%v", buffer[:n], from, err)
+	}
+
+	// write/read 走已连接默认对端。
+	if _, err := client.Write([]byte("write")); err != nil {
+		t.Fatal(err)
+	}
+	n, _, err = server.RecvFrom(ctx, buffer)
+	if err != nil || string(buffer[:n]) != "write" {
+		t.Fatalf("write 到达=%q err=%v", buffer[:n], err)
+	}
+	if _, err := ns.SendTo(ctx, server, []byte("read"), local); err != nil {
+		t.Fatal(err)
+	}
+	n, err = client.Read(buffer)
+	if err != nil || string(buffer[:n]) != "read" {
+		t.Fatalf("read=%q err=%v", buffer[:n], err)
+	}
+
+	if err := client.Shutdown(ShutdownWrite); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Write([]byte("late")); !errors.Is(err, errno.BrokenPipe) {
+		t.Fatalf("SHUT_WR 后写=%v want EPIPE", err)
+	}
+	if err := client.Shutdown(ShutdownRead); err != nil {
+		t.Fatal(err)
+	}
+	if n, _, err := client.Recv(ctx, buffer); err != nil || n != 0 {
+		t.Fatalf("SHUT_RD 后读 n=%d err=%v", n, err)
+	}
+}
+
 // TestPollReadinessForSockets 验证 M07 前置:socket 端点接入就绪图。
 func TestPollReadinessForSockets(t *testing.T) {
 	ctx := context.Background()
