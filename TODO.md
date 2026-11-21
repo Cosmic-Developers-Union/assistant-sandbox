@@ -334,7 +334,7 @@ Python 和 Node.js 的验收必须执行客体运行时，不能通过调用宿�
 - [ ] Q13 打通 Python 受控联网安装。验收：从可控包索引安装固定依赖，证书、网络策略和失败回滚生效。
 - [ ] Q14 建立 CPython 上游测试分片。验收：固定版本相关测试按模块运行，失败逐项建任务；必要模块不得靠标记 skip 达成发布。
 - [ ] Q15 建立 Node.js 客体构建产物流水线。验收：真实 Node/V8、内置库和所需数据按 A04/A05 构建，记录摘要与配置。
-- [ ] Q16 打通 Node 最小启动。验收：客体执行 `node --version` 和 JavaScript 算术脚本，无宿主代理执行。
+- [x] Q16 打通 Node 最小启动。验收：客体执行 `node --version` 和 JavaScript 算术脚本，无宿主代理执行。 证据:internal/guest/node_helpers_test.go + internal/guest/node_q16_test.go(真实客体 riscv64 Node.js 22.23.5-r0,运行时归档 internal/guest/testdata/nodejs/node22-runtime.tar.gz sha256=49c1cca5…10df,含 node、musl 与 17 个共享库、ICU 数据;`node --jitless --version` 输出 v22.23.5;`node --jitless /work/q16_arithmetic.js` 输出 {"node":"v22.23.5","arch":"riscv64","execPath":"/usr/bin/node","values":[7,3.5,5,"18446744073709551616"]},进程退出 0;全部经 VM 内核 exec,无宿主解释器或代理。修复前置缺陷:标准流 fcntl(F_GETFL)、MAP_NORESERVE、mremap EFAULT/子区间语义(见提交 4c006fa、50aca28)。Node 24.22.3 已能输出结果但在 V8 关闭期触发 external memory accounting 下溢,本项固定使用可稳定退出的 Node 22.23.5,Q15/Q24 继续处理 24.x 构建与模式验收)。测试:`go test ./internal/guest/ -run TestNode22MinimalStartup -count=1`(约 170s)。CI:Test 工作流 node-runtime 任务。
 - [ ] Q17 验证 Node 模块加载。验收：CommonJS、ESM、package.json 与动态 import 使用真实文件解析且结果正确。
 - [ ] Q18 验证 Node 文件和路径模块。验收：同步/异步文件读写、目录遍历和错误码正确，回调不丢失。
 - [ ] Q19 验证 libuv 事件循环。验收：timer、promise、I/O 并发与关闭顺序正确，空闲不忙等。
