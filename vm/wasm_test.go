@@ -76,6 +76,9 @@ func TestVMProductionCodeHasNoAmbientHostImports(t *testing.T) {
 
 		"filesystem/devfs/devfs.go": {"time": true},
 
+		// PTY 是宿主侧设备视图;time 仅用于 FileInfo.ModTime 的零值。
+		"vm/pty/pty.go": {"time": true},
+
 		"filesystem/packagefs/packagefs.go": {"time": true},
 
 		"userland/toolcompat/goawk/interp/interp.go":   {"os": true, "math/rand": true},

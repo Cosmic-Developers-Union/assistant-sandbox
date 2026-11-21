@@ -707,6 +707,12 @@ func (c *Core) fpToInt(pc uint64, instruction uint32, width uint, p fpParams, rs
 		c.write(rd, maxUint(bits, signed, negative))
 		return cpu.Continued, nil, nil
 	}
+	if a.class == classZero {
+		// ±0 转整数恒为 0;decodeFP 对零值不保留 rat,不能进入
+		// roundToInt(此前会解引用 nil 并 panic)。
+		c.write(rd, 0)
+		return cpu.Continued, nil, nil
+	}
 	value, exact := roundToInt(a.rat, mode, a.neg)
 	if !inRange(value, bits, signed) {
 		c.addFlags(flagNV)

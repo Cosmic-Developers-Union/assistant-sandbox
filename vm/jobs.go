@@ -543,8 +543,10 @@ func (k *Kernel) notifyTerminal(ctx context.Context, text string) error {
 
 func (k *Kernel) deliverMail(ctx context.Context, subject, body string) error {
 	user := "sandbox"
-	if source, err := k.services.Credentials(); err == nil {
-		if account, err := source.Lookup(ctx, 0); err == nil && account.Name != "" {
+	// 邮件收件人取声明身份(Services.Set.Identity),而不是可变的
+	// 每进程凭据表;后者用于文件访问,不能代表 VM 的声明身份。
+	if k.services.Set.Identity != nil {
+		if account, err := k.services.Set.Identity.Lookup(ctx, 0); err == nil && account.Name != "" {
 			user = account.Name
 		}
 	}

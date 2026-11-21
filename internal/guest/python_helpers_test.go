@@ -34,8 +34,8 @@ func python312Guest(t *testing.T) (*instance.VM, *instance.Connection) {
 	machine, err := instance.New(t.Context(), instance.Options{
 		Deterministic: false,
 		Seed:          1,
-		Session:       resources.Limits{Memory: 1 << 30, Work: 1 << 36},
-		Process:       resources.Limits{Memory: 512 << 20, Work: 1 << 36},
+		Session:       resources.Limits{Memory: 2 << 30, Work: 1 << 38},
+		Process:       resources.Limits{Memory: 1 << 30, Work: 1 << 38},
 	})
 	if err != nil {
 		t.Fatal(err)

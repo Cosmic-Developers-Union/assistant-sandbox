@@ -399,6 +399,11 @@ func populateSpace(ctx context.Context, space *memory.Table, plan *loaderelf.Pla
 
 func syscalls(ctx context.Context, process proc.Proc, space *memory.Table, plan *loaderelf.Plan, core cpu.Port) common.Syscalls {
 	handler := common.Syscalls{Memory: space, Sysname: "Linux", Nodename: "assistant-sandbox", Release: "6.8.0", Version: "#1", Machine: "riscv64", Domainname: "(none)", Cwd: process.Dir}
+	directory := common.NewDirectoryState(process.Dir)
+	handler.Directory = directory
+	if control, ok := process.Control.(proc.DirectoryControl); ok {
+		handler.Directories = control
+	}
 	identity := &common.Identity{PID: uint64(process.ID), PPID: uint64(process.Parent), TID: uint64(process.TID), TGID: uint64(process.TGID)}
 	handler.Identity = identity
 	if process.Resources == nil {
@@ -444,10 +449,11 @@ func syscalls(ctx context.Context, process proc.Proc, space *memory.Table, plan 
 					}
 				}
 				handler.Files = common.ProcessFiles{
-					System: system,
-					Store:  installer,
-					PID:    uint64(process.ID),
-					Dir:    process.Dir,
+					System:    system,
+					Store:     installer,
+					PID:       uint64(process.ID),
+					Dir:       process.Dir,
+					Directory: directory,
 				}
 			}
 		}

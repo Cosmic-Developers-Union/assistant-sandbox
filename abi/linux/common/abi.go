@@ -233,6 +233,12 @@ const (
 
 	SysPread64
 	SysPwrite64
+
+	SysFchmod
+	SysFchmodat
+
+	SysChdir
+	SysFchdir
 )
 
 func (s Syscall) String() string {
@@ -373,6 +379,14 @@ func (s Syscall) String() string {
 		return "ftruncate"
 	case SysFcntl:
 		return "fcntl"
+	case SysFchmod:
+		return "fchmod"
+	case SysFchmodat:
+		return "fchmodat"
+	case SysChdir:
+		return "chdir"
+	case SysFchdir:
+		return "fchdir"
 	case SysIoctl:
 		return "ioctl"
 	case SysPipe:

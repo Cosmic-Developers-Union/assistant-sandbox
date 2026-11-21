@@ -133,6 +133,11 @@ type FinishCurrentControl interface {
 	FinishCurrent(PID, uint8) error
 }
 
+// DirectoryControl 是每进程工作目录更新端口(chdir/fchdir,I01)。
+type DirectoryControl interface {
+	Chdir(ctx context.Context, path string) error
+}
+
 // VforkControl 是 vfork(H12)的进程创建端口:子进程是独立进程(新
 // PID,描述符表与信号处置按 fork 复制),地址空间与调用方共享;
 // 执行续接与父进程暂停(到子进程 exec/exit)由调用方完成。

@@ -187,7 +187,7 @@ const (
 	atFlagMask        = atSymlinkNoFollow | atEmptyPath
 )
 
-const DefaultBufferLimit = 1 << 20
+const DefaultBufferLimit = 1 << 24
 
 type Random interface {
 	Read(context.Context, []byte) (int, error)
@@ -241,6 +241,11 @@ type Syscalls struct {
 	Domainname string
 
 	Cwd string
+
+	// Directory 是每进程可变工作目录(chdir);未装配时回退 Cwd。
+	Directory *DirectoryState
+
+	Directories DirectoryControl
 
 	// CPUs 是客体可见的 CPU 数;0 按单 CPU 报告。
 	CPUs uint64
@@ -554,6 +559,14 @@ func (s Syscalls) dispatch(ctx context.Context, call Call) Reply {
 		return s.fstatfs(ctx, call)
 	case SysFcntl:
 		return s.fcntl(ctx, call)
+	case SysFchmod:
+		return s.fchmod(ctx, call)
+	case SysFchmodat:
+		return s.fchmodat(ctx, call)
+	case SysChdir:
+		return s.chdir(ctx, call)
+	case SysFchdir:
+		return s.fchdir(ctx, call)
 	case SysPipe2:
 		return s.pipe2(ctx, call)
 	case SysEventfd2:
@@ -2203,6 +2216,9 @@ func (s Syscalls) getcwd(ctx context.Context, call Call) Reply {
 		return Reply{Errno: errno.NotImplemented}
 	}
 	cwd := s.Cwd
+	if s.Directory != nil {
+		cwd = s.Directory.Get()
+	}
 	if cwd == "" {
 		cwd = "/"
 	}
@@ -2605,6 +2621,45 @@ func (s Syscalls) ftruncate(ctx context.Context, call Call) Reply {
 		return Reply{Errno: errno.NotSupported}
 	}
 	if err := target.Truncate(size); err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	return Reply{}
+}
+
+func (s Syscalls) fchmod(ctx context.Context, call Call) Reply {
+	if s.Files == nil || s.Descriptors == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	path := s.descriptorPath(ctx, call.Args[0])
+	if path == "" {
+		return Reply{Errno: errno.NotSupported}
+	}
+	return s.chmodPath(ctx, path, call.Args[1])
+}
+
+func (s Syscalls) fchmodat(ctx context.Context, call Call) Reply {
+	if s.Files == nil || s.Memory == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	path, code := s.readPath(ctx, call.Args[1])
+	if code != "" {
+		return Reply{Errno: code}
+	}
+	path, code = s.resolveDirPath(ctx, call.Args[0], path)
+	if code != "" {
+		return Reply{Errno: code}
+	}
+	return s.chmodPath(ctx, path, call.Args[2])
+}
+
+func (s Syscalls) chmodPath(ctx context.Context, path string, mode uint64) Reply {
+	chmodder, ok := s.Files.(interface {
+		Chmod(context.Context, string, stdfs.FileMode) error
+	})
+	if !ok {
+		return Reply{Errno: errno.NotSupported}
+	}
+	if err := chmodder.Chmod(ctx, path, stdfs.FileMode(mode&0o7777)); err != nil {
 		return Reply{Errno: errnoOf(err)}
 	}
 	return Reply{}

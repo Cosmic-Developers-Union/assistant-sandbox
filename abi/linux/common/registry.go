@@ -139,6 +139,10 @@ var handled = map[Syscall]bool{
 	SysWaitid:           true,
 	SysWrite:            true,
 	SysPwrite64:         true,
+	SysFchmod:           true,
+	SysFchmodat:         true,
+	SysChdir:            true,
+	SysFchdir:           true,
 	SysWritev:           true,
 }
 

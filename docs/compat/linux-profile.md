@@ -54,6 +54,8 @@ ENOSYS 清单,归 L/I/H 组后续任务。
 | mkdirat / unlinkat / renameat / renameat2 | I10;`TestDirectoryOperations*` |
 | symlinkat / linkat / readlinkat | I11;`TestLinkSymlinkLifecycle*` |
 | ftruncate / fsync / fdatasync / utimensat | I12;`TestUtimensatAndFtruncate*` |
+| fchmod / fchmodat | I13 权限位;`TestFchmodat*`、Q12 venv |
+| chdir / fchdir | I01 工作目录;Q12 venv、`TestChdir*` |
 | faccessat | G 组;`TestFaccessat*` |
 | fcntl / dup / dup3 | F_DUPFD、F_DUPFD_CLOEXEC、F_GETFL、F_SETFL;I05;`TestDupAndFcntlFlags*` |
 | ioctl | 终端属性/窗口大小与 PTY 控制子集(TCGETS/TCSETS/TIOCGWINSZ/TIOCSWINSZ/TIOCGPTN/TIOCSPTLCK,P08);`TestTerminalIoctl*`、`TestGuestPTYMasterSlave` |

@@ -528,3 +528,29 @@ func TestFloatMultiplyKeepsExponentFloor(t *testing.T) {
 		t.Fatalf("fmul.d = %#x err=%v want %#x", got, err, want)
 	}
 }
+
+// TestFloatConvertZeroToInt 是 fpToInt 的回归用例:±0 的 fpValue
+// 不保留有理数,转换必须直接返回 0 而不是解引用 nil。
+func TestFloatConvertZeroToInt(t *testing.T) {
+	setup := func(port *Core) {
+		if err := port.WriteFP(1, math.Float64bits(0)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		name   string
+		funct7 uint32
+		rs2    int
+	}{
+		{"fcvt.w.d", 0x61, 0},
+		{"fcvt.wu.d", 0x61, 1},
+		{"fcvt.l.d", 0x61, 2},
+		{"fcvt.lu.d", 0x61, 3},
+	} {
+		port := runFP(t, setup, encodeFPCvtInt(tc.funct7, 0, 3, 1, tc.rs2))
+		got, err := port.ReadRegister(3)
+		if err != nil || got != 0 {
+			t.Fatalf("%s 0.0 = %#x err=%v want 0", tc.name, got, err)
+		}
+	}
+}

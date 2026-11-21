@@ -2430,6 +2430,22 @@ func (c procControl) DiscardSpace() {
 	c.k.DiscardSpace(c.self)
 }
 
+// Chdir 更新调用进程的工作目录(chdir/fchdir,I01)。
+func (c procControl) Chdir(ctx context.Context, path string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if c.self == 0 {
+		return errno.NoProcess
+	}
+	c.k.mu.Lock()
+	defer c.k.mu.Unlock()
+	if c.k.closed {
+		return errno.Cancelled
+	}
+	return c.k.table.SetDir(c.self, path)
+}
+
 // SetPGID 按 setpgid(2) 语义把目标进程移入进程组(H11):pid=0 表示
 // 调用方自身,pgid=0 表示以目标进程号作为组号;负值 EINVAL。
 func (c procControl) SetPGID(pid int64, pgid int64) error {

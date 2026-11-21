@@ -499,10 +499,18 @@ type ProcessFiles struct {
 	PID uint64
 
 	Dir string
+
+	Directory *DirectoryState
 }
 
 // resolver 返回按工作目录解析客体路径的统一入口(I01)。
-func (p ProcessFiles) resolver() Resolver { return NewResolver(p.Dir) }
+func (p ProcessFiles) resolver() Resolver {
+	dir := p.Dir
+	if p.Directory != nil {
+		dir = p.Directory.Get()
+	}
+	return NewResolver(dir)
+}
 
 func (p ProcessFiles) Mkdir(ctx context.Context, path string, mode uint32) error {
 	if p.System == nil {
@@ -716,6 +724,22 @@ func (p ProcessFiles) resolveNoFollow(ctx context.Context, name string) (string,
 		return "", err
 	}
 	return final, nil
+}
+
+// Chmod 更新路径权限位(I13);文件系统不支持时明确 ENOTSUP。
+func (p ProcessFiles) Chmod(ctx context.Context, path string, mode stdfs.FileMode) error {
+	if p.System == nil {
+		return errno.Wrap(errno.NotImplemented, "文件端口未装配")
+	}
+	target, err := p.resolver().Resolve(path)
+	if err != nil {
+		return err
+	}
+	chmodder, ok := p.System.(fs.Modes)
+	if !ok {
+		return errno.Wrap(errno.NotSupported, "文件系统不支持 chmod")
+	}
+	return chmodder.Chmod(ctx, target, stdfs.FileMode(uint32(mode)&0o7777))
 }
 
 func rawOpenFlags(flags OpenFlags) uint32 {

@@ -43,6 +43,10 @@ const (
 	numberWritev           = 66
 	numberPread64          = 67
 	numberPwrite64         = 68
+	numberFchmod           = 52
+	numberFchmodat         = 53
+	numberChdir            = 49
+	numberFchdir           = 50
 	numberUname            = 160
 	numberClockNanosleep   = 115
 	numberGetcwd           = 17
@@ -339,6 +343,14 @@ func syscallOf(number uint64) common.Syscall {
 		return common.SysPread64
 	case numberPwrite64:
 		return common.SysPwrite64
+	case numberFchmod:
+		return common.SysFchmod
+	case numberFchmodat:
+		return common.SysFchmodat
+	case numberChdir:
+		return common.SysChdir
+	case numberFchdir:
+		return common.SysFchdir
 	case numberUname:
 		return common.SysUname
 	case numberGetcwd:

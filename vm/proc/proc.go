@@ -547,6 +547,17 @@ func (t *Table) SetSID(id PID) error {
 	return nil
 }
 
+// SetDir 更新进程工作目录(chdir)。调用方必须持有表锁或经内核锁调用。
+func (t *Table) SetDir(id PID, dir string) error {
+	p, ok := t.entries[id]
+	if !ok {
+		return errno.NoProcess
+	}
+	p.Dir = dir
+	t.entries[id] = p
+	return nil
+}
+
 func (t *Table) Replace(id PID, program string, args []string, dir string, env map[string]string) (before, after Proc, err error) {
 	if program == "" || dir == "" || dir[0] != '/' {
 		return Proc{}, Proc{}, fmt.Errorf("进程需要程序名与客体绝对目录: %w", errno.Invalid)
