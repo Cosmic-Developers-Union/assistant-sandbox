@@ -29,3 +29,12 @@
 - musl 1.2.6,MIT。来源:https://musl.libc.org/releases/musl-1.2.6.tar.gz 。
 - Alpine 3.22.7 minirootfs(riscv64) 构建根,各软件包许可随根文件系统
   /usr/share/licenses 提供。来源:https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/riscv64/ 。
+
+N10 真实 Bash 与基础工具验收资产(Alpine 3.22 riscv64 官方包;
+逐文件 sha256 锁定于 internal/guest/n10_test.go):
+
+- Bash 5.2.37-r0,GPL-3.0-or-later。包:https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/bash-5.2.37-r0.apk (sha256=0e4c048a…d719);二进制 bin/bash sha256=009e1bab…a94。完整许可 [GPL-3.0.txt](licenses/GPL-3.0.txt)。
+- BusyBox 1.37.0-r20(static),GPL-2.0。包:https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/busybox-static-1.37.0-r20.apk (sha256=29072f0a…f31c);二进制 bin/busybox.static sha256=62831fb7…d704。完整许可 [GPL-2.0.txt](licenses/GPL-2.0.txt)。
+- GNU Readline 8.2.13-r1,GPL-3.0-or-later。包:https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/readline-8.2.13-r1.apk (sha256=4b6c7e5f…05fa);库 sha256=e8cce022…cca2。完整许可 [GPL-3.0.txt](licenses/GPL-3.0.txt)。
+- NCurses 6.5_p20250503-r0,X11。包:https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/libncursesw-6.5_p20250503-r0.apk (sha256=7d88384b…9607);库 sha256=28e544f2…c3e4。完整许可 [ncurses-X11.txt](licenses/ncurses-X11.txt)。
+- musl 1.2.6 动态加载器沿用 A04 固定版本(testdata/lib/ld-musl-riscv64.so.1 sha256=4fdd77ec…4123),MIT。
