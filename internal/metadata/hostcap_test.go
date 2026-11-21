@@ -15,7 +15,7 @@ import (
 
 var hostImportAllowlist = map[string]map[string]bool{
 	"os": {
-		"cache.go": true, "fs.go": true, "stream.go": true, "wasm.go": true,
+		"internal/legacy/cache.go": true, "internal/legacy/fs.go": true, "internal/legacy/stream.go": true, "internal/legacy/wasm.go": true,
 		"cmd/assistant-sandbox-build/main.go": true, "cmd/assistant-sandbox/main.go": true,
 		"filesystem/persistent/store.go": true,
 		"guest/cmd/main.go":              true,
@@ -33,7 +33,7 @@ var hostImportAllowlist = map[string]map[string]bool{
 		"userland/toolcompat/goawk/interp/io.go": true, "userland/toolcompat/goawk/interp/iostream.go": true,
 	},
 	"syscall": {
-		"fs_unix.go": true,
+		"internal/legacy/fs_unix.go":              true,
 		"platform/filesystem/accesstime_linux.go": true, "platform/filesystem/accesstime_wasi.go": true,
 		"platform/filesystem/fifo_linux.go": true, "platform/filesystem/space_linux.go": true,
 		"platform/filesystem/timestamps_wasi.go":       true,

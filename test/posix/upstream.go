@@ -21,7 +21,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	sandbox "github.com/Cosmic-Developers-Union/assistant-sandbox"
+	sandbox "github.com/Cosmic-Developers-Union/assistant-sandbox/internal/legacy"
 )
 
 //go:embed upstream.json

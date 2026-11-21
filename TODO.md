@@ -360,7 +360,7 @@ Python 和 Node.js 的验收必须执行客体运行时，不能通过调用宿�
 - [x] R03 增加独立的镜像选择与校验入口。验收：版本不兼容、摘要损坏和缺少镜像均在启动前报告，SDK 不隐式下载。 证据:vm/image/selector.go(Catalog:Add/Select;Select 从已登记命名镜像取用,缺失报 ENOENT,再经 Verify 校验版本/架构/ABI/入口/逐文件摘要,失败 EPROTO;无网络或隐式下载路径)+ 复用 manifest.go Verify/Store。测试:vm/image TestCatalogSelectsOnlyVerifiedImages(可用镜像通过;缺失 ENOENT;损坏摘要与错误架构 EPROTO;重复登记 EEXIST)。测试:`go test ./vm/image/ -run TestCatalog -count=1`。CI:Test 工作流 integration 任务。
 - [x] R04 提供连接与会话标识。验收：同进程中的 VM、Console 和 Terminal 可明确寻址，不以宿主目录隐式代表 VM。 证据:model/model.go 新增可选 Identified{ID() string};deployment/native/model.go 为 ModelVM 分配进程内唯一 vm-<n>,Console 标识 <vm>/console 且稳定,每次 Attach/Connect 生成 <vm>/terminal/<n> 的唯一句柄标识;Terminal ID 在断开后仍可查询,不包含宿主目录。测试:deployment/native TestModelVMExplicitIdentifiers(两台 VM 标识不同、Console 稳定、两个 Attach 与独立 Connect 标识互不相同且不含宿主工作区路径)。测试:`go test ./deployment/native/ -run TestModelVMExplicitIdentifiers -count=1`。CI:Test 工作流 integration 任务。
 - [x] R05 将 MessageSource 与通用 VM 解耦。验收：不提供 agent 消息也能运行全部 VM 核心用例，消息作为显式可选能力注入。 证据:model.VM/Console/Terminal/Bash/Filesystem 契约没有 MessageSource 字段,创建路径 native.NewModelVM(Options{Seed}) 不要求任何消息来源;model.Suite 六向量与 P15 扩展用例全部在该工厂上运行;旧 WASI Runtime.Config.MessageSource 仅保留在待 R06 收敛的旧入口,不进入通用 VM。测试:`go test ./model/ ./deployment/native/ -count=1`(真实 VM 工厂无消息来源通过全部核心向量)。CI:Test 工作流 integration 任务。
-- [ ] R06 收敛旧 Runtime/Session 与 contract.Session 入口。验收：公开入口均落到同一资源所有权模型，迁移或删除策略有调用方证据。
+- [x] R06 收敛旧 Runtime/Session 与 contract.Session 入口。验收：公开入口均落到同一资源所有权模型，迁移或删除策略有调用方证据。 证据:旧 WASI Runtime/Session(wasm.go/session.go/executor.go/fs.go/modules.go/messages.go/stream.go/devices.go/cache.go)整体移入 internal/legacy 并从公开根包移除,旧根包 WASI 测试随退役删除;internal/metadata/legacy_test.go TestLegacyRuntimeOnlyUsedByPOSIXGate 扫描生产源码,只允许 test/posix/main.go 与 upstream.go 显式导入 legacy,证明旧入口不再是公开调用面。公开 VM 入口统一为 instance.VM/model.VM(deployment/native.ModelVM),CLI 已按 R02 走 instance;contract.Session 仅由 deployment/native.Runtime.Session 以新 VM 实现并由 contract.Suite 验证。测试:`go build ./...`、`go test ./test/posix/ ./internal/metadata/ ./deployment/native/ -count=1`。CI:Test 工作流 integration/posix 任务。
 - [ ] R07 接入 assistant 的 VM 适配。验收：assistant 依赖已发布模块与镜像，无本机 replace 路径；消息、文件和执行场景通过集成测试。
 - [x] R08 验证原有工作流迁移。验收：执行命令、连续修改文件、断开重连和取消等待在新模型中有明确结果。 证据:deployment/native/migration_test.go 使用公开的 native.NewModelVM(model.VM)与 Connect/Terminal.Bash:同一 VM 内执行命令并读取 /work 文件;连续两次修改同一文件得到twothree;断开一个连接后重新 Connect,文件仍为twothree;已取消上下文的 Run 返回错误且不执行,随后同一连接仍能正常执行 alive。全部路径共享同一内核与文件系统,不另造 VM。测试:deployment/native TestModelVMOriginalWorkflowsMigrate。测试:`go test ./deployment/native/ -run TestModelVMOriginalWorkflowsMigrate -count=1`。CI:Test 工作流 integration 任务。
 - [ ] R09 提供独立开发入门。验收：新检出按文档完成构建、创建 VM、运行 Bash/Python/Node、关闭 VM，所有命令由 CI 复验。
@@ -373,25 +373,25 @@ Python 和 Node.js 的验收必须执行客体运行时，不能通过调用宿�
 
 采用此路径时，Linux 系统调用的应用语义由客体 Linux 内核提供；G 至 O 中的验收仍必须通过，但不要求重复在宿主重写 Linux 内核实现。A10 必须记录每项能力由哪一层提供。
 
-- [x] S01 固定机器型号、启动协议和设备布局。验收：内核、固件、设备树与 VM 配置使用同一份可查询规格。 证据:不适用——A02 ADR(docs/adr/vm-architecture.md)选择 Linux ABI 虚拟机路线,不启动原版 Linux 内核;本项属于 S 组,整组判定不适用,等价语义由 G–O 黑盒验收与 A09 差分执行器承担。
-- [x] S02 实现或接入目标特权级状态。验收：特权指令、CSR 访问和非法访问异常通过参考测试。 证据:不适用——A02 ADR(docs/adr/vm-architecture.md)选择 Linux ABI 虚拟机路线,不启动原版 Linux 内核;本项属于 S 组,整组判定不适用,等价语义由 G–O 黑盒验收与 A09 差分执行器承担。
-- [x] S03 实现或接入异常委派及特权级切换。验收：用户陷入内核并返回，PC 与状态寄存器正确。 证据:不适用——A02 ADR(docs/adr/vm-architecture.md)选择 Linux ABI 虚拟机路线,不启动原版 Linux 内核;本项属于 S 组,整组判定不适用,等价语义由 G–O 黑盒验收与 A09 差分执行器承担。
-- [x] S04 实现或接入目标页表/MMU。验收：地址转换、权限、缺页和 TLB 失效通过参考测试。 证据:不适用——A02 ADR(docs/adr/vm-architecture.md)选择 Linux ABI 虚拟机路线,不启动原版 Linux 内核;本项属于 S 组,整组判定不适用,等价语义由 G–O 黑盒验收与 A09 差分执行器承担。
-- [x] S05 建立物理地址空间与 MMIO 总线。验收：RAM、只读区和设备区访问按区域分派，越界可诊断。 证据:不适用——A02 ADR(docs/adr/vm-architecture.md)选择 Linux ABI 虚拟机路线,不启动原版 Linux 内核;本项属于 S 组,整组判定不适用,等价语义由 G–O 黑盒验收与 A09 差分执行器承担。
-- [x] S06 接入启动固件及 SBI 或等效接口。验收：固定固件启动并完成内核入口交接。 证据:不适用——A02 ADR(docs/adr/vm-architecture.md)选择 Linux ABI 虚拟机路线,不启动原版 Linux 内核;本项属于 S 组,整组判定不适用,等价语义由 G–O 黑盒验收与 A09 差分执行器承担。
-- [x] S07 提供内核启动所需计时器。验收：时钟中断驱动内核 tick，等待和超时能前进。 证据:不适用——A02 ADR(docs/adr/vm-architecture.md)选择 Linux ABI 虚拟机路线,不启动原版 Linux 内核;本项属于 S 组,整组判定不适用,等价语义由 G–O 黑盒验收与 A09 差分执行器承担。
-- [x] S08 提供中断控制器。验收：设备触发、屏蔽、确认和结束中断行为正确。 证据:不适用——A02 ADR(docs/adr/vm-architecture.md)选择 Linux ABI 虚拟机路线,不启动原版 Linux 内核;本项属于 S 组,整组判定不适用,等价语义由 G–O 黑盒验收与 A09 差分执行器承担。
-- [x] S09 提供启动串口设备。验收：捕获内核早期日志，并向客体输入字节。 证据:不适用——A02 ADR(docs/adr/vm-architecture.md)选择 Linux ABI 虚拟机路线,不启动原版 Linux 内核;本项属于 S 组,整组判定不适用,等价语义由 G–O 黑盒验收与 A09 差分执行器承担。
-- [x] S10 生成设备树或后端要求的机器描述。验收：内核识别 CPU、内存、中断与所有已启用设备。 证据:不适用——A02 ADR(docs/adr/vm-architecture.md)选择 Linux ABI 虚拟机路线,不启动原版 Linux 内核;本项属于 S 组,整组判定不适用,等价语义由 G–O 黑盒验收与 A09 差分执行器承担。
-- [x] S11 启动固定原版 Linux 内核至 initramfs。验收：内核日志可追溯，执行真实 `/init` 并能关闭机器。 证据:不适用——A02 ADR(docs/adr/vm-architecture.md)选择 Linux ABI 虚拟机路线,不启动原版 Linux 内核;本项属于 S 组,整组判定不适用,等价语义由 G–O 黑盒验收与 A09 差分执行器承担。
-- [x] S12 接入块设备。验收：客体对测试磁盘读写、刷盘，重启后文件内容保持。 证据:不适用——A02 ADR(docs/adr/vm-architecture.md)选择 Linux ABI 虚拟机路线,不启动原版 Linux 内核;本项属于 S 组,整组判定不适用,等价语义由 G–O 黑盒验收与 A09 差分执行器承担。
-- [x] S13 从持久根磁盘启动用户空间。验收：真实 init、Bash、procfs、devfs 正常工作。 证据:不适用——A02 ADR(docs/adr/vm-architecture.md)选择 Linux ABI 虚拟机路线,不启动原版 Linux 内核;本项属于 S 组,整组判定不适用,等价语义由 G–O 黑盒验收与 A09 差分执行器承担。
-- [x] S14 接入虚拟网卡和后端网络。验收：客体接口获得配置，回环、受控出口和端口映射通过 M 组验收。 证据:不适用——A02 ADR(docs/adr/vm-architecture.md)选择 Linux ABI 虚拟机路线,不启动原版 Linux 内核;本项属于 S 组,整组判定不适用,等价语义由 G–O 黑盒验收与 A09 差分执行器承担。
-- [x] S15 接入客体随机设备。验收：内核和运行时随机读取不会永久阻塞，测试模式可控。 证据:不适用——A02 ADR(docs/adr/vm-architecture.md)选择 Linux ABI 虚拟机路线,不启动原版 Linux 内核;本项属于 S 组,整组判定不适用,等价语义由 G–O 黑盒验收与 A09 差分执行器承担。
-- [x] S16 接入宿主授权目录共享设备。验收：客体可访问指定目录，不能访问未授权宿主路径。 证据:不适用——A02 ADR(docs/adr/vm-architecture.md)选择 Linux ABI 虚拟机路线,不启动原版 Linux 内核;本项属于 S 组,整组判定不适用,等价语义由 G–O 黑盒验收与 A09 差分执行器承担。
-- [x] S17 验证多核与原子同步。验收：多个客体 CPU 启动，Linux 多线程压力测试通过，或明确配置为单核但支持抢占线程。 证据:不适用——A02 ADR(docs/adr/vm-architecture.md)选择 Linux ABI 虚拟机路线,不启动原版 Linux 内核;本项属于 S 组,整组判定不适用,等价语义由 G–O 黑盒验收与 A09 差分执行器承担。
-- [x] S18 接入 VM API、Console 与生命周期。验收：P 组新模型用例运行于启动真实 Linux 的 VM，Shutdown 包含内核退出与强制停止。 证据:不适用——A02 ADR(docs/adr/vm-architecture.md)选择 Linux ABI 虚拟机路线,不启动原版 Linux 内核;本项属于 S 组,整组判定不适用,等价语义由 G–O 黑盒验收与 A09 差分执行器承担。
-- [x] S19 在全系统镜像执行 Q 组运行时验收。验收：CPython、Node、pip、npm 与原生扩展通过同一套发布门禁。 证据:不适用——A02 ADR(docs/adr/vm-architecture.md)选择 Linux ABI 虚拟机路线,不启动原版 Linux 内核;本项属于 S 组,整组判定不适用,等价语义由 G–O 黑盒验收与 A09 差分执行器承担。
+- [x] S01 固定机器型号、启动协议和设备布局。验收：内核、固件、设备树与 VM 配置使用同一份可查询规格。 证据:不适用——A02 ADR(docs/adr/vm-architecture.md)选择 Linux ABI 虚拟机路线,不启动原版 Linux 内核;本项属于 S 组,整组判定不适用,等价语义由 G–O 黑盒验收与 A09 差分执行器承担。 测试:不适用(A02 ADR);CI:不适用(A02 ADR)。
+- [x] S02 实现或接入目标特权级状态。验收：特权指令、CSR 访问和非法访问异常通过参考测试。 证据:不适用——A02 ADR(docs/adr/vm-architecture.md)选择 Linux ABI 虚拟机路线,不启动原版 Linux 内核;本项属于 S 组,整组判定不适用,等价语义由 G–O 黑盒验收与 A09 差分执行器承担。 测试:不适用(A02 ADR);CI:不适用(A02 ADR)。
+- [x] S03 实现或接入异常委派及特权级切换。验收：用户陷入内核并返回，PC 与状态寄存器正确。 证据:不适用——A02 ADR(docs/adr/vm-architecture.md)选择 Linux ABI 虚拟机路线,不启动原版 Linux 内核;本项属于 S 组,整组判定不适用,等价语义由 G–O 黑盒验收与 A09 差分执行器承担。 测试:不适用(A02 ADR);CI:不适用(A02 ADR)。
+- [x] S04 实现或接入目标页表/MMU。验收：地址转换、权限、缺页和 TLB 失效通过参考测试。 证据:不适用——A02 ADR(docs/adr/vm-architecture.md)选择 Linux ABI 虚拟机路线,不启动原版 Linux 内核;本项属于 S 组,整组判定不适用,等价语义由 G–O 黑盒验收与 A09 差分执行器承担。 测试:不适用(A02 ADR);CI:不适用(A02 ADR)。
+- [x] S05 建立物理地址空间与 MMIO 总线。验收：RAM、只读区和设备区访问按区域分派，越界可诊断。 证据:不适用——A02 ADR(docs/adr/vm-architecture.md)选择 Linux ABI 虚拟机路线,不启动原版 Linux 内核;本项属于 S 组,整组判定不适用,等价语义由 G–O 黑盒验收与 A09 差分执行器承担。 测试:不适用(A02 ADR);CI:不适用(A02 ADR)。
+- [x] S06 接入启动固件及 SBI 或等效接口。验收：固定固件启动并完成内核入口交接。 证据:不适用——A02 ADR(docs/adr/vm-architecture.md)选择 Linux ABI 虚拟机路线,不启动原版 Linux 内核;本项属于 S 组,整组判定不适用,等价语义由 G–O 黑盒验收与 A09 差分执行器承担。 测试:不适用(A02 ADR);CI:不适用(A02 ADR)。
+- [x] S07 提供内核启动所需计时器。验收：时钟中断驱动内核 tick，等待和超时能前进。 证据:不适用——A02 ADR(docs/adr/vm-architecture.md)选择 Linux ABI 虚拟机路线,不启动原版 Linux 内核;本项属于 S 组,整组判定不适用,等价语义由 G–O 黑盒验收与 A09 差分执行器承担。 测试:不适用(A02 ADR);CI:不适用(A02 ADR)。
+- [x] S08 提供中断控制器。验收：设备触发、屏蔽、确认和结束中断行为正确。 证据:不适用——A02 ADR(docs/adr/vm-architecture.md)选择 Linux ABI 虚拟机路线,不启动原版 Linux 内核;本项属于 S 组,整组判定不适用,等价语义由 G–O 黑盒验收与 A09 差分执行器承担。 测试:不适用(A02 ADR);CI:不适用(A02 ADR)。
+- [x] S09 提供启动串口设备。验收：捕获内核早期日志，并向客体输入字节。 证据:不适用——A02 ADR(docs/adr/vm-architecture.md)选择 Linux ABI 虚拟机路线,不启动原版 Linux 内核;本项属于 S 组,整组判定不适用,等价语义由 G–O 黑盒验收与 A09 差分执行器承担。 测试:不适用(A02 ADR);CI:不适用(A02 ADR)。
+- [x] S10 生成设备树或后端要求的机器描述。验收：内核识别 CPU、内存、中断与所有已启用设备。 证据:不适用——A02 ADR(docs/adr/vm-architecture.md)选择 Linux ABI 虚拟机路线,不启动原版 Linux 内核;本项属于 S 组,整组判定不适用,等价语义由 G–O 黑盒验收与 A09 差分执行器承担。 测试:不适用(A02 ADR);CI:不适用(A02 ADR)。
+- [x] S11 启动固定原版 Linux 内核至 initramfs。验收：内核日志可追溯，执行真实 `/init` 并能关闭机器。 证据:不适用——A02 ADR(docs/adr/vm-architecture.md)选择 Linux ABI 虚拟机路线,不启动原版 Linux 内核;本项属于 S 组,整组判定不适用,等价语义由 G–O 黑盒验收与 A09 差分执行器承担。 测试:不适用(A02 ADR);CI:不适用(A02 ADR)。
+- [x] S12 接入块设备。验收：客体对测试磁盘读写、刷盘，重启后文件内容保持。 证据:不适用——A02 ADR(docs/adr/vm-architecture.md)选择 Linux ABI 虚拟机路线,不启动原版 Linux 内核;本项属于 S 组,整组判定不适用,等价语义由 G–O 黑盒验收与 A09 差分执行器承担。 测试:不适用(A02 ADR);CI:不适用(A02 ADR)。
+- [x] S13 从持久根磁盘启动用户空间。验收：真实 init、Bash、procfs、devfs 正常工作。 证据:不适用——A02 ADR(docs/adr/vm-architecture.md)选择 Linux ABI 虚拟机路线,不启动原版 Linux 内核;本项属于 S 组,整组判定不适用,等价语义由 G–O 黑盒验收与 A09 差分执行器承担。 测试:不适用(A02 ADR);CI:不适用(A02 ADR)。
+- [x] S14 接入虚拟网卡和后端网络。验收：客体接口获得配置，回环、受控出口和端口映射通过 M 组验收。 证据:不适用——A02 ADR(docs/adr/vm-architecture.md)选择 Linux ABI 虚拟机路线,不启动原版 Linux 内核;本项属于 S 组,整组判定不适用,等价语义由 G–O 黑盒验收与 A09 差分执行器承担。 测试:不适用(A02 ADR);CI:不适用(A02 ADR)。
+- [x] S15 接入客体随机设备。验收：内核和运行时随机读取不会永久阻塞，测试模式可控。 证据:不适用——A02 ADR(docs/adr/vm-architecture.md)选择 Linux ABI 虚拟机路线,不启动原版 Linux 内核;本项属于 S 组,整组判定不适用,等价语义由 G–O 黑盒验收与 A09 差分执行器承担。 测试:不适用(A02 ADR);CI:不适用(A02 ADR)。
+- [x] S16 接入宿主授权目录共享设备。验收：客体可访问指定目录，不能访问未授权宿主路径。 证据:不适用——A02 ADR(docs/adr/vm-architecture.md)选择 Linux ABI 虚拟机路线,不启动原版 Linux 内核;本项属于 S 组,整组判定不适用,等价语义由 G–O 黑盒验收与 A09 差分执行器承担。 测试:不适用(A02 ADR);CI:不适用(A02 ADR)。
+- [x] S17 验证多核与原子同步。验收：多个客体 CPU 启动，Linux 多线程压力测试通过，或明确配置为单核但支持抢占线程。 证据:不适用——A02 ADR(docs/adr/vm-architecture.md)选择 Linux ABI 虚拟机路线,不启动原版 Linux 内核;本项属于 S 组,整组判定不适用,等价语义由 G–O 黑盒验收与 A09 差分执行器承担。 测试:不适用(A02 ADR);CI:不适用(A02 ADR)。
+- [x] S18 接入 VM API、Console 与生命周期。验收：P 组新模型用例运行于启动真实 Linux 的 VM，Shutdown 包含内核退出与强制停止。 证据:不适用——A02 ADR(docs/adr/vm-architecture.md)选择 Linux ABI 虚拟机路线,不启动原版 Linux 内核;本项属于 S 组,整组判定不适用,等价语义由 G–O 黑盒验收与 A09 差分执行器承担。 测试:不适用(A02 ADR);CI:不适用(A02 ADR)。
+- [x] S19 在全系统镜像执行 Q 组运行时验收。验收：CPython、Node、pip、npm 与原生扩展通过同一套发布门禁。 证据:不适用——A02 ADR(docs/adr/vm-architecture.md)选择 Linux ABI 虚拟机路线,不启动原版 Linux 内核;本项属于 S 组,整组判定不适用,等价语义由 G–O 黑盒验收与 A09 差分执行器承担。 测试:不适用(A02 ADR);CI:不适用(A02 ADR)。
 
 ## T. 可观测性、状态与性能
 

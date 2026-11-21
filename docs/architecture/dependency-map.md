@@ -21,7 +21,7 @@ go list -f '{{.ImportPath}} {{range .Imports}}{{.}};{{end}}' ./... \
 cmd/assistant-sandbox ─┐
 cmd/assistant-sandbox-build ──> internal/build
                        │
-test/posix ────────────┼──> (根包 SDK: wasm.go / session.go / executor.go)
+test/posix ────────────┼──> (internal/legacy: wasm.go / session.go / executor.go)
                        │         │
                        │         ├──> deployment/wasm ──> deployment(矩阵)
                        │         │        └──> executor/wasm(wazero WASI)──> vm/executable
@@ -46,7 +46,7 @@ test/posix ────────────┼──> (根包 SDK: wasm.go /
 
 | 包 | 职责 | 关键源码 | 直接内部依赖 |
 | --- | --- | --- | --- |
-| `(根包)` | 公开 SDK:`Runtime` 创建/会话/缓存/模块加载/设备;当前公开入口仍是 WASI 模型 | [wasm.go](../../wasm.go)、[session.go](../../session.go)、[executor.go](../../executor.go)、[fs.go](../../fs.go)、[modules.go](../../modules.go)、[messages.go](../../messages.go)、[stream.go](../../stream.go) | `internal/protocol` |
+| `internal/legacy` | 已退役 WASI Runtime/Session,仅 POSIX gate 显式调用;公开 VM 入口为 `instance`/`model` | [wasm.go](../../internal/legacy/wasm.go)、[session.go](../../internal/legacy/session.go)、[executor.go](../../internal/legacy/executor.go)、[fs.go](../../internal/legacy/fs.go)、[modules.go](../../internal/legacy/modules.go)、[messages.go](../../internal/legacy/messages.go)、[stream.go](../../internal/legacy/stream.go) | `internal/protocol` |
 | `cmd/assistant-sandbox` | CLI(单次执行/持续会话),调用根包 SDK | [main.go](../../cmd/assistant-sandbox/main.go) | 根包 |
 | `cmd/assistant-sandbox-build` | 客体构建入口(生成 WASI bash 客体) | [main.go](../../cmd/assistant-sandbox-build/main.go) | `internal/build` |
 | `internal/build` | 客体构建器:Go 工具链交叉编译 wasip1 + gzip;可重复构建 | [build.go](../../internal/build/build.go)、[interpreter.go](../../internal/build/interpreter.go) | 无(独立) |
@@ -143,7 +143,7 @@ test/posix ────────────┼──> (根包 SDK: wasm.go /
 4. `executor/cpu/riscv64.Core.Step` 解释指令;`ECALL` 陷入 [abi/linux/riscv64/adapter.go](../../abi/linux/riscv64/adapter.go) 按编号分派到 [abi/linux/common](../../abi/linux/common/registry.go)。
 5. 系统调用语义落到内核能力端口:文件 → `filesystem/*` 实现 `vm/fs` 契约;描述符 → `vm/fd`;信号 → `vm/signal`;等待 → `vm/proc` + `vm/wait`。
 
-旧 WASI 链(当前公开 SDK):`wasm.New` → `executor/wasm`(wazero)→ `abi/wasi` → 同一套 `vm/{errno,signal}`;客体侧用户态在 `guest` + `userland/*` 内。
+退役 WASI 链(仅 POSIX gate):`internal/legacy.New` → `executor/wasm`(wazero)→ `abi/wasi` → 同一套 `vm/{errno,signal}`;公开 VM 链为 `instance/model`。
 
 ## 重复实现清单(待 C/R 组收敛)
 
@@ -160,5 +160,5 @@ test/posix ────────────┼──> (根包 SDK: wasm.go /
 ## 结论
 
 - 分层现状:`abi`、`loader`、`executor/cpu` 已与后端解耦;`vm` 内核能力端口化完成度较高。
-- 公开 SDK(wasm.go)仍绑定旧 WASI 后端;新原生链已具备但未公开(R 组任务)。
-- 重复项集中在"旧 WASI 路径 vs 新 ELF 路径"的双轨期,收敛责任落在 C 组(所有权)与 R 组(入口)。
+- 公开 VM 入口已收敛到 `instance`/`model`;旧 WASI Runtime 仅保留在 `internal/legacy` 供 POSIX gate(R06)。
+- 旧 WASI 路径已移出公开入口,只由 `test/posix` 显式调用;其余 R 组入口统一走新 VM。

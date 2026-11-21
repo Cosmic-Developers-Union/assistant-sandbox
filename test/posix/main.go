@@ -24,7 +24,7 @@ import (
 	"strings"
 	"time"
 
-	sandbox "github.com/Cosmic-Developers-Union/assistant-sandbox"
+	sandbox "github.com/Cosmic-Developers-Union/assistant-sandbox/internal/legacy"
 )
 
 //go:embed utility-index.json

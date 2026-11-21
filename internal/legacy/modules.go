@@ -1,4 +1,4 @@
-package sandbox
+package legacy
 
 import (
 	"bytes"
@@ -80,5 +80,5 @@ func (r *Runtime) callModule(ctx context.Context, caller api.Module, request, si
 	if err != nil || uint64(len(encoded)) > uint64(capacity) || uint64(len(encoded)) > 1<<32-1 || !caller.Memory().Write(response, encoded) {
 		return 0
 	}
-	return uint32(len(encoded))
+	return uint32(len(encoded)) //nolint:gosec // 模块名与导出名长度受登记上限约束
 }

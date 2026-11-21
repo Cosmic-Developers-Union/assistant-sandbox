@@ -1,5 +1,5 @@
 //go:build !unix
 
-package sandbox
+package legacy
 
 func nonblockFlag() int { return 0 }

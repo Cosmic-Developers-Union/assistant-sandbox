@@ -1,4 +1,4 @@
-package sandbox
+package legacy
 
 import (
 	"io/fs"
