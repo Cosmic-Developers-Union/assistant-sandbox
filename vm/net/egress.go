@@ -52,6 +52,10 @@ type EgressPolicy struct {
 
 	Gateway netip.Addr
 	Host    netip.Addr
+
+	// PortMap 把 guest 目标端口映射到宿主端口(测试/非特权 DNS 用);
+	// 未列出的端口原样使用。
+	PortMap map[uint16]uint16
 }
 
 // NewEgressPolicy 创建默认拒绝策略。
@@ -88,7 +92,17 @@ func (p *EgressPolicy) Target(protocol string, remote Addr) (netip.Addr, uint16,
 	if p.Gateway.IsValid() && remote.IP == p.Gateway && p.Host.IsValid() {
 		target = p.Host
 	}
-	return target, remote.Port, true
+	port := remote.Port
+	if mapped, ok := p.PortMap[remote.Port]; ok && mapped != 0 {
+		port = mapped
+	}
+	return target, port, true
+}
+
+// PacketNetwork 是可选的数据报拨号能力;未实现时允许的 UDP 出口仍
+// 明确 ENOTSUP。
+type PacketNetwork interface {
+	DialPacket(ctx context.Context, network, address string) (io.ReadWriteCloser, error)
 }
 
 // Resolver 是 DNS 解析端口(M10 复用):名称解析结果逐地址经过出口

@@ -92,6 +92,9 @@ type Options struct {
 
 	// Entry 是镜像清单记录的入口;为空时使用 /bin/sh。
 	Entry string
+
+	// DNS 是 /etc/resolv.conf 的 nameserver;为空时不生成该文件。
+	DNS string
 }
 
 // Root 是构建完成的根文件系统与可复现清单。
@@ -184,6 +187,13 @@ func Build(ctx context.Context, opts Options) (*Root, error) {
 			return nil, err
 		}
 		recordFile(files, file.path, file.mode, []byte(file.content), "file")
+	}
+	if opts.DNS != "" {
+		content := "nameserver " + opts.DNS + "\noptions ndots:1\n"
+		if err := writeFile(ctx, system, "/etc/resolv.conf", 0o644, []byte(content)); err != nil {
+			return nil, err
+		}
+		recordFile(files, "/etc/resolv.conf", 0o644, []byte(content), "file")
 	}
 	if opts.Image != nil {
 		if err := materialize(ctx, system, opts.Image, files); err != nil {

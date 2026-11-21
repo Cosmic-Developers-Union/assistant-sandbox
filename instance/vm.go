@@ -152,7 +152,11 @@ func New(ctx context.Context, opts Options) (*VM, error) {
 		return nil, err
 	}
 	source := clockFor(opts)
-	layout, err := rootfs.Build(ctx, rootfs.Options{Clock: source, Workdir: WorkRoot})
+	dns := ""
+	if opts.Egress != nil {
+		dns = opts.Egress.Gateway.String()
+	}
+	layout, err := rootfs.Build(ctx, rootfs.Options{Clock: source, Workdir: WorkRoot, DNS: dns})
 	if err != nil {
 		return nil, err
 	}

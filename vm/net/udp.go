@@ -2,6 +2,8 @@ package net
 
 import (
 	"context"
+	"io"
+	"net/netip"
 	"sync"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
@@ -31,6 +33,9 @@ type UDPEndpoint struct {
 	local Addr
 	queue []udpPacket
 	drain bool
+
+	// hosts 是宿主 UDP 出口的已连接数据报(按目标地址:端口)。
+	hosts map[netip.AddrPort]io.ReadWriteCloser
 }
 
 // BindUDP 在命名空间登记 UDP 端点;端口已占用报 EADDRINUSE。
@@ -61,16 +66,10 @@ func (n *Namespace) SendTo(ctx context.Context, from *UDPEndpoint, data []byte, 
 	if len(data) > udpDatagramLimit {
 		return 0, errno.MessageSize
 	}
-	// 非回环 UDP 需要宿主出口;当前只交付受策略控制的 TCP 出口,
-	// 未允许或未实现的协议明确 ENETUNREACH/ENOTSUP(M09)。
+	// 非回环 UDP 需要宿主出口;策略默认拒绝,允许后经 PacketNetwork
+	// 拨号宿主(未实现数据报能力时 ENOTSUP)。DNS(M10)复用此路径。
 	if to.IP.IsValid() && to.IP != LoopbackIPv4 {
-		n.mu.Lock()
-		policy := n.policy
-		n.mu.Unlock()
-		if policy == nil || !policy.Allows(ProtocolUDP, to.IP, to.Port) {
-			return 0, errno.Wrap(errno.NetworkUnreachable, "UDP 出口策略拒绝目标")
-		}
-		return 0, errno.Wrap(errno.NotSupported, "宿主 UDP 出口未实现")
+		return n.sendHostUDP(ctx, from, data, to)
 	}
 	n.mu.Lock()
 	if n.closed {
@@ -153,10 +152,10 @@ func (e *UDPEndpoint) Close() error {
 	if !e.base.markClosed() {
 		return errno.BadHandle
 	}
-	e.mu.Lock()
-	e.drain = true
-	e.queue = nil
-	e.mu.Unlock()
+	hosts := e.closeHosts()
+	for _, host := range hosts {
+		_ = host.Close()
+	}
 	if e.ns != nil {
 		e.ns.removeUDPEndpoint(e)
 	}
@@ -175,12 +174,120 @@ func (n *Namespace) removeUDPEndpoint(endpoint *UDPEndpoint) {
 }
 
 func (e *UDPEndpoint) closeByNamespace() {
-	e.mu.Lock()
-	e.drain = true
-	e.queue = nil
-	e.mu.Unlock()
+	hosts := e.closeHosts()
+	for _, host := range hosts {
+		_ = host.Close()
+	}
 	e.base.markClosed()
 	e.base.notify()
+}
+
+// closeHosts 清空并返回宿主数据报连接;调用方在锁外关闭。
+func (e *UDPEndpoint) closeHosts() []io.ReadWriteCloser {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.drain = true
+	e.queue = nil
+	hosts := make([]io.ReadWriteCloser, 0, len(e.hosts))
+	for _, host := range e.hosts {
+		hosts = append(hosts, host)
+	}
+	e.hosts = nil
+	return hosts
+}
+
+// sendHostUDP 把报文写到宿主数据报连接,并把回复按网关来源入队。
+func (n *Namespace) sendHostUDP(ctx context.Context, endpoint *UDPEndpoint, data []byte, to Addr) (int, error) {
+	if endpoint == nil {
+		return 0, errno.Wrap(errno.NetworkUnreachable, "没有本地 UDP 端点")
+	}
+	n.mu.Lock()
+	network := n.egress
+	policy := n.policy
+	closed := n.closed
+	n.mu.Unlock()
+	if closed {
+		return 0, errno.BadHandle
+	}
+	if network == nil || policy == nil {
+		return 0, errno.Wrap(errno.NetworkUnreachable, "宿主 UDP 出口未配置")
+	}
+	target, port, allowed := policy.Target(ProtocolUDP, to)
+	if !allowed {
+		return 0, errno.Wrap(errno.NetworkUnreachable, "UDP 出口策略拒绝目标")
+	}
+	packets, ok := network.(PacketNetwork)
+	if !ok {
+		return 0, errno.Wrap(errno.NotSupported, "宿主 UDP 出口未实现")
+	}
+	key := netip.AddrPortFrom(to.IP, to.Port)
+	endpoint.mu.Lock()
+	if endpoint.drain || endpoint.base.isClosed() {
+		endpoint.mu.Unlock()
+		return 0, errno.BadHandle
+	}
+	host := endpoint.hosts[key]
+	if host == nil {
+		if endpoint.hosts == nil {
+			endpoint.hosts = map[netip.AddrPort]io.ReadWriteCloser{}
+		}
+		endpoint.mu.Unlock()
+		connection, err := packets.DialPacket(ctx, "udp", joinHostPort(target.String(), port))
+		if err != nil {
+			if ctx.Err() != nil {
+				return 0, ctx.Err()
+			}
+			return 0, errno.Wrap(errno.NetworkUnreachable, "宿主 UDP 服务不可达")
+		}
+		endpoint.mu.Lock()
+		if endpoint.drain || endpoint.base.isClosed() {
+			endpoint.mu.Unlock()
+			_ = connection.Close()
+			return 0, errno.BadHandle
+		}
+		if existing := endpoint.hosts[key]; existing != nil {
+			endpoint.mu.Unlock()
+			_ = connection.Close()
+			host = existing
+		} else {
+			endpoint.hosts[key] = connection
+			host = connection
+			endpoint.mu.Unlock()
+			go readHostUDP(endpoint, connection, to)
+		}
+	} else {
+		endpoint.mu.Unlock()
+	}
+	written, err := host.Write(data)
+	if err != nil {
+		return 0, errno.Wrap(errno.NetworkUnreachable, "宿主 UDP 写入失败")
+	}
+	return written, nil
+}
+
+// readHostUDP 把宿主数据报回复按原 guest 目标地址投递到端点队列。
+func readHostUDP(endpoint *UDPEndpoint, host io.ReadWriteCloser, from Addr) {
+	buffer := make([]byte, udpDatagramLimit)
+	for {
+		read, err := host.Read(buffer)
+		if err != nil {
+			return
+		}
+		if read == 0 {
+			continue
+		}
+		endpoint.mu.Lock()
+		if endpoint.drain || len(endpoint.queue) >= udpQueueLimit {
+			endpoint.mu.Unlock()
+			continue
+		}
+		endpoint.queue = append(endpoint.queue, udpPacket{
+			data: append([]byte(nil), buffer[:read]...),
+			from: from,
+		})
+		endpoint.mu.Unlock()
+		endpoint.base.notify()
+	}
 }
 
 // OnChange 订阅就绪变化(poll/epoll 等待图,M07)。

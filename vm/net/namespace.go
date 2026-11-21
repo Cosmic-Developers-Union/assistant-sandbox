@@ -247,16 +247,18 @@ func (b *endpointBase) waitBlocked(ctx context.Context, ready func() (bool, erro
 // 非阻塞旗标所在地(端点/套接字)可以不同(流式连接按方向核
 // 心唤醒)。ctx 结束返回取消错误;条件闭包必须自行加锁。
 func waitOn(ctx context.Context, wake *wait.Queue, blocked func() bool, ready func() (bool, error)) error {
-	if blocked() {
-		return errno.WouldBlock
-	}
 	for {
+		// 非阻塞也必须先看当前就绪状态:数据已在队列时返回数据,
+		// 只有确实不可用才 EWOULDBLOCK(M05/M10)。
 		ok, err := ready()
 		if err != nil {
 			return err
 		}
 		if ok {
 			return nil
+		}
+		if blocked() {
+			return errno.WouldBlock
 		}
 		if _, err := wake.Wait(ctx, func() (bool, wait.Reason, error) {
 			ok, err := ready()

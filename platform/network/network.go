@@ -22,3 +22,13 @@ func (d Dialer) Dial(ctx context.Context, network, address string) (io.ReadWrite
 	}
 	return conn, nil
 }
+
+// DialPacket 建立已连接 UDP 宿主套接字(M10 DNS 复用)。
+func (d Dialer) DialPacket(ctx context.Context, network, address string) (io.ReadWriteCloser, error) {
+	dialer := net.Dialer{Timeout: d.Timeout}
+	conn, err := dialer.DialContext(ctx, network, address)
+	if err != nil {
+		return nil, err
+	}
+	return conn, nil
+}

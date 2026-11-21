@@ -155,8 +155,14 @@ func (s Syscalls) applyPollMask(ctx context.Context, call Call) (*uint64, error)
 // 全部未就绪时等待变化或超时。
 func (s Syscalls) waitPoll(ctx context.Context, entries []pollEntry, timeout uint64) ([]pollEntry, error) {
 	sources := make([]poll.Entry, 0, len(entries))
+	sourceIndex := make([]int, 0, len(entries))
 	for index := range entries {
 		entry := &entries[index]
+		if int32(entry.descriptor) < 0 {
+			// poll(2):负描述符被忽略,revents=0,不是 POLLNVAL。
+			entry.revents = 0
+			continue
+		}
 		handle, err := s.Descriptors.Get(ctx, uint64(entry.descriptor))
 		if err != nil {
 			// 关闭的描述符:POLLNVAL,且不参与等待。
@@ -170,6 +176,7 @@ func (s Syscalls) waitPoll(ctx context.Context, entries []pollEntry, timeout uin
 			continue
 		}
 		sources = append(sources, poll.Entry{Source: source, Want: s.pollWant(entry.events)})
+		sourceIndex = append(sourceIndex, index)
 	}
 	if len(sources) == 0 {
 		return entries, nil
@@ -187,7 +194,7 @@ func (s Syscalls) waitPoll(ctx context.Context, entries []pollEntry, timeout uin
 				return entries, err
 			}
 			if len(results) > 0 {
-				s.applyPollResults(entries, results)
+				s.applyPollResults(entries, sourceIndex, results)
 				return entries, nil
 			}
 			if _, _, ok := s.Interrupts.DeliverableSignal(); ok {
@@ -199,13 +206,16 @@ func (s Syscalls) waitPoll(ctx context.Context, entries []pollEntry, timeout uin
 	if err != nil {
 		return entries, err
 	}
-	s.applyPollResults(entries, results)
+	s.applyPollResults(entries, sourceIndex, results)
 	return entries, nil
 }
 
-func (s Syscalls) applyPollResults(entries []pollEntry, results []poll.Result) {
+func (s Syscalls) applyPollResults(entries []pollEntry, sourceIndex []int, results []poll.Result) {
 	for _, result := range results {
-		entry := &entries[result.Index]
+		if result.Index < 0 || result.Index >= len(sourceIndex) {
+			continue
+		}
+		entry := &entries[sourceIndex[result.Index]]
 		entry.revents = s.pollRevents(entry.events, result.Received)
 	}
 }

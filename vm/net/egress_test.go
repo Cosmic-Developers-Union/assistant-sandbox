@@ -20,6 +20,11 @@ func (hostDialer) Dial(ctx context.Context, network, address string) (io.ReadWri
 	return dialer.DialContext(ctx, network, address)
 }
 
+func (hostDialer) DialPacket(ctx context.Context, network, address string) (io.ReadWriteCloser, error) {
+	var dialer stdnet.Dialer
+	return dialer.DialContext(ctx, network, address)
+}
+
 type staticResolver struct{ addresses []netip.Addr }
 
 func (r staticResolver) LookupNetIP(context.Context, string, string) ([]netip.Addr, error) {
@@ -160,4 +165,86 @@ func TestEgressCloseClosesHostConnection(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatal("关闭命名空间后宿主连接仍可读")
+}
+
+// TestEgressAllowsPolicyUDP 验证 M09/M10:策略允许的宿主 UDP 服务
+// 可收发数据报,回复按 guest 网关来源交付。
+func TestEgressAllowsPolicyUDP(t *testing.T) {
+	ctx := context.Background()
+	packet, err := stdnet.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = packet.Close() }()
+	go func() {
+		buffer := make([]byte, 64)
+		for {
+			n, from, err := packet.ReadFrom(buffer)
+			if err != nil {
+				return
+			}
+			_, _ = packet.WriteTo(buffer[:n], from)
+		}
+	}()
+	port := uint16(packet.LocalAddr().(*stdnet.UDPAddr).Port) //nolint:gosec // 内核分配的端口在 uint16 范围
+	gateway := netip.MustParseAddr(DefaultGatewayIPv4)
+	policy := NewEgressPolicy(EgressRule{
+		Protocol: ProtocolUDP,
+		Prefix:   netip.MustParsePrefix("10.0.2.2/32"),
+		PortMin:  port,
+		PortMax:  port,
+	})
+	ns := New()
+	ns.SetEgress(hostDialer{}, policy)
+	defer ns.Close()
+	socket, err := ns.NewINETSocket(SockDatagram)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := socket.SendTo(ctx, []byte("dns-like"), Addr{Domain: AFInet, IP: gateway, Port: port}); err != nil {
+		t.Fatal(err)
+	}
+	buffer := make([]byte, 64)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		read, from, err := socket.RecvFrom(ctx, buffer)
+		if err == nil {
+			if string(buffer[:read]) != "dns-like" || from.IP != gateway || from.Port != port {
+				t.Fatalf("UDP 回复=%q from=%+v", buffer[:read], from)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("UDP 回复超时: %v", err)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// TestNonBlockingReceiveReturnsQueuedData 验证 M05/M10 回归:非阻塞
+// 套接字已有报文时先返回数据,只有队列为空才 EWOULDBLOCK。
+func TestNonBlockingReceiveReturnsQueuedData(t *testing.T) {
+	ctx := context.Background()
+	ns := New()
+	defer ns.Close()
+	receiver, err := ns.NewINETSocket(SockDatagram)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := receiver.Bind(Addr{Domain: AFInet, IP: LoopbackIPv4, Port: 5455}); err != nil {
+		t.Fatal(err)
+	}
+	receiver.SetNonBlock(true)
+	sender, _ := ns.NewINETSocket(SockDatagram)
+	if _, err := sender.SendTo(ctx, []byte("queued"), Addr{Domain: AFInet, IP: LoopbackIPv4, Port: 5455}); err != nil {
+		t.Fatal(err)
+	}
+	buffer := make([]byte, 16)
+	read, _, err := receiver.RecvFrom(ctx, buffer)
+	if err != nil || string(buffer[:read]) != "queued" {
+		t.Fatalf("非阻塞已有报文: %q err=%v", buffer[:read], err)
+	}
+	if _, _, err := receiver.RecvFrom(ctx, buffer); !errors.Is(err, errno.WouldBlock) {
+		t.Fatalf("队列空后 err=%v want EWOULDBLOCK", err)
+	}
 }

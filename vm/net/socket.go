@@ -283,6 +283,15 @@ func (s *INETSocket) SendMsg(ctx context.Context, buffers [][]byte, to *Addr, ri
 
 // RecvMsg 接收消息(M08)。
 func (s *INETSocket) RecvMsg(ctx context.Context, buffer []byte) (int, *Addr, *ControlRights, error) {
+	if s.typ == SockDatagram {
+		// UDP 数据报:复用 RecvFrom 的报文边界/来源地址语义;
+		// 控制消息不在数据报子集内。
+		n, from, err := s.RecvFrom(ctx, buffer)
+		if err != nil {
+			return 0, nil, nil, err
+		}
+		return n, &from, nil, nil
+	}
 	s.mu.Lock()
 	conn := s.conn
 	state := s.state

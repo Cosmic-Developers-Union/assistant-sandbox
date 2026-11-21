@@ -135,10 +135,11 @@ ENOSYS 清单,归 L/I/H 组后续任务。
 - 设备:`/dev/null`、`/dev/zero`、`/dev/random`、`/dev/urandom`(N05)、
   eventfd(L09);PTY(I/O 术语层)不在本版系统调用配置。
 - 网络:同 VM 回环(AF_INET 流式/数据报与 AF_UNIX,M01–M08)已交付;
-  宿主 TCP 出口经 `vm/net.EgressPolicy` 默认拒绝、逐协议/地址/端口放行
-  (M09),未配置或未命中 ENETUNREACH;非回环 UDP 明确 ENETUNREACH/
-  ENOTSUP。DNS(M10)、TLS(M11)、网络预算(M12)与外部端口映射(M13)
-  尚未配置,按 A03 明确不支持。
+  宿主 TCP 出口与受策略 UDP 出口经 `vm/net.EgressPolicy` 默认拒绝、
+  逐协议/地址/端口放行(M09),未配置或未命中 ENETUNREACH;musl
+  `getaddrinfo` 已可经受控 UDP DNS 解析(M10 libc 路径),端口映射支持
+  非特权测试服务。Python/Node 的 DNS 验收、TLS(M11)、网络预算(M12)
+  与外部端口映射(M13)尚未配置,按 A03 明确不支持。
 
 ## 6. 差分基线
 

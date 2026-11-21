@@ -211,3 +211,30 @@ func TestPollWaitsForSignalfdReadiness(t *testing.T) {
 		t.Fatalf("revents=%#x want POLLIN", revents)
 	}
 }
+
+// TestPollIgnoresNegativeFDAndMapsReadinessToSource 验证 L05/M10 回归:
+// 负描述符按 poll(2) 忽略(revents=0),其后的就绪描述符必须写回
+// 自己的 revents,不能被索引错位吞掉。
+func TestPollIgnoresNegativeFDAndMapsReadinessToSource(t *testing.T) {
+	ctx := context.Background()
+	space := newFakeMemory()
+	table := fd.New()
+	const pid = 61
+	table.Attach(pid, fd.Streams{})
+	if err := table.Install(pid, 3, &pollReadyHandle{ready: poll.Readable}); err != nil {
+		t.Fatal(err)
+	}
+	handler := Syscalls{Memory: space, Descriptors: ProcessDescriptors{Table: table, PID: pid}}
+	writePollfd(t, space, 0x3000, ^uint32(0), 0)
+	writePollfd(t, space, 0x3000+pollfdSize, 3, pollIn)
+	reply := handler.Handle(ctx, Call{Syscall: SysPoll, Args: [6]uint64{0x3000, 2, 0}})
+	if reply.Errno != "" || reply.Value != 1 {
+		t.Fatalf("poll=%+v want 1", reply)
+	}
+	if revents := readPollfd(t, space, 0x3000); revents != 0 {
+		t.Fatalf("负描述符 revents=%#x want 0", revents)
+	}
+	if revents := readPollfd(t, space, 0x3000+pollfdSize); revents&pollIn == 0 {
+		t.Fatalf("就绪描述符 revents=%#x want POLLIN", revents)
+	}
+}
