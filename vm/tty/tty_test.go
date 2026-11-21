@@ -456,3 +456,40 @@ func TestScreenSnapshotIsAtomicUnderConcurrentWrites(t *testing.T) {
 		}
 	}
 }
+
+// TestControlSignalsTargetOnlyForeground 验证 P09:Ctrl-C/Ctrl-Z 与
+// 挂断只向前台进程组投递,后台组不被误伤。
+func TestControlSignalsTargetOnlyForeground(t *testing.T) {
+	var raised []struct {
+		pgid proc.PID
+		n    signal.Number
+	}
+	raise := func(pgid proc.PID, n signal.Number) {
+		raised = append(raised, struct {
+			pgid proc.PID
+			n    signal.Number
+		}{pgid, n})
+	}
+	term, err := New(Flags{Canonical: true, ISIG: true}, Size{}, 256, raise)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := term.SetForeground(42); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := term.Input([]byte{charINTR, charTSTP}); err != nil {
+		t.Fatal(err)
+	}
+	if err := term.Close(); err != nil {
+		t.Fatal(err)
+	}
+	want := []signal.Number{signal.INT, signal.TSTP, signal.HUP}
+	if len(raised) != len(want) {
+		t.Fatalf("raised=%+v", raised)
+	}
+	for index, entry := range raised {
+		if entry.pgid != 42 || entry.n != want[index] {
+			t.Fatalf("signal[%d]=%+v want pgid=42 sig=%v", index, entry, want[index])
+		}
+	}
+}

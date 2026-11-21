@@ -271,8 +271,14 @@ func (t *Terminal) Close() error {
 		return errno.BadHandle
 	}
 	t.closed = true
+	foreground := t.fg
+	raise := t.raise
 	t.mu.Unlock()
 	t.wake.Close()
+	// P09:终端挂断只向当前前台进程组投递 SIGHUP。
+	if raise != nil && foreground != 0 {
+		raise(foreground, signal.HUP)
+	}
 	return nil
 }
 
