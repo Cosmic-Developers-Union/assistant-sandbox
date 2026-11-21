@@ -3,6 +3,7 @@ package instance
 import (
 	"context"
 
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm"
 	vmfs "github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fs"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/proc"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/resources"
@@ -76,13 +77,14 @@ type StorageStatus struct {
 // Status 是 VM 的统一管理面快照(T01):状态、连接、进程/线程、
 // 等待类别、fd 与预算使用。JSON 编码只包含上述值,不依赖内部指针。
 type Status struct {
-	State       State           `json:"state"`
-	Connections int             `json:"connections"`
-	Processes   []ProcessStatus `json:"processes"`
-	Session     BudgetStatus    `json:"session"`
-	Network     NetworkStatus   `json:"network"`
-	Trace       TraceStatus     `json:"trace"`
-	Storage     []StorageStatus `json:"storage"`
+	State       State            `json:"state"`
+	Connections int              `json:"connections"`
+	Processes   []ProcessStatus  `json:"processes"`
+	Session     BudgetStatus     `json:"session"`
+	Network     NetworkStatus    `json:"network"`
+	Trace       TraceStatus      `json:"trace"`
+	Storage     []StorageStatus  `json:"storage"`
+	Crashes     []vm.CrashReport `json:"crashes"`
 }
 
 // Status 返回 VM 的统一检查快照(T01)。调用方可在执行期间并发查询;
@@ -138,6 +140,7 @@ func (v *VM) Status(ctx context.Context) (Status, error) {
 	usage := v.kernel.NetworkNamespace().Usage()
 	status.Network = NetworkStatus{Connections: usage.Connections, Bytes: usage.Bytes}
 	status.Trace = TraceStatus{Entries: v.kernel.Trace().Len(), Dropped: v.kernel.Trace().Dropped()}
+	status.Crashes = v.kernel.CrashReports()
 	if spaces, err := v.mounts.Filesystems(ctx); err == nil {
 		status.Storage = make([]StorageStatus, 0, len(spaces))
 		for _, space := range spaces {

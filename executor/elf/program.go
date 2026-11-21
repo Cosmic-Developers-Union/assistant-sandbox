@@ -114,10 +114,11 @@ func (p *program) Run(ctx context.Context, process proc.Proc) (uint8, error) {
 	}
 	status, err := runner.Run(ctx)
 	if err != nil {
-		// F12:执行期故障(未实现指令等)诊断携带客体路径。
+		// F12/T02:执行期故障诊断携带客体路径与故障时的 CPU 快照。
 		var fault common.Fault
 		if errors.As(err, &fault) {
-			return 0, errno.Wrap(err, "客体程序 "+p.path)
+			wrapped := errno.Wrap(err, "客体程序 "+p.path)
+			return 0, &executable.DiagnosticError{Err: wrapped, Diagnostic: *captureDiagnostic(ctx, core, fault.Trap.Error())}
 		}
 		return 0, err
 	}
@@ -834,6 +835,21 @@ type signalDeliverer struct {
 	disposition proc.SignalDispositionControl
 }
 
+// captureDiagnostic 在故障点抓取客体 CPU 快照(T02):PC、整数/浮点
+// 寄存器与 FCSR。即使上下文已取消也尽量读取,便于崩溃报告。
+func captureDiagnostic(ctx context.Context, core cpu.Port, trap string) *executable.Diagnostic {
+	diagnostic := &executable.Diagnostic{Trap: trap}
+	machine, err := core.State(context.WithoutCancel(ctx))
+	if err != nil {
+		return diagnostic
+	}
+	diagnostic.PC = machine.PC
+	diagnostic.Registers = append([]uint64(nil), machine.Registers...)
+	diagnostic.Floats = append([]uint64(nil), machine.Floats...)
+	diagnostic.FCSR = machine.FCSR
+	return diagnostic
+}
+
 // errUnhandledFault 标记不可转换为客体信号的同步故障(内核未实现
 // 指令等缺口):保持 fail-closed,不以信号投递掩盖内核缺口。
 var errUnhandledFault = errors.New("未转换的客体故障")
@@ -891,7 +907,8 @@ func (d *signalDeliverer) synchronous(ctx context.Context, trap cpu.Trap) error 
 	switch action {
 	case signal.Terminate, signal.Core:
 		return executable.Death{Signal: number,
-			Detail: fmt.Sprintf("%v si_code=%d si_addr=%#x", trap, info.Code, info.Addr)}
+			Detail:     fmt.Sprintf("%v si_code=%d si_addr=%#x", trap, info.Code, info.Addr),
+			Diagnostic: captureDiagnostic(ctx, d.core, trap.Error())}
 	case signal.Ignore:
 		return nil
 	default:

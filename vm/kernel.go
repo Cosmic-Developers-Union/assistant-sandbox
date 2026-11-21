@@ -131,6 +131,9 @@ type Kernel struct {
 
 	// trace 收集受限的系统调用轨迹(G08):有界,不记录缓冲区内容。
 	trace *trace.Recorder
+
+	// crashes 保留最近的致命故障报告(T02):有界,值类型快照。
+	crashes []CrashReport
 }
 
 // robustList 是 set_robust_list 登记的用户态链表描述(K07):
@@ -1780,6 +1783,21 @@ func (k *Kernel) RunRegistered(ctx context.Context, p proc.Proc) (ExitStatus, er
 	status := ExitStatus{Code: result.Code}
 	if result.Reason == executable.Signaled {
 		status = ExitStatus{Code: signal.ExitCode(result.Signal), Signal: result.Signal}
+	}
+	// T02:致命故障/崩溃信号在资源清算前抓取 CPU、映射与最近调用。
+	if result.Reason == executable.Fault || (result.Reason == executable.Signaled && crashSignal(result.Signal)) {
+		var recent []trace.Entry
+		if k.trace != nil {
+			for _, entry := range k.trace.Entries() {
+				if entry.PID == uint64(pid) {
+					recent = append(recent, entry)
+				}
+			}
+			if len(recent) > 32 {
+				recent = recent[len(recent)-32:]
+			}
+		}
+		k.recordCrash(k.buildCrashReport(actual, result, recent))
 	}
 	var runErr error
 	switch {

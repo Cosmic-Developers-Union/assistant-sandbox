@@ -40,7 +40,32 @@ type Result struct {
 	Code   uint8
 	Signal signal.Number
 	Reason Reason
+
+	// Diagnostic 携带致命故障时的 CPU 状态(T02);正常退出或配额
+	// 终止时为 nil。报告层可据此生成可复现崩溃快照。
+	Diagnostic *Diagnostic
 }
+
+// Diagnostic 是致命故障发生时的客体 CPU 快照(T02)。字段均为值
+// 类型,不引用内核或宿主内存。
+type Diagnostic struct {
+	PC        uint64
+	Registers []uint64
+	Floats    []uint64
+	FCSR      uint32
+	Trap      string
+}
+
+// DiagnosticError 让执行器在返回错误的同时携带 CPU 快照;错误链
+// 仍可被 errors.As 识别为原始故障/信号类型。
+type DiagnosticError struct {
+	Err        error
+	Diagnostic Diagnostic
+}
+
+func (e *DiagnosticError) Error() string { return e.Err.Error() }
+
+func (e *DiagnosticError) Unwrap() error { return e.Err }
 
 type Instance interface {
 	Wait(ctx context.Context) (Result, error)
@@ -68,6 +93,9 @@ type Death struct {
 
 	// Detail 携带诊断上下文(故障类别与地址),不进入 wait 状态。
 	Detail string
+
+	// Diagnostic 是致命信号发生时的客体 CPU 快照(T02)。
+	Diagnostic *Diagnostic
 }
 
 func (d Death) Error() string {
@@ -224,8 +252,14 @@ func (Builtin) Start(ctx context.Context, program Program, p Proc) (Instance, er
 		if runErr != nil && result.Reason == Exited {
 			var death Death
 			if errors.As(runErr, &death) && death.Signal.Valid() {
-				result = Result{Code: signal.ExitCode(death.Signal), Signal: death.Signal, Reason: Signaled}
+				result = Result{Code: signal.ExitCode(death.Signal), Signal: death.Signal, Reason: Signaled, Diagnostic: death.Diagnostic}
 				runErr = nil
+			}
+		}
+		if runErr != nil {
+			var diagnostic *DiagnosticError
+			if errors.As(runErr, &diagnostic) {
+				result.Diagnostic = &diagnostic.Diagnostic
 			}
 		}
 		if runErr != nil && result.Reason == Exited && result.Code == 0 {
