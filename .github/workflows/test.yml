@@ -43,7 +43,11 @@ jobs:
 
   # B08:集成任务——内核、ABI、执行器全量测试与 ISA 回归门禁。
   integration:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     env:
       GOFLAGS: -p=2

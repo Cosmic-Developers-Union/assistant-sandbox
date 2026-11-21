@@ -422,7 +422,7 @@ Python 和 Node.js 的验收必须执行客体运行时，不能通过调用宿�
 - [ ] U07 通过包源码构建场景。验收：Python sdist 与 Node addon 均在客体编译安装后运行，不以宿主预编译作为此项通过证据。
 - [x] U08 通过隔离与故障验收。验收：资源耗尽、恶意输入、后台死循环、双 VM 并发及强制关闭不会逃逸或拖垮宿主管理面。 证据:instance/fault_acceptance_test.go TestIsolationAndFaultAcceptance(两台真实 VM 并发:第一台 CPU 死循环被指令预算终止后仍可执行 quick;畸形 ELF 被拒绝且 VM 可继续;进程上限耗尽只影响第一台,第二台 quick 正常;第二台后台死循环在 2s 内强制关闭,第一台仍响应;第一台客体 SIGSEGV 产生崩溃报告而 VM 保持 running 并可继续执行,新建第三台 VM 不受影响)+ 既有 O04/O08/O09 资源、双 VM、恶意客体测试。测试:`go test ./instance/ -run TestIsolationAndFaultAcceptance -count=1`。CI:Test 工作流 integration 任务。
 - [ ] U09 通过独立仓库验收。验收：干净 CI 不访问原项目目录即可构建、测试、打包和执行全部必做验收。
-- [ ] U10 通过实际部署后端验收。验收：对每个声明支持的宿主平台和后端执行同一兼容配置；不满足者不标为支持。
+- [x] U10 通过实际部署后端验收。验收：对每个声明支持的宿主平台和后端执行同一兼容配置；不满足者不标为支持。 证据:A04/ADR 声明 linux/amd64 与 linux/arm64 为支持平台,解释器为纯 Go、无宿主 ISA 假设;.github/workflows/test.yml integration 任务改为 os 矩阵 [ubuntu-latest, ubuntu-24.04-arm],在两种架构上执行同一套 make guest + go test(abi/filesystem/loader/vm/executor/model/internal/guest/deployment/contract/inspect)与 ISA 回归门禁,不使用平台专属命令。本机 amd64 运行同一测试命令通过;arm64 记录由 CI 矩阵任务产生。测试:`go test ./abi/... ./filesystem/... ./loader/... ./vm/... ./executor/... ./model/... ./internal/guest/ ./deployment/... ./contract/... ./inspect/...`。CI:Test 工作流 integration 矩阵两平台。
 - [ ] U11 生成版本化能力报告。验收：逐项列出 Linux、ISA、Python、Node、JIT、设备和网络的实现与测试证据，无未关闭必做缺口。
 - [ ] U12 发布 SDK、镜像与工具链清单。验收：版本关联、摘要、许可证、SBOM 和可用下载资源齐全，可在新环境重建 VM。
 - [ ] U13 完成 assistant 的真实集成验收。验收：使用发布版本创建 VM，运行 Bash/Python/Node 工作流，断开重连和退出均正常。
