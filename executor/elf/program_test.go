@@ -857,6 +857,34 @@ func TestMapperMremapShrinksAndGrows(t *testing.T) {
 	if _, err := m.Mremap(ctx, start, start+2*memory.PageSize, start+4*memory.PageSize, false, false, 0); !errors.Is(err, errno.NoMemory) {
 		t.Fatalf("尾部被占用且无 MAYMOVE 应报 ENOMEM: %v", err)
 	}
+
+	// 子区间扩张会与同一映射的其余页重叠,Linux 报 ENOMEM。
+	if _, err := m.Mremap(ctx, start+memory.PageSize, start+2*memory.PageSize, start+3*memory.PageSize, false, false, 0); !errors.Is(err, errno.NoMemory) {
+		t.Fatalf("子区间扩张应报 ENOMEM: %v", err)
+	}
+	// 未映射的旧区间必须是 EFAULT,不能与内存不足混淆。
+	if _, err := m.Mremap(ctx, 0x7000, 0x8000, 0x9000, false, false, 0); !errors.Is(err, errno.Fault) {
+		t.Fatalf("未映射旧区间应报 EFAULT: %v", err)
+	}
+
+	// 子区间收缩只解除请求的尾部,保留其余映射。
+	partial, err := m.Anonymous(ctx, common.MapRequest{Length: 4 * memory.PageSize, Prot: common.ProtRead | common.ProtWrite})
+	if err != nil {
+		t.Fatal(err)
+	}
+	shrunk, err := m.Mremap(ctx, partial+memory.PageSize, partial+3*memory.PageSize, partial+2*memory.PageSize, false, false, 0)
+	if err != nil || shrunk != partial+memory.PageSize {
+		t.Fatalf("子区间收缩: addr=%#x err=%v", shrunk, err)
+	}
+	if err := space.Check(ctx, partial, 1, common.ProtRead); err != nil {
+		t.Fatalf("子区间收缩不得影响前部: %v", err)
+	}
+	if err := space.Check(ctx, partial+2*memory.PageSize, 1, common.ProtRead); !errors.Is(err, errno.Range) {
+		t.Fatalf("子区间收缩的尾部应未映射: %v", err)
+	}
+	if err := space.Check(ctx, partial+3*memory.PageSize, 1, common.ProtRead); err != nil {
+		t.Fatalf("子区间收缩不得影响后部: %v", err)
+	}
 }
 
 func TestMapperMadviseDropsContents(t *testing.T) {

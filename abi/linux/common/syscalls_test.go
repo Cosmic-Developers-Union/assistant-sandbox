@@ -1031,7 +1031,7 @@ func TestMmapValidatesAndDelegates(t *testing.T) {
 		want  errno.Code
 	}{
 		{"零长度", [6]uint64{0, 0, ProtRead, anon, ^uint64(0), 0}, errno.Invalid},
-		{"未知标志", [6]uint64{0, 4096, ProtRead, anon | 0x4000, ^uint64(0), 0}, errno.Invalid},
+		{"未知标志", [6]uint64{0, 4096, ProtRead, anon | 0x8000000, ^uint64(0), 0}, errno.Invalid},
 		{"共享匿名映射", [6]uint64{0, 4096, ProtRead, mapShared | mapAnonymous, ^uint64(0), 0}, errno.NotSupported},
 		{"共享私有冲突", [6]uint64{0, 4096, ProtRead, mapShared | mapPrivate | mapAnonymous, ^uint64(0), 0}, errno.Invalid},
 		{"缺共享类型", [6]uint64{0, 4096, ProtRead, mapFixed, 3, 0}, errno.Invalid},
@@ -1063,10 +1063,13 @@ func TestMmapValidatesAndDelegates(t *testing.T) {
 		t.Fatalf("长度应向上取整到页: %+v", mapper.mapped)
 	}
 
+	if reply := handler.Handle(ctx, Call{Syscall: SysMmap, Args: [6]uint64{0, 4096, ProtRead, anon | mapNoReserve, ^uint64(0), 0}}); reply.Errno != "" {
+		t.Fatalf("MAP_NORESERVE 应被接受: %v", reply.Errno)
+	}
 	if reply := handler.Handle(ctx, Call{Syscall: SysMmap, Args: [6]uint64{0x5000, 4096, ProtRead, anon | mapFixed | mapFixedNoReplace, ^uint64(0), 0}}); reply.Errno != "" {
 		t.Fatalf("固定映射: %v", reply.Errno)
 	}
-	request := mapper.mapped[1]
+	request := mapper.mapped[2]
 	if !request.Fixed || !request.NoReplace || request.Hint != 0x5000 {
 		t.Fatalf("FIXED/NOREPLACE 标志应传递: %+v", request)
 	}

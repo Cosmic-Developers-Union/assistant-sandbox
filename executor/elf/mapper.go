@@ -355,8 +355,9 @@ func (l *limiter) SetDescriptorLimit(ctx context.Context, value uint64) error {
 
 var _ common.Limiter = (*limiter)(nil)
 
-// Mremap 实现 mremap(2):收缩原地、扩张尽量原地、尾部被占用时按 MAYMOVE 迁移。
-// 旧范围必须恰好是一个映射(与真实分配器的整段重映射用法一致)。
+// Mremap 实现 mremap(2):收缩支持映射的子区间,扩张尽量原地,
+// 尾部被占用时按 MAYMOVE 迁移;旧范围未映射时报 EFAULT(与 Linux
+// 一致,musl 的 pthread_getattr_np 依赖该错误停止栈探测)。
 func (m *mapper) Mremap(ctx context.Context, oldStart, oldEnd, newEnd uint64, mayMove, fixed bool, fixedStart uint64) (uint64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -369,21 +370,33 @@ func (m *mapper) Mremap(ctx context.Context, oldStart, oldEnd, newEnd uint64, ma
 	}
 	var region *memory.Region
 	for i := range regions {
-		if regions[i].Start == oldStart && regions[i].End == oldEnd {
+		if regions[i].Start <= oldStart && oldEnd <= regions[i].End {
 			region = &regions[i]
 			break
 		}
 	}
 	if region == nil {
-		return 0, errno.NoMemory
+		// 未映射的旧区间与 Linux 一致报 EFAULT;musl 的
+		// pthread_getattr_np 依赖该值终止栈尺寸探测,而不是把
+		// EFAULT 当成 ENOMEM 无限下探。
+		return 0, errno.Fault
 	}
 
 	if newEnd <= oldEnd {
-		if err := m.table.Resize(ctx, oldStart, oldEnd, newEnd); err != nil {
-			return 0, err
+		if newEnd < oldEnd {
+			// mremap 允许缩放映射的子区间:尾部解除映射即可,
+			// 与 Linux 拆分 VMA 的可观察结果一致。
+			if err := m.table.Unmap(ctx, newEnd, oldEnd); err != nil {
+				return 0, err
+			}
+			m.release(ctx, oldEnd-newEnd)
 		}
-		m.release(ctx, oldEnd-newEnd)
 		return oldStart, nil
+	}
+	// 非整段映射的扩张会与同一映射的其余页重叠;Linux 对此报
+	// ENOMEM,不能伪装成功。
+	if region.Start != oldStart || region.End != oldEnd {
+		return 0, errno.NoMemory
 	}
 	grow := newEnd - oldEnd
 	if newEnd <= m.ceiling && !overlapsAny(regions, oldEnd, newEnd) {

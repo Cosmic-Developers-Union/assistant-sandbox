@@ -1691,8 +1691,12 @@ const (
 	mapPrivate        = 0x02
 	mapFixed          = 0x10
 	mapAnonymous      = 0x20
+	mapNoReserve      = 0x4000
 	mapFixedNoReplace = 0x100000
-	mapSupportedMask  = mapShared | mapPrivate | mapFixed | mapAnonymous | mapFixedNoReplace
+	// MAP_NORESERVE 仅影响交换预留;本 VM 不提供交换,按 Linux
+	// 语义接受且不改变映射结果。
+	mapSupportedMask = mapShared | mapPrivate | mapFixed | mapAnonymous |
+		mapNoReserve | mapFixedNoReplace
 
 	// asm-generic 的 msync 标志:SYNC/ASYNC 必须恰有其一并仅可
 	// 与 INVALIDATE 组合。
