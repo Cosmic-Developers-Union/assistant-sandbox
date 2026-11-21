@@ -41,6 +41,12 @@ type Terminal interface {
 	Disconnect(context.Context) error
 }
 
+// Identified 是 VM/Console/Terminal 的可选寻址能力(R04):同一进程
+// 中的对象以稳定字符串标识,不以宿主目录隐式代表 VM。
+type Identified interface {
+	ID() string
+}
+
 // Bash 在该 Terminal 上执行脚本;非零退出码不结束会话。
 type Bash interface {
 	Run(context.Context, string) (Result, error)

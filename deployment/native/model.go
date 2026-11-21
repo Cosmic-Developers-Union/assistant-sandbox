@@ -3,10 +3,12 @@ package native
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"path"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/model"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/userland/shell"
@@ -31,9 +33,15 @@ type ModelVM struct {
 	runtime *Runtime
 	console *modelConsole
 
+	id           string
+	nextTerminal atomic.Uint64
+
 	mu     sync.Mutex
 	closed bool
 }
+
+// ID 返回进程内唯一 VM 标识(R04)。
+func (m *ModelVM) ID() string { return m.id }
 
 // NewModelVM 装配一台真实 VM 并接入新模型契约。
 func NewModelVM(ctx context.Context, opts Options) (*ModelVM, error) {
@@ -50,7 +58,7 @@ func NewModelVM(ctx context.Context, opts Options) (*ModelVM, error) {
 	if err != nil {
 		return nil, err
 	}
-	machine := &ModelVM{runtime: runtime, console: console}
+	machine := &ModelVM{runtime: runtime, console: console, id: fmt.Sprintf("vm-%d", nextVMID.Add(1))}
 	console.vm = machine
 	return machine, nil
 }
@@ -59,6 +67,8 @@ func NewModelVM(ctx context.Context, opts Options) (*ModelVM, error) {
 func (m *ModelVM) Console() model.Console { return m.console }
 
 // Connect 建立一条独立会话:Bash 状态与控制台隔离,文件系统共享。
+var nextVMID atomic.Uint64
+
 func (m *ModelVM) Connect(ctx context.Context) (model.Terminal, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -79,7 +89,12 @@ func (m *ModelVM) Connect(ctx context.Context) (model.Terminal, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &modelTerminal{vm: m, session: session, parent: parent}, nil
+	return &modelTerminal{vm: m, session: session, parent: parent, id: m.terminalID()}, nil
+}
+
+// terminalID 生成进程内唯一的 Terminal 标识。
+func (m *ModelVM) terminalID() string {
+	return fmt.Sprintf("%s/terminal/%d", m.id, m.nextTerminal.Add(1))
 }
 
 // Filesystem 返回共享的客体文件系统视图。
@@ -117,6 +132,9 @@ type modelConsole struct {
 	closed bool
 }
 
+// ID 返回 Console 的稳定标识(R04)。
+func (c *modelConsole) ID() string { return c.vm.id + "/console" }
+
 // newModelConsole 建立控制台的 Bash 槽位与屏幕:槽位的持续输出写入
 // 屏幕,后台进程的输出同样落在屏幕上。
 func newModelConsole(runtime *Runtime) (*modelConsole, error) {
@@ -144,7 +162,7 @@ func (c *modelConsole) Attach(ctx context.Context) (model.Terminal, error) {
 	if closed {
 		return nil, model.ErrClosed
 	}
-	return &modelTerminal{vm: c.vm, session: c.slot, console: c}, nil
+	return &modelTerminal{vm: c.vm, session: c.slot, console: c, id: c.vm.terminalID()}, nil
 }
 
 // Screen 返回控制台的当前屏幕帧。
@@ -209,10 +227,14 @@ type modelTerminal struct {
 	session *shell.Slot
 	console *modelConsole
 	parent  proc.Proc
+	id      string
 
 	mu     sync.Mutex
 	closed bool
 }
+
+// ID 返回本连接句柄的唯一标识(R04)。
+func (t *modelTerminal) ID() string { return t.id }
 
 // Bash 返回该会话的 Bash 接口。
 func (t *modelTerminal) Bash() model.Bash { return t }

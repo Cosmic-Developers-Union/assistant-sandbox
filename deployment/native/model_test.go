@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -549,5 +550,63 @@ func TestModelVMOutputHistoryWithoutConnection(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("增量历史=%+v", delta)
+	}
+}
+
+// TestModelVMExplicitIdentifiers 验证 R04:VM、Console 与 Terminal 在
+// 同进程中可明确寻址,标识不依赖宿主目录/路径。
+func TestModelVMExplicitIdentifiers(t *testing.T) {
+	first, err := native.NewModelVM(context.Background(), native.Options{Seed: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := native.NewModelVM(context.Background(), native.Options{Seed: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = first.Shutdown(context.Background())
+		_ = second.Shutdown(context.Background())
+	}()
+	identified := func(value any) string {
+		t.Helper()
+		named, ok := value.(model.Identified)
+		if !ok {
+			t.Fatalf("%T 未实现 model.Identified", value)
+		}
+		return named.ID()
+	}
+	firstID := identified(first)
+	secondID := identified(second)
+	if firstID == "" || firstID == secondID {
+		t.Fatalf("VM 标识=%q/%q", firstID, secondID)
+	}
+	consoleID := identified(first.Console())
+	if consoleID == "" || consoleID == firstID {
+		t.Fatalf("Console 标识=%q", consoleID)
+	}
+	one, err := first.Console().Attach(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	two, err := first.Console().Attach(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminalOne, terminalTwo := identified(one), identified(two)
+	if terminalOne == terminalTwo || terminalOne == consoleID || terminalTwo == consoleID {
+		t.Fatalf("Terminal 标识=%q/%q console=%q", terminalOne, terminalTwo, consoleID)
+	}
+	// 独立连接同样有唯一标识,且不包含宿主目录。
+	ssh, err := first.Connect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sshID := identified(ssh)
+	if sshID == terminalOne || strings.Contains(sshID, string(os.PathSeparator)+"work") {
+		t.Fatalf("Connect 标识=%q", sshID)
+	}
+	if identified(first.Console()) != consoleID {
+		t.Fatal("Console 标识应稳定")
 	}
 }
