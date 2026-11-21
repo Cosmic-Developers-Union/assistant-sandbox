@@ -362,7 +362,7 @@ Python 和 Node.js 的验收必须执行客体运行时，不能通过调用宿�
 - [x] R05 将 MessageSource 与通用 VM 解耦。验收：不提供 agent 消息也能运行全部 VM 核心用例，消息作为显式可选能力注入。 证据:model.VM/Console/Terminal/Bash/Filesystem 契约没有 MessageSource 字段,创建路径 native.NewModelVM(Options{Seed}) 不要求任何消息来源;model.Suite 六向量与 P15 扩展用例全部在该工厂上运行;旧 WASI Runtime.Config.MessageSource 仅保留在待 R06 收敛的旧入口,不进入通用 VM。测试:`go test ./model/ ./deployment/native/ -count=1`(真实 VM 工厂无消息来源通过全部核心向量)。CI:Test 工作流 integration 任务。
 - [ ] R06 收敛旧 Runtime/Session 与 contract.Session 入口。验收：公开入口均落到同一资源所有权模型，迁移或删除策略有调用方证据。
 - [ ] R07 接入 assistant 的 VM 适配。验收：assistant 依赖已发布模块与镜像，无本机 replace 路径；消息、文件和执行场景通过集成测试。
-- [ ] R08 验证原有工作流迁移。验收：执行命令、连续修改文件、断开重连和取消等待在新模型中有明确结果。
+- [x] R08 验证原有工作流迁移。验收：执行命令、连续修改文件、断开重连和取消等待在新模型中有明确结果。 证据:deployment/native/migration_test.go 使用公开的 native.NewModelVM(model.VM)与 Connect/Terminal.Bash:同一 VM 内执行命令并读取 /work 文件;连续两次修改同一文件得到twothree;断开一个连接后重新 Connect,文件仍为twothree;已取消上下文的 Run 返回错误且不执行,随后同一连接仍能正常执行 alive。全部路径共享同一内核与文件系统,不另造 VM。测试:deployment/native TestModelVMOriginalWorkflowsMigrate。测试:`go test ./deployment/native/ -run TestModelVMOriginalWorkflowsMigrate -count=1`。CI:Test 工作流 integration 任务。
 - [ ] R09 提供独立开发入门。验收：新检出按文档完成构建、创建 VM、运行 Bash/Python/Node、关闭 VM，所有命令由 CI 复验。
 
 ## S. 全系统虚拟机路径
