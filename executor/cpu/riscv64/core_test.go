@@ -8,6 +8,7 @@ import (
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/executor/cpu"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/memory"
 )
 
 type sparse struct {
@@ -1241,8 +1242,8 @@ func TestAmoReadModifyWrite(t *testing.T) {
 		{"add word wraps", 4, 0x00, 0x7FFFFFFF, 1, 0x80000000, 0x7FFFFFFF},
 		{"add word truncates", 4, 0x00, 0xFFFFFFFF, 2, 0x00000001, 0xFFFFFFFFFFFFFFFF},
 		{"xor word", 4, 0x04, 0xFF00FF00, 0x0F0F0F0F, 0xF00FF00F, 0xFFFFFFFFFF00FF00},
-		{"and word", 4, 0x08, 0xFF00FF00, 0x0F0F0F0F, 0x0F000F00, 0xFFFFFFFFFF00FF00},
-		{"or word", 4, 0x0C, 0xFF00FF00, 0x0000000F, 0xFF00FF0F, 0xFFFFFFFFFF00FF00},
+		{"and word", 4, 0x0C, 0xFF00FF00, 0x0F0F0F0F, 0x0F000F00, 0xFFFFFFFFFF00FF00},
+		{"or word", 4, 0x08, 0xFF00FF00, 0x0000000F, 0xFF00FF0F, 0xFFFFFFFFFF00FF00},
 		{"min word keeps negative", 4, 0x10, 0xFFFFFFFF, 1, 0xFFFFFFFF, 0xFFFFFFFFFFFFFFFF},
 		{"min word takes smaller", 4, 0x10, 5, 0xFFFFFFFF, 0xFFFFFFFF, 5},
 		{"max word takes larger", 4, 0x14, 1, 0xFFFFFFFF, 1, 1},
@@ -1761,5 +1762,75 @@ func TestCSRWritesAndUnknownAddressesAreRejected(t *testing.T) {
 		if !errors.As(err, &trap) || trap.Kind != tc.want {
 			t.Errorf("%s: 类别=%v err=%v want %v", tc.label, trap.Kind, err, tc.want)
 		}
+	}
+}
+
+// TestAmoAndOrOpcodes 锁定 RISC-V A 扩展的 funct5:0x08 是 AMOOR,
+// 0x0C 是 AMOAND。二者曾互换,导致 V8 的原子任务位图只增不减(Q20)。
+func TestAmoAndOrOpcodes(t *testing.T) {
+	and, ok := amoOperation(0x0C)
+	if !ok || and(0xFF00, 0x0F0F, true) != 0x0F00 {
+		t.Fatalf("funct5 0x0C 应为 AMOAND")
+	}
+	or, ok := amoOperation(0x08)
+	if !ok || or(0xF000, 0x000F, true) != 0xF00F {
+		t.Fatalf("funct5 0x08 应为 AMOOR")
+	}
+}
+
+// TestAmoAndOrUseAtomicTable 经真实 memory.Table 执行 AMOAND/AMOOR,
+// 覆盖 AtomicMemory 读改写路径与操作码映射。
+func TestAmoAndOrUseAtomicTable(t *testing.T) {
+	ctx := context.Background()
+	table := memory.New(0)
+	if err := table.Map(ctx, memory.Region{Start: 0, End: memory.PageSize, Prot: memory.ProtRead | memory.ProtWrite}); err != nil {
+		t.Fatal(err)
+	}
+	if err := table.Map(ctx, memory.Region{Start: memory.PageSize, End: 2 * memory.PageSize, Prot: memory.ProtRead | memory.ProtWrite}); err != nil {
+		t.Fatal(err)
+	}
+	instructions := []uint32{
+		encodeAmo(0x0C, 0x2, 10, 11, 0), // amoand.w x0, a1, (a0)
+		encodeAmo(0x08, 0x2, 10, 11, 0), // amoor.w x0, a1, (a0)
+	}
+	var code [8]byte
+	for index, instruction := range instructions {
+		binary.LittleEndian.PutUint32(code[index*4:], instruction)
+	}
+	if err := table.Write(ctx, 0, code[:]); err != nil {
+		t.Fatal(err)
+	}
+	if err := table.Protect(ctx, 0, memory.PageSize, memory.ProtRead|memory.ProtExec); err != nil {
+		t.Fatal(err)
+	}
+	var data [4]byte
+	binary.LittleEndian.PutUint32(data[:], 0xFF00)
+	if err := table.Write(ctx, memory.PageSize, data[:]); err != nil {
+		t.Fatal(err)
+	}
+	port, err := New(cpu.Config{Memory: table, Entry: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := port.WriteRegister(10, memory.PageSize); err != nil {
+		t.Fatal(err)
+	}
+	if err := port.WriteRegister(11, 0x0F0F); err != nil {
+		t.Fatal(err)
+	}
+	if outcome, err := port.Step(ctx); err != nil || outcome != cpu.Continued {
+		t.Fatalf("amoand: outcome=%v err=%v", outcome, err)
+	}
+	if err := port.WriteRegister(11, 0x00F0); err != nil {
+		t.Fatal(err)
+	}
+	if outcome, err := port.Step(ctx); err != nil || outcome != cpu.Continued {
+		t.Fatalf("amoor: outcome=%v err=%v", outcome, err)
+	}
+	if err := table.Read(ctx, memory.PageSize, data[:]); err != nil {
+		t.Fatal(err)
+	}
+	if got := binary.LittleEndian.Uint32(data[:]); got != 0x0FF0 {
+		t.Fatalf("amoand/amoor 结果=%#x want 0x0ff0", got)
 	}
 }

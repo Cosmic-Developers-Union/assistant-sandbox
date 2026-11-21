@@ -3,7 +3,9 @@ package memory
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
@@ -871,5 +873,44 @@ func TestAccessAcrossAdjacentMappings(t *testing.T) {
 	}
 	if err := table.Check(ctx, page(3)-4, 8, ProtRead); !errors.Is(err, errno.Range) {
 		t.Fatalf("跨越未映射空洞 err=%v want EFAULT", err)
+	}
+}
+
+// TestAtomicModifySerializesConcurrentUpdates 验证 AMO/LR-SC 的读改写
+// 在同一内存锁内完成:多 hart 并发自增不会丢失更新(K02/Q20)。
+func TestAtomicModifySerializesConcurrentUpdates(t *testing.T) {
+	ctx := context.Background()
+	table := New(0)
+	if err := table.Map(ctx, Region{Start: page(1), End: page(2), Prot: ProtRead | ProtWrite}); err != nil {
+		t.Fatal(err)
+	}
+	const workers = 8
+	const increments = 500
+	var wait sync.WaitGroup
+	for range workers {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			for range increments {
+				if _, err := table.AtomicModify(ctx, page(1), 8, func(old uint64) uint64 { return old + 1 }); err != nil {
+					t.Error(err)
+					return
+				}
+			}
+		}()
+	}
+	wait.Wait()
+	var raw [8]byte
+	if err := table.Read(ctx, page(1), raw[:]); err != nil {
+		t.Fatal(err)
+	}
+	if got := binary.LittleEndian.Uint64(raw[:]); got != workers*increments {
+		t.Fatalf("atomic counter=%d want %d", got, workers*increments)
+	}
+	if _, err := table.AtomicModify(ctx, page(1)+1, 8, func(old uint64) uint64 { return old }); !errors.Is(err, errno.Invalid) {
+		t.Fatalf("未对齐原子访问=%v want EINVAL", err)
+	}
+	if _, err := table.AtomicModify(ctx, page(1), 2, func(old uint64) uint64 { return old }); !errors.Is(err, errno.Invalid) {
+		t.Fatalf("非法宽度原子访问=%v want EINVAL", err)
 	}
 }

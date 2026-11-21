@@ -3,6 +3,7 @@ package memory
 import (
 	"cmp"
 	"context"
+	"encoding/binary"
 	"slices"
 	"sort"
 	"sync"
@@ -251,8 +252,13 @@ func (t *Table) Read(ctx context.Context, address uint64, buffer []byte) error {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	return t.readLocked(address, buffer, ProtRead)
+}
+
+// readLocked 在已持锁状态下读取;调用方负责长度非零与上下文检查。
+func (t *Table) readLocked(address uint64, buffer []byte, prot Prot) error {
 	length := uint64(len(buffer))
-	if err := t.checkLocked(address, length, ProtRead); err != nil {
+	if err := t.checkLocked(address, length, prot); err != nil {
 		return err
 	}
 	clear(buffer)
@@ -285,6 +291,11 @@ func (t *Table) Write(ctx context.Context, address uint64, buffer []byte) error 
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	return t.writeLocked(address, buffer)
+}
+
+// writeLocked 在已持锁状态下写入;调用方负责长度非零与上下文检查。
+func (t *Table) writeLocked(address uint64, buffer []byte) error {
 	length := uint64(len(buffer))
 	if err := t.checkLocked(address, length, ProtWrite); err != nil {
 		return err
@@ -312,6 +323,42 @@ func (t *Table) Write(ctx context.Context, address uint64, buffer []byte) error 
 		copy(stored[start-base:stop-base], slice)
 	}
 	return nil
+}
+
+// AtomicModify 在同一内存锁内完成读改写(AMO/LR-SC):operation 返回
+// 写回值,返回值为修改前的原始值。width 只接受 4 或 8。
+func (t *Table) AtomicModify(ctx context.Context, address uint64, width int, operation func(uint64) uint64) (uint64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if width != 4 && width != 8 {
+		return 0, errno.Wrap(errno.Invalid, "原子访问宽度必须为 4 或 8")
+	}
+	if address%uint64(width) != 0 {
+		return 0, errno.Wrap(errno.Invalid, "原子访问地址未对齐")
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	var raw [8]byte
+	if err := t.readLocked(address, raw[:width], ProtRead); err != nil {
+		return 0, err
+	}
+	var old uint64
+	if width == 4 {
+		old = uint64(binary.LittleEndian.Uint32(raw[:4]))
+	} else {
+		old = binary.LittleEndian.Uint64(raw[:8])
+	}
+	updated := operation(old)
+	if width == 4 {
+		binary.LittleEndian.PutUint32(raw[:4], uint32(updated))
+	} else {
+		binary.LittleEndian.PutUint64(raw[:8], updated)
+	}
+	if err := t.writeLocked(address, raw[:width]); err != nil {
+		return 0, err
+	}
+	return old, nil
 }
 
 // regionAtLocked 返回包含地址的区间(区间按起始地址有序,二分);

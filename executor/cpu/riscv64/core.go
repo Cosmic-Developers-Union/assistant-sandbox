@@ -12,10 +12,12 @@ import (
 type Core struct {
 	machine cpu.Machine
 	memory  cpu.Memory
+	atomics cpu.AtomicMemory
 	exec    cpu.ExecutableChecker
 	meter   cpu.Meter
 	cancel  cpu.Canceller
 	lr      reservation
+	lrValue uint64
 
 	// retired 是已成功退休的指令数,作为 cycle/instret 计数器的值源。
 	retired uint64
@@ -53,6 +55,9 @@ func New(config cpu.Config) (*Core, error) {
 	}
 	if checker, ok := config.Memory.(cpu.ExecutableChecker); ok {
 		core.exec = checker
+	}
+	if atomics, ok := config.Memory.(cpu.AtomicMemory); ok {
+		core.atomics = atomics
 	}
 
 	core.machine = cpu.Machine{PC: config.Entry, Registers: make([]uint64, numRegs), Floats: make([]uint64, numFPRegs)}
@@ -680,6 +685,7 @@ func (c *Core) loadReserved(ctx context.Context, pc uint64, instruction uint32, 
 	}
 	c.lr = reservation{active: true, address: address, width: width}
 	value := loadValue(raw[:width], false)
+	c.lrValue = value
 	if word {
 		c.write(rd, signExtend(uint64(uint32(value)), 32))
 	} else {
@@ -694,6 +700,26 @@ func (c *Core) storeConditional(ctx context.Context, pc uint64, instruction uint
 		return cpu.Continued, nil, nil
 	}
 	value := c.read(rs2)
+	if c.atomics != nil {
+		swapped := false
+		_, err := c.atomics.AtomicModify(ctx, address, width, func(old uint64) uint64 {
+			if old != c.lrValue {
+				return old
+			}
+			swapped = true
+			return value
+		})
+		if err != nil {
+			return cpu.Trapped, &cpu.Trap{Kind: cpu.TrapMemoryFault, Address: pc, Instruction: instruction, Detail: address, Cause: err}, nil
+		}
+		c.lr.active = false
+		if swapped {
+			c.write(rd, 0)
+		} else {
+			c.write(rd, 1)
+		}
+		return cpu.Continued, nil, nil
+	}
 	var raw [8]byte
 	if word {
 		binary.LittleEndian.PutUint32(raw[:4], uint32(value))
@@ -725,6 +751,22 @@ func (c *Core) amo(ctx context.Context, pc uint64, instruction uint32, rd, rs1, 
 		}, nil
 	}
 	var raw [8]byte
+	if c.atomics != nil {
+		operand := c.read(rs2)
+		old, err := c.atomics.AtomicModify(ctx, address, width, func(old uint64) uint64 {
+			return operation(old, operand, word)
+		})
+		if err != nil {
+			return cpu.Trapped, &cpu.Trap{Kind: cpu.TrapMemoryFault, Address: pc, Instruction: instruction, Detail: address, Cause: err}, nil
+		}
+		if word {
+			c.write(rd, signExtend(uint64(uint32(old)), 32))
+		} else {
+			c.write(rd, old)
+		}
+		c.invalidateReservation(address, width)
+		return cpu.Continued, nil, nil
+	}
 	if err := c.memory.Read(ctx, address, raw[:width]); err != nil {
 		return cpu.Trapped, &cpu.Trap{Kind: cpu.TrapMemoryFault, Address: pc, Instruction: instruction, Detail: address, Cause: err}, nil
 	}
@@ -776,9 +818,9 @@ func amoOperation(funct5 uint32) (func(old, operand uint64, word bool) uint64, b
 	case 0x04:
 		return func(old, operand uint64, _ bool) uint64 { return old ^ operand }, true
 	case 0x08:
-		return func(old, operand uint64, _ bool) uint64 { return old & operand }, true
-	case 0x0C:
 		return func(old, operand uint64, _ bool) uint64 { return old | operand }, true
+	case 0x0C:
+		return func(old, operand uint64, _ bool) uint64 { return old & operand }, true
 	case 0x10:
 		return func(old, operand uint64, word bool) uint64 {
 			if word {

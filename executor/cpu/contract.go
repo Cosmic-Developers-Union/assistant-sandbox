@@ -120,6 +120,13 @@ type Memory interface {
 	Write(ctx context.Context, address uint64, buffer []byte) error
 }
 
+// AtomicMemory 是可选的内存原子读改写能力(K02/K03):AMO 与由
+// LR/SC 实现的比较交换必须在同一内存锁内完成读改写,否则多个
+// hart 的原子操作会相互覆盖。width 为 4 或 8,operation 返回新值。
+type AtomicMemory interface {
+	AtomicModify(ctx context.Context, address uint64, width int, operation func(uint64) uint64) (uint64, error)
+}
+
 type Canceller interface {
 	Cancelled() bool
 }
