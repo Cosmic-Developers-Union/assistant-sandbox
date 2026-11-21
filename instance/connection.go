@@ -60,6 +60,9 @@ func (c *Connection) Exec(ctx context.Context, spec ExecSpec) (proc.Proc, error)
 	}
 	// 执行上下文由 VM 掌握:关闭时统一取消,不依赖执行器登记时机。
 	runCtx, cancel := context.WithCancel(ctx)
+	if c.vm.processTimeout > 0 {
+		runCtx, cancel = context.WithTimeout(ctx, c.vm.processTimeout)
+	}
 	c.vm.registerRunning(process.ID, cancel)
 	c.vm.executions.Add(1)
 	go func() {

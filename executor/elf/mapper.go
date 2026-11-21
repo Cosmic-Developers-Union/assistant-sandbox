@@ -66,10 +66,14 @@ func (m *mapper) Anonymous(ctx context.Context, request common.MapRequest) (uint
 	}
 	end := start + request.Length
 	replaced := m.overlapBytes(ctx, start, end)
-	if err := m.table.Replace(ctx, memory.Region{Start: start, End: end, Prot: prot, Name: "mmap"}, request.NoReplace); err != nil {
+	charged := end - start - replaced
+	if err := m.charge(ctx, charged); err != nil {
 		return 0, err
 	}
-	m.charge(ctx, end-start-replaced)
+	if err := m.table.Replace(ctx, memory.Region{Start: start, End: end, Prot: prot, Name: "mmap"}, request.NoReplace); err != nil {
+		m.release(ctx, charged)
+		return 0, err
+	}
 	return start, nil
 }
 
@@ -142,8 +146,15 @@ func (m *mapper) File(ctx context.Context, request common.FileMapRequest) (uint6
 		FileBase: request.Offset,
 	}
 	if !request.Shared {
-		// 私有映射:快照文件内容为私有页(后备留空)。
+		// 私有映射:快照文件内容为私有页(后备留空)。预算在建立
+		// 映射前扣减,失败不留半初始化区间(O04)。
+		replaced := m.overlapBytes(ctx, start, end)
+		charged := request.Length - replaced
+		if err := m.charge(ctx, charged); err != nil {
+			return 0, err
+		}
 		if err := m.table.Replace(ctx, region, request.NoReplace); err != nil {
+			m.release(ctx, charged)
 			return 0, err
 		}
 		backend := fileBackend{file: request.File}
@@ -161,15 +172,18 @@ func (m *mapper) File(ctx context.Context, request common.FileMapRequest) (uint6
 			}
 			offset += size
 		}
-		m.charge(ctx, request.Length)
 		return start, nil
 	}
 	region.Backend = fileBackend{file: request.File}
 	replaced := m.overlapBytes(ctx, start, end)
-	if err := m.table.Replace(ctx, region, request.NoReplace); err != nil {
+	charged := request.Length - replaced
+	if err := m.charge(ctx, charged); err != nil {
 		return 0, err
 	}
-	m.charge(ctx, end-start-replaced)
+	if err := m.table.Replace(ctx, region, request.NoReplace); err != nil {
+		m.release(ctx, charged)
+		return 0, err
+	}
 	return start, nil
 }
 
@@ -289,11 +303,11 @@ func protOf(bits uint64) (memory.Prot, error) {
 	return out, nil
 }
 
-func (m *mapper) charge(ctx context.Context, size uint64) {
+func (m *mapper) charge(ctx context.Context, size uint64) error {
 	if m.meter == nil || size == 0 {
-		return
+		return nil
 	}
-	_ = m.meter.ChargeKind(ctx, m.pid, resources.KindMemory, size)
+	return m.meter.ChargeKind(ctx, m.pid, resources.KindMemory, size)
 }
 
 func (m *mapper) release(ctx context.Context, size uint64) {
@@ -373,10 +387,13 @@ func (m *mapper) Mremap(ctx context.Context, oldStart, oldEnd, newEnd uint64, ma
 	}
 	grow := newEnd - oldEnd
 	if newEnd <= m.ceiling && !overlapsAny(regions, oldEnd, newEnd) {
-		if err := m.table.Resize(ctx, oldStart, oldEnd, newEnd); err != nil {
+		if err := m.charge(ctx, grow); err != nil {
 			return 0, err
 		}
-		m.charge(ctx, grow)
+		if err := m.table.Resize(ctx, oldStart, oldEnd, newEnd); err != nil {
+			m.release(ctx, grow)
+			return 0, err
+		}
 		return oldStart, nil
 	}
 	if !mayMove {
@@ -397,14 +414,18 @@ func (m *mapper) Mremap(ctx context.Context, oldStart, oldEnd, newEnd uint64, ma
 			return 0, err
 		}
 	}
+	if err := m.charge(ctx, grow); err != nil {
+		return 0, err
+	}
 	if err := m.table.Move(ctx, oldStart, oldEnd, newStart); err != nil {
+		m.release(ctx, grow)
 		return 0, err
 	}
 	// 迁移到 grown 大小的空隙后,在新位置原地扩张到目标大小。
 	if err := m.table.Resize(ctx, newStart, newStart+oldEnd-oldStart, newStart+grown); err != nil {
+		m.release(ctx, grow)
 		return 0, err
 	}
-	m.charge(ctx, grow)
 	return newStart, nil
 }
 

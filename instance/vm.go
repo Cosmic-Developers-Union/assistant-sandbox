@@ -8,6 +8,7 @@ import (
 	"context"
 	"io"
 	"sync"
+	"time"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/executor/elf"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/filesystem/devfs"
@@ -27,6 +28,7 @@ import (
 	vmfs "github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fs"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/identity"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/proc"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/resources"
 	"mvdan.cc/sh/v3/interp"
 )
 
@@ -43,6 +45,13 @@ const (
 	defaultMemoryBytes = 256 << 20
 	defaultCPUs        = 1
 	defaultShmBytes    = 64 << 20
+)
+
+// defaultSessionLimits/defaultProcessLimits 是未配置时的宽松预算:
+// 仍是有界值,防止死循环或泄漏拖垮宿主(O03/O04)。
+var (
+	defaultSessionLimits = resources.Limits{Memory: 1 << 30, Work: 1 << 32, Descriptors: 4096, Output: 16 << 20, Files: 1 << 20}
+	defaultProcessLimits = resources.Limits{Memory: 256 << 20, Work: 64 << 20, Descriptors: 1024, Output: 1 << 20, Files: 1 << 18}
 )
 
 // Options 是 VM 的构造参数。
@@ -68,6 +77,14 @@ type Options struct {
 
 	// CPUs 是 /proc/cpuinfo 报告的客体处理器数;非正时 1。
 	CPUs int
+
+	// Session/Process 是 VM 级与每进程资源预算(O03/O04);零值使用
+	// 默认值。Work 以 CPU 指令数计,Memory 以字节计。
+	Session resources.Limits
+	Process resources.Limits
+
+	// ProcessTimeout 是每客体进程的墙钟上限;0 表示不额外限制。
+	ProcessTimeout time.Duration
 
 	// Programs 是追加到内置 Shell 程序表之上的客体程序;同名条目
 	// 覆盖内置实现。
@@ -100,6 +117,12 @@ type VM struct {
 	// memoryBytes/cpus 是系统视图报告的客体配置(N08)。
 	memoryBytes uint64
 	cpus        int
+
+	// meters 是 VM 级/每进程资源预算(O03/O04)。
+	meters *resources.Meters
+
+	// processTimeout 是每进程墙钟上限(O03)。
+	processTimeout time.Duration
 
 	// env 是客体会话默认环境(N04)。
 	env map[string]string
@@ -165,6 +188,16 @@ func newVM(ctx context.Context, opts Options, root *memfs.FS, source clock.Sourc
 	if opts.ShmBytes <= 0 {
 		opts.ShmBytes = defaultShmBytes
 	}
+	if opts.Session.Memory == 0 && opts.Session.Work == 0 {
+		opts.Session = defaultSessionLimits
+	}
+	if opts.Process.Memory == 0 && opts.Process.Work == 0 {
+		opts.Process = defaultProcessLimits
+	}
+	meters, err := resources.NewSession(opts.Session, opts.Process)
+	if err != nil {
+		return nil, err
+	}
 	random := entropyFor(opts)
 	mounts := &mountfs.Mounts{}
 	if err := mounts.Mount("/", root); err != nil {
@@ -191,9 +224,10 @@ func newVM(ctx context.Context, opts Options, root *memfs.FS, source clock.Sourc
 	machine := &VM{
 		root: root, mounts: mounts, devices: devices, shm: shm,
 		clock: source, entropy: random, env: opts.env,
-		memoryBytes: opts.MemoryBytes, cpus: opts.CPUs,
-		connections: map[uint64]*Connection{},
-		running:     map[proc.PID]context.CancelFunc{},
+		memoryBytes: opts.MemoryBytes, cpus: opts.CPUs, meters: meters,
+		processTimeout: opts.ProcessTimeout,
+		connections:    map[uint64]*Connection{},
+		running:        map[proc.PID]context.CancelFunc{},
 	}
 	if machine.env == nil {
 		machine.env = map[string]string{"HOME": WorkRoot, "TMPDIR": TempRoot}
@@ -224,14 +258,16 @@ func newVM(ctx context.Context, opts Options, root *memfs.FS, source clock.Sourc
 	}
 	kernel, err := vm.New(vm.Services{
 		Set: capability.Set{
-			FS:       mounts,
-			FD:       fd.New(),
-			Identity: identity.SingleUser{},
-			Clock:    source,
-			Entropy:  random,
+			FS:        mounts,
+			FD:        fd.New(),
+			Identity:  identity.SingleUser{},
+			Clock:     source,
+			Entropy:   random,
+			Resources: meters,
 		},
 		Programs: registry,
 		Binaries: binaries,
+		Meters:   meters,
 	}, opts.MaxProcesses)
 	if err != nil {
 		return nil, err
