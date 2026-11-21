@@ -1323,11 +1323,31 @@ func (f processVforker) Vfork(ctx context.Context, request common.VforkRequest) 
 		control: f.rebind,
 		done:    make(chan struct{}),
 	}
+	// exec 换绑必须作用于 vfork 子进程自身的 PID。父进程的控制端口
+	// 不能用于此处,否则会把父进程地址空间替换为空表,后续 vfork
+	// 子进程将运行在错误空间。
+	if rebind, ok := child.Control.(proc.SpaceRebindControl); ok {
+		binding.control = rebind
+	}
 	go func() {
 		// 子进程生命周期独立于调用方上下文;父进程在 vfork 调用内
 		// 暂停,完成(exec/退出)后恢复。
-		runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-		defer cancel()
+		runCtx, cancel := context.WithCancelCause(context.WithoutCancel(ctx))
+		defer cancel(nil)
+		// K08/J09:vfork 子进程同样需要信号中断钩子,fatal 信号
+		// 才能取消运行上下文并以信号状态结束。exec 会复位信号表
+		// (ResetForExec 删除钩子),因此保留重绑闭包。
+		var interrupted signal.Number
+		bindInterrupt := func() {
+			if binder, ok := child.Control.(proc.ThreadInterruptControl); ok {
+				binder.BindThreadInterrupt(child.ID, func(n signal.Number) {
+					interrupted = n
+					cancel(errno.Wrap(errno.Interrupted, "信号中断"))
+				})
+			}
+		}
+		bindInterrupt()
+		binding.rebindInterrupt = bindInterrupt
 		childCore, err := riscv64.New(cpu.Config{
 			Memory: space,
 			Entry:  state.PC,
@@ -1391,6 +1411,19 @@ func (f processVforker) Vfork(ctx context.Context, request common.VforkRequest) 
 			return
 		}
 		code, runErr := runner.Run(runCtx)
+		if runErr != nil && interrupted.Valid() {
+			// 致命信号:以信号状态结束 vfork 子进程,父进程 wait
+			// 观察 WIFSIGNALED(与 Linux 一致)。
+			binding.release()
+			if finisher, ok := child.Control.(interface {
+				FinishGroup(proc.PID, uint8, uint8) error
+			}); ok {
+				_ = finisher.FinishGroup(child.ID, 0, uint8(interrupted))
+			} else {
+				_ = f.finisher.FinishCurrent(child.ID, 125)
+			}
+			return
+		}
 		if runErr != nil {
 			// 子进程执行故障:按 fail-closed 以 125 退出并转僵尸。
 			code = 125
@@ -1421,6 +1454,9 @@ type vforkBinding struct {
 
 	done chan struct{}
 	once sync.Once
+
+	// rebindInterrupt 在 exec 复位信号表后重新登记信号中断钩子。
+	rebindInterrupt func()
 }
 
 // release 在子进程 exec 成功或退出时恰好触发一次:父进程恢复。
@@ -1539,18 +1575,24 @@ func (p *processExec) Exec(ctx context.Context, path string, argv, envp []string
 		return err
 	}
 	if p.vf != nil {
-		// 换绑执行上下文并固化内核绑定,随后释放父进程暂停——
-		// 此后子进程与父进程各自独立运行。
+		// 换绑执行上下文并固化内核绑定;父进程暂停保持到 exec 的
+		// 信号状态复位与中断钩子重绑完成,避免窗口内丢失 SIGTERM。
 		if err := p.vf.switchTo(ctx, target); err != nil {
 			p.vf.control.DiscardSpace()
 			return err
 		}
 		p.space = target
-		p.vf.release()
 	}
 	if control, ok := p.process.Control.(proc.ExecControl); ok {
-		err := control.ResetForExec(path, finalArgv, environmentFromList(envp))
-		return err
+		if err := control.ResetForExec(path, finalArgv, environmentFromList(envp)); err != nil {
+			return err
+		}
+	}
+	if p.vf != nil {
+		if p.vf.rebindInterrupt != nil {
+			p.vf.rebindInterrupt()
+		}
+		p.vf.release()
 	}
 	return nil
 }
