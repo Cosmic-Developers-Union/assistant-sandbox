@@ -78,6 +78,8 @@ func TestVMProductionCodeHasNoAmbientHostImports(t *testing.T) {
 
 		// PTY 是宿主侧设备视图;time 仅用于 FileInfo.ModTime 的零值。
 		"vm/pty/pty.go": {"time": true},
+		// 标准流的 fstat 视图;time 仅用于 FileInfo.ModTime 的零值。
+		"vm/fd/table.go": {"time": true},
 
 		"filesystem/packagefs/packagefs.go": {"time": true},
 

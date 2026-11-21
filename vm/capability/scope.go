@@ -555,6 +555,14 @@ func (f *chargeFile) Close() error { return f.base.Close() }
 
 func (f *chargeFile) Stat() (stdfs.FileInfo, error) { return f.base.Stat() }
 
+// IsTerminal 标识底层句柄是否真的具备终端尺寸能力。chargeFile
+// 总是实现 Dimensions 以便转发 PTY 查询,若无此标记,普通文件也会
+// 被 isatty 误判为终端。
+func (f *chargeFile) IsTerminal() bool {
+	_, ok := f.base.(interface{ Dimensions() (uint16, uint16) })
+	return ok
+}
+
 // 终端能力转发(P08):PTY/终端句柄经作用域包装后仍可被 isatty/
 // ioctl 识别,否则真实路径恒报 ENOTTY。
 func (f *chargeFile) Dimensions() (uint16, uint16) {

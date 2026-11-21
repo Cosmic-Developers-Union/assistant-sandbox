@@ -17,6 +17,15 @@ func (s *sizedStream) Dimensions() (uint16, uint16) {
 	return s.rows, s.columns
 }
 
+// wrappedStream 模拟作用域包装器:总是提供 Dimensions,但用
+// IsTerminal 明确否认终端身份。
+type wrappedStream struct {
+	sizedStream
+	terminal bool
+}
+
+func (s *wrappedStream) IsTerminal() bool { return s.terminal }
+
 func TestTerminalQueryReportsOnlyRealTerminals(t *testing.T) {
 	ctx := context.Background()
 	table := New()
@@ -47,6 +56,21 @@ func TestTerminalQueryReportsOnlyRealTerminals(t *testing.T) {
 	}
 	if !info.TTY || info.Rows != 24 || info.Columns != 80 {
 		t.Fatalf("终端信息不符: %+v", info)
+	}
+
+	wrapped, err := table.InstallNext(1, &wrappedStream{sizedStream: sizedStream{rows: 10, columns: 20}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info, err := table.Terminal(ctx, 1, wrapped); err != nil || info.TTY {
+		t.Fatalf("包装后的普通句柄不应是终端: %+v err=%v", info, err)
+	}
+	realWrapped, err := table.InstallNext(1, &wrappedStream{terminal: true, sizedStream: sizedStream{rows: 30, columns: 90}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info, err := table.Terminal(ctx, 1, realWrapped); err != nil || !info.TTY || info.Rows != 30 || info.Columns != 90 {
+		t.Fatalf("包装后的终端应被识别: %+v err=%v", info, err)
 	}
 
 	stream := table.entries[1][terminal].ref.handle.(*sizedStream)

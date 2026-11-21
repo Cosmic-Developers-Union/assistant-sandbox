@@ -6,8 +6,11 @@ import (
 	"context"
 	"errors"
 	"io"
+	stdfs "io/fs"
 	"slices"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/clock"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/epoll"
@@ -102,9 +105,9 @@ func (t *Table) Attach(pid uint64, s Streams) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.entries[pid] = map[uint32]*entry{
-		0: newEntry(&stream{reader: s.Input}, false),
-		1: newEntry(&stream{writer: s.Output}, false),
-		2: newEntry(&stream{writer: s.Error}, false),
+		0: newEntry(&stream{reader: s.Input, access: 0}, false),
+		1: newEntry(&stream{writer: s.Output, access: 1}, false),
+		2: newEntry(&stream{writer: s.Error, access: 1}, false),
 	}
 }
 
@@ -759,6 +762,11 @@ func (t *Table) Terminal(ctx context.Context, pid uint64, id uint32) (Terminal, 
 	if err := ctx.Err(); err != nil {
 		return Terminal{}, err
 	}
+	// 作用域包装器可能为了转发 PTY 能力而无条件实现 Dimensions;
+	// 显式的 IsTerminal 标记可将其与真实终端区分。
+	if marker, ok := handle.(interface{ IsTerminal() bool }); ok && !marker.IsTerminal() {
+		return Terminal{}, nil
+	}
 	terminal, ok := handle.(terminalStream)
 	if !ok {
 		return Terminal{}, nil
@@ -798,6 +806,11 @@ func (t *Table) SetTerminalState(ctx context.Context, pid uint64, id uint32, sta
 type stream struct {
 	reader io.Reader
 	writer io.Writer
+
+	// access 是打开访问模式(F_GETFL 的 O_RDONLY/O_WRONLY 位),
+	// nonblock 是运行时可切换的 O_NONBLOCK。
+	access   uint32
+	nonblock atomic.Bool
 }
 
 func (s *stream) Read(p []byte) (int, error) {
@@ -813,6 +826,42 @@ func (s *stream) Write(p []byte) (int, error) {
 	return s.writer.Write(p)
 }
 func (s *stream) Close() error { return nil }
+
+// StatusFlags 报告标准流状态标志(F_GETFL):访问模式与 O_NONBLOCK。
+func (s *stream) StatusFlags() (uint32, error) {
+	flags := s.access
+	if s.nonblock.Load() {
+		flags |= 0o4000
+	}
+	return flags, nil
+}
+
+// SetStatusFlags 应用 F_SETFL:标准流只记录 O_NONBLOCK。
+func (s *stream) SetStatusFlags(flags uint32) error {
+	s.nonblock.Store(flags&0o4000 != 0)
+	return nil
+}
+
+// streamInfo 是标准流/管道句柄的 fstat 视图:字符设备或 FIFO,
+// 使 libc/运行时对 stdin/stdout/stderr 的 fstat 不再 ENOTSUP。
+type streamInfo struct {
+	name string
+	pipe bool
+}
+
+func (i streamInfo) Name() string { return i.name }
+func (i streamInfo) Size() int64  { return 0 }
+func (i streamInfo) Mode() stdfs.FileMode {
+	if i.pipe {
+		return stdfs.ModeNamedPipe | 0o600
+	}
+	return stdfs.ModeDevice | stdfs.ModeCharDevice | 0o600
+}
+func (i streamInfo) ModTime() time.Time { return time.Time{} }
+func (i streamInfo) IsDir() bool        { return false }
+func (i streamInfo) Sys() any           { return nil }
+
+func (s *stream) Stat() (stdfs.FileInfo, error) { return streamInfo{name: "stream"}, nil }
 
 func (s *stream) ReadContext(ctx context.Context, p []byte) (int, error) {
 	if blocking, ok := s.reader.(interface {
