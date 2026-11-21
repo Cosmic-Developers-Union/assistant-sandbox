@@ -7,6 +7,8 @@ import (
 	"io"
 	"net"
 	"time"
+
+	vmnet "github.com/Cosmic-Developers-Union/assistant-sandbox/vm/net"
 )
 
 // Dialer 使用宿主 net.Dialer 建立连接。Timeout 为 0 时由上下文控制。
@@ -32,3 +34,26 @@ func (d Dialer) DialPacket(ctx context.Context, network, address string) (io.Rea
 	}
 	return conn, nil
 }
+
+// Listener 是宿主监听入口(M13),由 Dialer.Listen 创建。
+type Listener struct {
+	inner net.Listener
+}
+
+// Listen 在宿主地址上创建 TCP 监听。
+func (d Dialer) Listen(ctx context.Context, network, address string) (vmnet.HostListener, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	listener, err := net.Listen(network, address)
+	if err != nil {
+		return nil, err
+	}
+	return &Listener{inner: listener}, nil
+}
+
+func (l *Listener) Accept() (io.ReadWriteCloser, error) { return l.inner.Accept() }
+
+func (l *Listener) Close() error { return l.inner.Close() }
+
+func (l *Listener) Addr() string { return l.inner.Addr().String() }

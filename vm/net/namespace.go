@@ -85,11 +85,12 @@ type Namespace struct {
 	unixPaths map[string]*UnixListener
 
 	// egress/policy 是宿主出口(M09):未配置时非回环连接拒绝。
-	egress    Network
-	policy    *EgressPolicy
-	hostConns map[io.Closer]struct{}
-	conns     map[*streamConn]struct{}
-	budget    budgetState
+	egress       Network
+	policy       *EgressPolicy
+	hostConns    map[io.Closer]struct{}
+	conns        map[*streamConn]struct{}
+	publications map[*Publication]struct{}
+	budget       budgetState
 
 	// nextCookie 供 accept/connect 观察用(测试)。
 	nextCookie uint64
@@ -148,7 +149,15 @@ func (n *Namespace) Close() {
 		conns = append(conns, conn)
 	}
 	n.conns = nil
+	publications := make([]*Publication, 0, len(n.publications))
+	for publication := range n.publications {
+		publications = append(publications, publication)
+	}
+	n.publications = nil
 	n.mu.Unlock()
+	for _, publication := range publications {
+		_ = publication.Revoke()
+	}
 	for _, listener := range listeners {
 		listener.closeByNamespace()
 	}

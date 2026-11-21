@@ -264,6 +264,10 @@ func New(services Services, maxProcesses int) (*Kernel, error) {
 	return k, nil
 }
 
+// NetworkNamespace 返回本 VM 的网络命名空间(M01/M13),供部署层显式
+// 发布客体端口。
+func (k *Kernel) NetworkNamespace() *net.Namespace { return k.network }
+
 func (k *Kernel) Processes() []proc.Proc { k.mu.Lock(); defer k.mu.Unlock(); return k.table.List() }
 
 // Trace 返回本 VM 的受限系统调用轨迹记录器(G08):只含 PID/TID、

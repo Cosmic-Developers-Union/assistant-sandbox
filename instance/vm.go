@@ -341,6 +341,12 @@ func (v *VM) Clock() clock.Source { return v.clock }
 // Entropy 返回 VM 的随机源。
 func (v *VM) Entropy() vmentropy.Source { return v.entropy }
 
+// Publish 显式把客体 TCP 监听映射到宿主端口(M13);调用方负责在
+// 结束时 Revoke。host 形如 "127.0.0.1:0"。
+func (v *VM) Publish(ctx context.Context, network net.ListenerNetwork, host string, guest net.Addr) (*net.Publication, error) {
+	return v.kernel.NetworkNamespace().Publish(ctx, network, host, guest)
+}
+
 // Connect 建立一条到 VM 的连接:连接共享 VM 的内核、文件系统与设备。
 func (v *VM) Connect(ctx context.Context) (*Connection, error) {
 	if err := ctx.Err(); err != nil {
