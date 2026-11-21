@@ -2,9 +2,12 @@ package elf
 
 import (
 	"context"
+	"encoding/binary"
+	"errors"
 	"testing"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/abi/linux/common"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/memory"
 )
 
@@ -149,5 +152,31 @@ func TestMapperFileSharedPassthrough(t *testing.T) {
 	}
 	if err := m.Sync(ctx, first, first+3*memory.PageSize); err == nil {
 		t.Fatal("含空洞的 Sync 应报 ENOMEM")
+	}
+}
+
+// TestMapperRejectsForeignExecutableMapping 验证可执行文件映射的
+// 架构校验:musl dlopen 不检查 e_machine,必须由映射层拒绝 x86_64
+// 等外来 ELF(Q23 错误 ABI 诊断)。
+func TestMapperRejectsForeignExecutableMapping(t *testing.T) {
+	ctx := context.Background()
+	header := make([]byte, 64)
+	copy(header, []byte{0x7f, 'E', 'L', 'F', 2, 1, 1, 0})
+	binary.LittleEndian.PutUint16(header[18:], 62) // EM_X86_64
+	space := memory.New(0)
+	m := &mapper{table: space, ceiling: 1 << 40}
+	file := &mappedFile{data: header, readable: true, writable: true}
+	if _, err := m.File(ctx, common.FileMapRequest{
+		MapRequest: common.MapRequest{Length: memory.PageSize, Prot: common.ProtRead | common.ProtExec},
+		File:       file,
+	}); !errors.Is(err, errno.NoExec) {
+		t.Fatalf("外来架构映射=%v want ENOEXEC", err)
+	}
+	binary.LittleEndian.PutUint16(header[18:], 243) // EM_RISCV
+	if _, err := m.File(ctx, common.FileMapRequest{
+		MapRequest: common.MapRequest{Length: memory.PageSize, Prot: common.ProtRead | common.ProtExec},
+		File:       file,
+	}); err != nil {
+		t.Fatalf("riscv64 映射: %v", err)
 	}
 }

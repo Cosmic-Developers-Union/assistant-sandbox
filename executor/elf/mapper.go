@@ -3,6 +3,7 @@ package elf
 import (
 	"cmp"
 	"context"
+	"encoding/binary"
 	"reflect"
 	"slices"
 	"sync"
@@ -117,6 +118,25 @@ func (b fileBackend) WriteAt(offset uint64, buffer []byte) error {
 // snapshotChunk 是私有文件映射快照装载的单次读取粒度。
 const snapshotChunk = 64 << 10
 
+// requireGuestExecutable 校验可执行文件映射的 ELF 头为 riscv64
+// 小端 ELF64;非 ELF 或错误架构返回 ENOEXEC,由 dlopen 转为可诊断
+// 的装载错误。
+func requireGuestExecutable(file common.RandomFile) error {
+	if file == nil {
+		return errno.Wrap(errno.NoExec, "可执行文件映射缺少文件句柄")
+	}
+	var header [20]byte
+	if _, err := file.ReadAt(header[:], 0); err != nil {
+		return errno.Wrap(errno.NoExec, "读取 ELF 头失败")
+	}
+	if header[0] != 0x7f || header[1] != 'E' || header[2] != 'L' || header[3] != 'F' ||
+		header[4] != 2 || header[5] != 1 ||
+		binary.LittleEndian.Uint16(header[18:]) != 243 {
+		return errno.Wrap(errno.NoExec, "可执行文件不是 riscv64 ELF64")
+	}
+	return nil
+}
+
 // File 实现文件映射(E08 私有/E09 共享):共享映射挂直通后备,
 // 私有映射把文件内容装载为私有页(此后修改不写回)。
 func (m *mapper) File(ctx context.Context, request common.FileMapRequest) (uint64, error) {
@@ -128,6 +148,14 @@ func (m *mapper) File(ctx context.Context, request common.FileMapRequest) (uint6
 	prot, err := protOf(request.Prot)
 	if err != nil {
 		return 0, err
+	}
+	// 动态装载器把共享对象的代码段映射为可执行文件映射。这里在
+	// 建立映射前校验 ELF 机器号:musl 的 dlopen 本身不拒绝外来
+	// 架构(如 x86_64 .node),直接映射会让客体跳到无效代码。
+	if prot&memory.ProtExec != 0 {
+		if err := requireGuestExecutable(request.File); err != nil {
+			return 0, err
+		}
 	}
 	var start uint64
 	if request.Fixed || request.NoReplace {
