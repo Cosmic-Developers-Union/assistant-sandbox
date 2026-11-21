@@ -100,11 +100,24 @@ func New(options Options) (*FS, error) {
 	}, nil
 }
 
-var deviceNames = []string{fdDir, nullName, ptmxName, randomName, stderrName, stdinName, stdoutName, ttyName, urandomName, zeroName}
+var deviceNames = []string{fdDir, nullName, randomName, stderrName, stdinName, stdoutName, ttyName, urandomName, zeroName}
+
+// deviceNames 返回当前配置可见的设备节点;PTY 未装配时不暴露 ptmx。
+func (f *FS) visibleDeviceNames() []string {
+	names := append([]string(nil), deviceNames...)
+	if f.pty != nil {
+		names = append(names, ptmxName)
+	}
+	sort.Strings(names)
+	return names
+}
 
 var directoryNames = map[string]bool{fdDir: true}
 
-func isDevice(name string) bool {
+func (f *FS) isDevice(name string) bool {
+	if name == ptmxName {
+		return f.pty != nil
+	}
 	for _, known := range deviceNames {
 		if known == name {
 			return true
@@ -181,7 +194,7 @@ func (f *FS) stat(ctx context.Context, path string) (stdfs.FileInfo, error) {
 		return system.Stat(ctx, "/"+strings.Join(segments[1:], "/"))
 	}
 	name := segments[0]
-	if !isDevice(name) {
+	if !f.isDevice(name) {
 		return nil, errno.Wrap(errno.NotFound, "没有该设备节点: "+path)
 	}
 
@@ -272,8 +285,9 @@ func (f *FS) ReadDir(ctx context.Context, path string) ([]stdfs.DirEntry, error)
 		}
 		return nil, errno.Wrap(errno.NotDirectory, "不是目录: "+path)
 	}
-	out := make([]stdfs.DirEntry, 0, len(deviceNames)+len(f.subdirs))
-	for _, name := range deviceNames {
+	names := f.visibleDeviceNames()
+	out := make([]stdfs.DirEntry, 0, len(names)+len(f.subdirs))
+	for _, name := range names {
 		if isDirectoryName(name) {
 			out = append(out, dirEntry{name: name, mode: stdfs.ModeDir | 0o555})
 			continue
@@ -350,7 +364,7 @@ func (f *FS) Open(ctx context.Context, path string, flags uint32, mode stdfs.Fil
 	if system, ok := f.subdirs[segments[0]]; ok {
 		return system.Open(ctx, "/"+strings.Join(segments[1:], "/"), flags, mode)
 	}
-	if !isDevice(segments[0]) {
+	if !f.isDevice(segments[0]) {
 		return nil, errno.Wrap(errno.NotFound, "没有该设备节点: "+path)
 	}
 	name := segments[0]
