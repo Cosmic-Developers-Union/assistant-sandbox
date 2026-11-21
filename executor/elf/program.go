@@ -405,6 +405,9 @@ func syscalls(ctx context.Context, process proc.Proc, space *memory.Table, plan 
 
 		return handler
 	}
+	if control, ok := process.Resources.(proc.CredentialControl); ok {
+		handler.Credentials = control
+	}
 	// getrandom 的熵源(L04):与 loader 随机字节同源,生产模式不固定。
 	if random, err := process.Resources.Random(); err == nil {
 		handler.Random = random
@@ -419,8 +422,18 @@ func syscalls(ctx context.Context, process proc.Proc, space *memory.Table, plan 
 				// I13/O01:按进程身份包装文件系统——权限按
 				// owner/group/other 判定,新建节点归属该进程身份。
 				if credentials, credErr := process.Resources.Credentials(); credErr == nil {
-					if current, lookupErr := credentials.Lookup(ctx, uint64(process.ID)); lookupErr == nil {
-						if accessor, ok := system.(vmfs.AccessorFS); ok {
+					if accessor, ok := system.(vmfs.AccessorFuncFS); ok {
+						if scoped, accessErr := accessor.WithAccessorFunc(func() (uint32, uint32) {
+							current, lookupErr := credentials.Lookup(context.Background(), uint64(process.ID))
+							if lookupErr != nil {
+								return 0, 0
+							}
+							return current.UID, current.GID
+						}); accessErr == nil {
+							system = scoped
+						}
+					} else if accessor, ok := system.(vmfs.AccessorFS); ok {
+						if current, lookupErr := credentials.Lookup(ctx, uint64(process.ID)); lookupErr == nil {
 							if scoped, accessErr := accessor.WithAccessor(current.UID, current.GID); accessErr == nil {
 								system = scoped
 							}

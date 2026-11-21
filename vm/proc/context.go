@@ -64,6 +64,12 @@ type ChildState struct {
 
 // WaitControl 是 wait4/waitid 所需的子进程等待能力:
 // parent 由实现从调用进程推断。
+// CredentialControl 是每进程身份变更端口(O01);未装配时 setuid/
+// setgid 明确 ENOTSUP。
+type CredentialControl interface {
+	SetCredentials(ctx context.Context, uid, gid uint32) error
+}
+
 type WaitControl interface {
 	// WaitChild 等待调用进程的子进程:target=0 表示任意子进程;
 	// nohang 时不阻塞,found=false 表示尚无可回收子进程。

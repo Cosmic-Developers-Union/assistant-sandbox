@@ -18,6 +18,24 @@ type mount struct {
 
 type Mounts struct {
 	mounts []mount
+	// accessor 是动态调用方身份(O01):解析路径时包装底层文件系统。
+	accessor func() (uid, gid uint32)
+}
+
+// WithAccessor 返回固定身份视图(I13/O01)。
+func (m *Mounts) WithAccessor(uid, gid uint32) (vmfs.System, error) {
+	return m.WithAccessorFunc(func() (uint32, uint32) { return uid, gid })
+}
+
+// WithAccessorFunc 返回动态身份视图(O01):每次路径解析把当前
+// UID/GID 传给支持 AccessorFuncFS 的底层文件系统。
+func (m *Mounts) WithAccessorFunc(owner func() (uid, gid uint32)) (vmfs.System, error) {
+	if owner == nil {
+		return nil, errno.Wrap(errno.Invalid, "身份来源不能为空")
+	}
+	view := *m
+	view.accessor = owner
+	return &view, nil
 }
 
 func (m *Mounts) Mount(point string, system vmfs.System) error {
@@ -82,12 +100,17 @@ func (m *Mounts) resolve(name string) (mount, error) {
 	}
 	clean := path.Clean(name)
 	for _, entry := range m.mounts {
-		if entry.point == "/" {
-			return entry, nil
+		if entry.point != "/" && clean != entry.point && !strings.HasPrefix(clean, entry.point+"/") {
+			continue
 		}
-		if clean == entry.point || strings.HasPrefix(clean, entry.point+"/") {
-			return entry, nil
+		if m.accessor != nil {
+			if accessor, ok := entry.sys.(vmfs.AccessorFuncFS); ok {
+				if view, err := accessor.WithAccessorFunc(m.accessor); err == nil {
+					entry.sys = view
+				}
+			}
 		}
+		return entry, nil
 	}
 	return mount{}, errno.Wrap(errno.NotFound, "路径未挂载: "+clean)
 }

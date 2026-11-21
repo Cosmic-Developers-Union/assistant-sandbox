@@ -49,7 +49,9 @@ type Set struct {
 	Clock    clock.Source
 	Entropy  entropy.Source
 	Identity identity.Source
-	FD       fd.Descriptors
+	// CredentialTable 是可变的每进程身份表(O01);nil 时退回 Identity。
+	CredentialTable *identity.Table
+	FD              fd.Descriptors
 
 	Spaces Spaces
 
@@ -96,7 +98,12 @@ func (s Set) Time() (clock.Source, error) { return Require(s.Clock) }
 
 func (s Set) Random() (entropy.Source, error) { return Require(s.Entropy) }
 
-func (s Set) Credentials() (identity.Source, error) { return Require(s.Identity) }
+func (s Set) Credentials() (identity.Source, error) {
+	if s.CredentialTable != nil {
+		return s.CredentialTable, nil
+	}
+	return Require(s.Identity)
+}
 
 func (s Set) Descriptors() (fd.Descriptors, error) { return Require(s.FD) }
 

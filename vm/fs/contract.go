@@ -65,6 +65,12 @@ type AccessorFS interface {
 	WithAccessor(uid, gid uint32) (System, error)
 }
 
+// AccessorFuncFS 是动态身份视图(O01):每次权限判定与新节点归属都
+// 调用 owner 读取当前 UID/GID,使 setuid/setgid 立即生效。
+type AccessorFuncFS interface {
+	WithAccessorFunc(owner func() (uid, gid uint32)) (System, error)
+}
+
 // LinkFollow 是 linkat(2) AT_SYMLINK_FOLLOW 的可选能力:
 // oldpath 为符号链接时解引用,对目标文件建立硬链接。
 type LinkFollow interface {

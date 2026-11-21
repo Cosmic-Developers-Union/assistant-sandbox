@@ -51,6 +51,8 @@ type FS struct {
 	// accessor 是多身份检查的调用方身份(I13):nil 表示单用户语义
 	// (调用方视为文件所有者,沿用属主位判定)。
 	accessor *accessorIdentity
+	// accessorFunc 是动态身份来源(O01):每次判定读取当前 UID/GID。
+	accessorFunc func() (uid, gid uint32)
 }
 
 // accessorIdentity 是 WithAccessor 绑定的调用方身份。
@@ -63,21 +65,44 @@ type accessorIdentity struct {
 // 视图共享同一棵树与锁;权限按 owner/group/other 分类判定,新建节点
 // 归属该身份,sticky 目录约束删除/改名。
 func (f *FS) WithAccessor(uid, gid uint32) (vmfs.System, error) {
+	return f.WithAccessorFunc(func() (uint32, uint32) { return uid, gid })
+}
+
+// WithAccessorFunc 返回动态身份视图(O01):setuid/setgid 后后续
+// 权限判定与新建节点立即使用新的 UID/GID。
+func (f *FS) WithAccessorFunc(owner func() (uid, gid uint32)) (vmfs.System, error) {
+	if owner == nil {
+		return nil, errno.Wrap(errno.Invalid, "身份来源不能为空")
+	}
 	view := *f
-	view.accessor = &accessorIdentity{uid: uid, gid: gid}
+	view.accessor = nil
+	view.accessorFunc = owner
 	return &view, nil
+}
+
+// owner 返回调用方身份;ok=false 表示单用户语义。
+func (f *FS) owner() (uint32, uint32, bool) {
+	if f.accessor != nil {
+		return f.accessor.uid, f.accessor.gid, true
+	}
+	if f.accessorFunc != nil {
+		uid, gid := f.accessorFunc()
+		return uid, gid, true
+	}
+	return 0, 0, false
 }
 
 // classOf 按 accessor 分类调用方对节点的权限类别:0 属主/1 组/2 其他;
 // 无 accessor 时视为属主(单用户语义)。
 func (f *FS) classOf(node *inode) int {
-	if f.accessor == nil {
+	uid, gid, ok := f.owner()
+	if !ok {
 		return 0
 	}
-	if node.uid == f.accessor.uid {
+	if node.uid == uid {
 		return 0
 	}
-	if node.gid == f.accessor.gid {
+	if node.gid == gid {
 		return 1
 	}
 	return 2
@@ -100,7 +125,7 @@ func permBits(node *inode, class int) stdfs.FileMode {
 // 豁免,执行仍需任一 x 位(Linux 语义)。
 func (f *FS) canRead(node *inode) bool {
 	class := f.classOf(node)
-	if f.accessor != nil && f.accessor.uid == 0 && class != 0 {
+	if uid, _, ok := f.owner(); ok && uid == 0 && class != 0 {
 		return true
 	}
 	return permBits(node, class)&4 != 0
@@ -108,7 +133,7 @@ func (f *FS) canRead(node *inode) bool {
 
 func (f *FS) canWrite(node *inode) bool {
 	class := f.classOf(node)
-	if f.accessor != nil && f.accessor.uid == 0 && class != 0 {
+	if uid, _, ok := f.owner(); ok && uid == 0 && class != 0 {
 		return true
 	}
 	return permBits(node, class)&2 != 0
@@ -124,10 +149,11 @@ func (f *FS) mayModifyIn(dir, node *inode) bool {
 	if dir.mode&stdfs.ModeSticky == 0 {
 		return true
 	}
-	if f.accessor == nil || f.accessor.uid == 0 {
+	uid, _, ok := f.owner()
+	if !ok || uid == 0 {
 		return true
 	}
-	return node.uid == f.accessor.uid || dir.uid == f.accessor.uid
+	return node.uid == uid || dir.uid == uid
 }
 
 type inodeKind uint8
@@ -385,9 +411,9 @@ func (f *FS) newNode(kind inodeKind, mode stdfs.FileMode, now int64) (*inode, er
 	f.st.nextID++
 	f.st.nodes++
 	node := &inode{id: f.st.nextID, kind: kind, mode: mode, atime: now, mtime: now, nlink: 1}
-	if f.accessor != nil {
-		node.uid = f.accessor.uid
-		node.gid = f.accessor.gid
+	if uid, gid, ok := f.owner(); ok {
+		node.uid = uid
+		node.gid = gid
 	}
 	f.st.live[node] = struct{}{}
 	return node, nil

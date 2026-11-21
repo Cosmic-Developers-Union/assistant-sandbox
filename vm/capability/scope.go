@@ -72,6 +72,20 @@ func (s *scoped) Umask() (stdfs.FileMode, error) {
 
 func (s *scoped) Random() (entropy.Source, error) { return s.set.Random() }
 
+func (s *scoped) SetCredentials(ctx context.Context, uid, gid uint32) error {
+	source, err := s.set.Credentials()
+	if err != nil {
+		return err
+	}
+	mutable, ok := source.(interface {
+		Set(uint64, identity.Identity) error
+	})
+	if !ok {
+		return errno.Wrap(errno.NotSupported, "身份表不可变")
+	}
+	return mutable.Set(s.pid, identity.Identity{UID: uid, GID: gid, Name: "sandbox"})
+}
+
 func (s *scoped) Credentials() (identity.Source, error) {
 	base, err := s.set.Credentials()
 	if err != nil {
@@ -320,6 +334,41 @@ func (s scopedMeter) ReleaseKind(ctx context.Context, _ uint64, kind resources.K
 type chargeFS struct {
 	base  fs.System
 	scope *scoped
+}
+
+func (c chargeFS) WithAccessor(uid, gid uint32) (fs.System, error) {
+	accessor, ok := c.base.(fs.AccessorFS)
+	if !ok {
+		return nil, errno.Wrap(errno.NotSupported, "底层文件系统不支持身份视图")
+	}
+	base, err := accessor.WithAccessor(uid, gid)
+	if err != nil {
+		return nil, err
+	}
+	c.base = base
+	return c, nil
+}
+
+func (c chargeFS) WithAccessorFunc(owner func() (uint32, uint32)) (fs.System, error) {
+	accessor, ok := c.base.(fs.AccessorFuncFS)
+	if !ok {
+		if static, ok := c.base.(fs.AccessorFS); ok {
+			uid, gid := owner()
+			base, err := static.WithAccessor(uid, gid)
+			if err != nil {
+				return nil, err
+			}
+			c.base = base
+			return c, nil
+		}
+		return nil, errno.Wrap(errno.NotSupported, "底层文件系统不支持动态身份视图")
+	}
+	base, err := accessor.WithAccessorFunc(owner)
+	if err != nil {
+		return nil, err
+	}
+	c.base = base
+	return c, nil
 }
 
 func (c chargeFS) maskCreate(mode stdfs.FileMode) stdfs.FileMode {

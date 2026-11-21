@@ -20,6 +20,7 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fd"
 	vmfs "github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fs"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/futex"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/identity"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/inotify"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/ipc"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/job"
@@ -135,6 +136,9 @@ type Kernel struct {
 
 	// crashes 保留最近的致命故障报告(T02):有界,值类型快照。
 	crashes []CrashReport
+
+	// credentials 是每进程 UID/GID 表(O01):与宿主身份完全解耦。
+	credentials *identity.Table
 }
 
 // robustList 是 set_robust_list 登记的用户态链表描述(K07):
@@ -218,6 +222,10 @@ func New(services Services, maxProcesses int) (*Kernel, error) {
 	k.bootDeclared = bootTimeDeclared
 	k.table = table
 	k.trace = trace.New(trace.DefaultLimit)
+	if services.CredentialTable == nil {
+		services.CredentialTable = identity.NewTable(identity.Identity{Name: "sandbox"})
+	}
+	k.credentials = services.CredentialTable
 	k.services = services
 	k.meters = services.Meters
 	k.sequencer = services.Sequencer
@@ -413,6 +421,7 @@ func (k *Kernel) exitResourcesLocked(p proc.Proc) error {
 		k.meters.Discard(uint64(p.ID))
 	}
 	delete(k.childrenWork, p.ID)
+	k.credentials.Remove(uint64(p.ID))
 	var closeErr error
 	if k.fds != nil {
 		closeErr = k.fds.Detach(uint64(p.ID))
@@ -450,6 +459,9 @@ func (k *Kernel) Begin(parent proc.PID, name string, args []string, dir string, 
 	}
 	p, err := k.table.Create(parent, resolved.Name, args, dir, env)
 	if err != nil {
+		return proc.Proc{}, err
+	}
+	if err := k.credentials.Inherit(uint64(parent), uint64(p.ID)); err != nil {
 		return proc.Proc{}, err
 	}
 	if err := k.table.Start(p.ID); err != nil {
@@ -522,6 +534,9 @@ func (k *Kernel) Fork(parent proc.PID) (proc.Proc, *memory.Table, error) {
 	// fork 的子进程父是调用进程本身(Linux 语义)。
 	child, err := k.table.Create(parent, source.Program, source.Args, source.Dir, source.Env)
 	if err != nil {
+		return proc.Proc{}, nil, err
+	}
+	if err := k.credentials.Inherit(uint64(parent), uint64(child.ID)); err != nil {
 		return proc.Proc{}, nil, err
 	}
 	if err := k.table.Start(child.ID); err != nil {
@@ -615,6 +630,9 @@ func (k *Kernel) Vfork(parent proc.PID) (proc.Proc, *memory.Table, error) {
 	// vfork 的子进程父是调用进程本身(Linux 语义)。
 	child, err := k.table.Create(parent, source.Program, source.Args, source.Dir, source.Env)
 	if err != nil {
+		return proc.Proc{}, nil, err
+	}
+	if err := k.credentials.Inherit(uint64(parent), uint64(child.ID)); err != nil {
 		return proc.Proc{}, nil, err
 	}
 	if err := k.table.Start(child.ID); err != nil {
@@ -747,6 +765,9 @@ func (k *Kernel) CloneThread(parent proc.PID, clearTID uint64) (proc.Proc, *memo
 	requested := k.budget(proc.Proc{Parent: source.Parent, Program: source.Program})
 	child, err := k.table.CreateThread(parent, source.Program)
 	if err != nil {
+		return proc.Proc{}, nil, err
+	}
+	if err := k.credentials.Inherit(uint64(parent), uint64(child.ID)); err != nil {
 		return proc.Proc{}, nil, err
 	}
 	if err := k.table.Start(child.ID); err != nil {

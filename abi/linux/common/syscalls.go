@@ -204,6 +204,9 @@ type Syscalls struct {
 
 	Identity *Identity
 
+	// Credentials 是每进程身份变更端口(O01);nil 时 setuid 等 ENOTSUP。
+	Credentials CredentialSetter
+
 	Heap Heap
 
 	Mapper Mappable
@@ -632,8 +635,7 @@ func (s Syscalls) dispatch(ctx context.Context, call Call) Reply {
 	case SysFdatasync:
 		return s.fsync(ctx, call, true)
 	case SysSetuid, SysSetgid, SysSetreuid, SysSetregid, SysSetresuid, SysSetresgid, SysSetfsuid, SysSetfsgid:
-		// 客体身份模型由 O01 交付;未落地前明确 ENOTSUP。
-		return Reply{Errno: errno.NotSupported}
+		return s.setIdentity(ctx, call)
 	default:
 		return Reply{Errno: errno.NotImplemented}
 	}
@@ -713,6 +715,89 @@ func (s Syscalls) writeBuffer(call Call) ([]byte, *[]byte, Reply, bool) {
 		return *slot, slot, Reply{}, true
 	}
 	return make([]byte, count), nil, Reply{}, true
+}
+
+// CredentialSetter 是每进程 UID/GID 变更端口(O01)。
+type CredentialSetter interface {
+	SetCredentials(ctx context.Context, uid, gid uint32) error
+}
+
+func (s Syscalls) setIdentity(ctx context.Context, call Call) Reply {
+	if s.Identity == nil || s.Credentials == nil {
+		return Reply{Errno: errno.NotSupported}
+	}
+	switch call.Syscall {
+	case SysSetuid:
+		return s.setUID(ctx, call.Args[0])
+	case SysSetgid:
+		return s.setGID(ctx, call.Args[0])
+	case SysSetreuid:
+		uid := call.Args[1]
+		if uid == ^uint64(0) {
+			uid = call.Args[0]
+		}
+		if uid == ^uint64(0) {
+			uid = uint64(s.Identity.UID)
+		}
+		return s.setUID(ctx, uid)
+	case SysSetregid:
+		gid := call.Args[1]
+		if gid == ^uint64(0) {
+			gid = call.Args[0]
+		}
+		if gid == ^uint64(0) {
+			gid = uint64(s.Identity.GID)
+		}
+		return s.setGID(ctx, gid)
+	case SysSetresuid:
+		uid := call.Args[1]
+		if uid == ^uint64(0) {
+			uid = call.Args[0]
+		}
+		if uid == ^uint64(0) {
+			uid = uint64(s.Identity.UID)
+		}
+		return s.setUID(ctx, uid)
+	case SysSetresgid:
+		gid := call.Args[1]
+		if gid == ^uint64(0) {
+			gid = call.Args[0]
+		}
+		if gid == ^uint64(0) {
+			gid = uint64(s.Identity.GID)
+		}
+		return s.setGID(ctx, gid)
+	case SysSetfsuid:
+		return s.setUID(ctx, call.Args[0])
+	case SysSetfsgid:
+		return s.setGID(ctx, call.Args[0])
+	default:
+		return Reply{Errno: errno.NotImplemented}
+	}
+}
+
+func (s Syscalls) setUID(ctx context.Context, value uint64) Reply {
+	uid := uint32(value)
+	if s.Identity.UID != 0 && uid != s.Identity.UID {
+		return Reply{Errno: errno.NotPermitted}
+	}
+	if err := s.Credentials.SetCredentials(ctx, uid, s.Identity.GID); err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	s.Identity.UID = uid
+	return Reply{}
+}
+
+func (s Syscalls) setGID(ctx context.Context, value uint64) Reply {
+	gid := uint32(value)
+	if s.Identity.GID != 0 && gid != s.Identity.GID {
+		return Reply{Errno: errno.NotPermitted}
+	}
+	if err := s.Credentials.SetCredentials(ctx, s.Identity.UID, gid); err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	s.Identity.GID = gid
+	return Reply{}
 }
 
 // sigPipe 是 asm-generic 的 SIGPIPE 信号号。
