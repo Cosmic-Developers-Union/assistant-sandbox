@@ -404,7 +404,7 @@ Python 和 Node.js 的验收必须执行客体运行时，不能通过调用宿�
 - [x] T05 验证已声明的快照恢复能力。验收：恢复后文件、资源与允许保存的执行状态一致；不支持活动连接时明确拒绝。（依赖 T04） 证据:vm/snapshot_restore_state_test.go、vm/snapshot_table_test.go TestRestoreTableRejectsInvalidDataAndClosedKernel、deployment/layer 状态恢复测试。测试:`go test ./vm/ ./deployment/...`。CI:Test 工作流。
 - [x] T06 明确记录重放的可控输入边界。验收：时间、随机、外部 I/O 与调度输入有覆盖清单，未记录输入不会被声称可确定重放。 证据:vm/replay/(effects/header/memory/run/schedule)、vm/entropy_record_test.go、vm/signal_record_test.go、vm/stdin_record_test.go。测试:`go test ./vm/`。CI:Test 工作流。
 - [x] T07 验证已声明的记录重放能力。验收：固定程序重放输出和状态一致，输入不匹配时停止并定位。（依赖 T06） 证据:vm/replay 重放验证(录制输入不匹配时停止并定位),replay 包各 _test.go。测试:`go test ./vm/replay/`。CI:Test 工作流。
-- [ ] T08 建立 CPU 与系统调用基准。验收：固定客体和宿主配置下记录吞吐、开销与内存，CI 保存可比较结果。
+- [x] T08 建立 CPU 与系统调用基准。验收：固定客体和宿主配置下记录吞吐、开销与内存，CI 保存可比较结果。 证据:abi/linux/common/benchmark_test.go(BenchmarkGetpidSyscall 固定 fakeMemory/描述符表/Identity 的 getpid 分派;BenchmarkWriteSyscall 固定 64 字节缓冲与 io.Discard 输出,报告 ns/op、MB/s、B/op、allocs/op)+ .github/workflows/test.yml benchmark 任务以 -benchmem -count=5 运行并上传 benchmark.txt 工件。本机记录(Linux amd64、AMD Ryzen 7 5700G):getpid 67.17 ns/op、0 B/op、0 allocs/op;write 1582 ns/op、40.47 MB/s、816 B/op、3 allocs/op。测试:`go test ./abi/linux/common/ -run '^$' -bench 'BenchmarkGetpid|BenchmarkWrite' -benchmem -count=1`;CI:benchmark 任务保存工件。
 - [ ] T09 建立 Python/Node 场景性能基线。验收：启动、依赖导入、文件处理、并发服务有耗时和内存数据。
 - [ ] T10 定义最低可用性能与管理响应要求。验收：数值、测试环境和容差在测量后固定，超限发布失败，不靠无限延长超时通过。
 - [ ] T11 按首个测得瓶颈创建独立优化任务。验收：每项优化有前后基准及语义回归，CPU、内存和 I/O 优化分别提交。
