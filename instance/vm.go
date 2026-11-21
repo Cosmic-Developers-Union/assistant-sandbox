@@ -88,8 +88,9 @@ type Options struct {
 
 	// HostNetwork/Egress 装配受策略约束的宿主 TCP 出口(M09);
 	// 两者同时提供才启用,零值保持非回环拒绝。
-	HostNetwork net.Network
-	Egress      *net.EgressPolicy
+	HostNetwork   net.Network
+	Egress        *net.EgressPolicy
+	NetworkBudget net.Budget
 
 	// Programs 是追加到内置 Shell 程序表之上的客体程序;同名条目
 	// 覆盖内置实现。
@@ -276,9 +277,10 @@ func newVM(ctx context.Context, opts Options, root *memfs.FS, source clock.Sourc
 			Net:       opts.HostNetwork,
 			Egress:    opts.Egress,
 		},
-		Programs: registry,
-		Binaries: binaries,
-		Meters:   meters,
+		Programs:      registry,
+		Binaries:      binaries,
+		Meters:        meters,
+		NetworkBudget: opts.NetworkBudget,
 	}, opts.MaxProcesses)
 	if err != nil {
 		return nil, err

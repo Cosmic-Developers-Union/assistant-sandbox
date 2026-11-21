@@ -134,6 +134,9 @@ type streamConn struct {
 	// blockCheck 覆盖非阻塞判定:socket 包装层把自身 O_NONBLOCK 旗标
 	// 接入连接等待(缺省用本端 base)。
 	blockCheck func() bool
+
+	// budget 是连接额度槽位,双端共享一次归还(M12)。
+	budget *connBudget
 }
 
 // nonblocked 报告非阻塞状态(优先包装层旗标)。
@@ -223,6 +226,12 @@ func (c *streamConn) WriteContext(ctx context.Context, p []byte) (int, error) {
 		free := streamBufCapacity - len(c.tx.buf)
 		if free > 0 {
 			n := min(free, len(p)-written)
+			if c.budget != nil {
+				if err := c.budget.ns.chargeBytes(n); err != nil {
+					c.tx.mu.Unlock()
+					return written, err
+				}
+			}
 			c.tx.buf = append(c.tx.buf, p[written:written+n]...)
 			written += n
 			c.tx.written += uint64(n)
@@ -300,11 +309,13 @@ func (c *streamConn) Close() error {
 	}
 	c.closed = true
 	c.mu.Unlock()
+	c.releaseConnection()
 	c.tx.mu.Lock()
 	c.tx.eofRead = true
 	c.tx.mu.Unlock()
 	c.rx.mu.Lock()
 	c.rx.noReader = true
+	c.rx.eofRead = true
 	c.rx.buf = nil
 	dropped := c.rx.dropControlsLocked()
 	c.rx.mu.Unlock()
@@ -318,6 +329,7 @@ func (c *streamConn) Close() error {
 // reset 由监听关闭时重置排队中的连接:对端读写立即不可用(回环撮合
 // 的既定行为,等价 RST)。
 func (c *streamConn) reset() {
+	c.releaseConnection()
 	c.rx.mu.Lock()
 	c.rx.noReader = true
 	c.rx.eofRead = true
@@ -332,6 +344,32 @@ func (c *streamConn) reset() {
 
 // activity 通知核心等待者与就绪订阅者(两端 socket 各自被唤醒);
 // 调用方不得持有核心或端点锁。
+func (c *streamConn) releaseConnection() {
+	if c.budget == nil {
+		return
+	}
+	c.budget.once.Do(func() { c.budget.ns.releaseConnection() })
+}
+
+type connBudget struct {
+	once sync.Once
+	ns   *Namespace
+}
+
+// newBudgetedStreamPair 在连接额度内建立一对互联连接,并登记到
+// 命名空间以便关闭时统一唤醒(M12)。
+func newBudgetedStreamPair(n *Namespace, local, remote Addr) (*streamConn, *streamConn, error) {
+	if err := n.chargeConnection(); err != nil {
+		return nil, nil, err
+	}
+	client, server := newStreamPair(local, remote)
+	slot := &connBudget{ns: n}
+	client.budget = slot
+	server.budget = slot
+	n.trackConns(client, server)
+	return client, server, nil
+}
+
 func (c *streamConn) activity() {
 	c.rx.notify()
 	c.tx.notify()
@@ -527,7 +565,10 @@ func (n *Namespace) ConnectTCP(ctx context.Context, local Addr, remote Addr) (*T
 	if len(listener.queue) >= backlogLimit {
 		return nil, errno.Wrap(errno.ConnRefused, "监听队列已满")
 	}
-	client, server := newStreamPair(local, remote)
+	client, server, err := newBudgetedStreamPair(n, local, remote)
+	if err != nil {
+		return nil, err
+	}
 	listener.queue = append(listener.queue, server)
 	listener.base.notify()
 	return client, nil

@@ -49,6 +49,9 @@ type Services struct {
 	Identity replay.Header
 
 	Binaries executable.BinaryFactory
+
+	// NetworkBudget 是每 VM 网络连接/流量预算(M12);零值不限制。
+	NetworkBudget net.Budget
 }
 
 const spawnWorkUnits = 1
@@ -223,6 +226,7 @@ func New(services Services, maxProcesses int) (*Kernel, error) {
 	k.prepared = map[proc.PID]*memory.Table{}
 	k.notifies = inotify.NewBroker()
 	k.network = net.New()
+	k.network.SetBudget(services.NetworkBudget)
 	if policy := services.Egress; policy != nil {
 		if host, err := capability.Require(services.Net); err == nil {
 			k.network.SetEgress(host, policy)

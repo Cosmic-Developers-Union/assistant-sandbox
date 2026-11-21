@@ -88,6 +88,8 @@ type Namespace struct {
 	egress    Network
 	policy    *EgressPolicy
 	hostConns map[io.Closer]struct{}
+	conns     map[*streamConn]struct{}
+	budget    budgetState
 
 	// nextCookie 供 accept/connect 观察用(测试)。
 	nextCookie uint64
@@ -141,6 +143,11 @@ func (n *Namespace) Close() {
 		hosts = append(hosts, host)
 	}
 	n.hostConns = nil
+	conns := make([]*streamConn, 0, len(n.conns))
+	for conn := range n.conns {
+		conns = append(conns, conn)
+	}
+	n.conns = nil
 	n.mu.Unlock()
 	for _, listener := range listeners {
 		listener.closeByNamespace()
@@ -153,6 +160,9 @@ func (n *Namespace) Close() {
 	}
 	for _, host := range hosts {
 		_ = host.Close()
+	}
+	for _, conn := range conns {
+		_ = conn.Close()
 	}
 	n.wake.WakeAll(wait.Data)
 }

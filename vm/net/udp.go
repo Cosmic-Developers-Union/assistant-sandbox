@@ -71,6 +71,9 @@ func (n *Namespace) SendTo(ctx context.Context, from *UDPEndpoint, data []byte, 
 	if to.IP.IsValid() && to.IP != LoopbackIPv4 {
 		return n.sendHostUDP(ctx, from, data, to)
 	}
+	if err := n.chargeBytes(len(data)); err != nil {
+		return 0, err
+	}
 	n.mu.Lock()
 	if n.closed {
 		n.mu.Unlock()
@@ -215,6 +218,9 @@ func (n *Namespace) sendHostUDP(ctx context.Context, endpoint *UDPEndpoint, data
 	target, port, allowed := policy.Target(ProtocolUDP, to)
 	if !allowed {
 		return 0, errno.Wrap(errno.NetworkUnreachable, "UDP 出口策略拒绝目标")
+	}
+	if err := n.chargeBytes(len(data)); err != nil {
+		return 0, err
 	}
 	packets, ok := network.(PacketNetwork)
 	if !ok {
