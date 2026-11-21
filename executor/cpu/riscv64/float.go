@@ -114,20 +114,11 @@ func log2Floor(n, d *big.Int) int {
 	if e >= 0 {
 		if n.Cmp(new(big.Int).Lsh(d, uint(e))) < 0 {
 			e--
-		} else if n.Cmp(new(big.Int).Lsh(d, uint(e+1))) >= 0 {
-			e++
 		}
-	} else {
-		shifted := new(big.Int).Lsh(n, uint(-e))
-		switch shifted.Cmp(d) {
-		case -1:
-			e--
-		case 0:
-		default:
-			if new(big.Int).Lsh(shifted, 1).Cmp(d) >= 0 {
-				e++
-			}
-		}
+		return e
+	}
+	if new(big.Int).Lsh(n, uint(-e)).Cmp(d) < 0 {
+		e--
 	}
 	return e
 }

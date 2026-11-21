@@ -115,10 +115,24 @@ func (c *Core) fpFused(pc uint64, instruction uint32, width uint, p fpParams) (c
 	b := c.fpOperand(int((instruction>>20)&0x1F), width, p)
 	cV := c.fpOperand(int(instruction>>27), width, p)
 	rd := int((instruction >> 7) & 0x1F)
-	value, flags := fpMulAdd(a, b, cV, instruction>>25&0x3, p, mode)
+	// R4 类型的 funct7 含 rs3 与 fmt,操作种类必须由 opcode 决定:
+	// 0x43=FMADD、0x47=FMSUB、0x4B=FNMSUB、0x4F=FNMADD。
+	kind := (instruction&0x7F - 0x43) / 4
+	value, flags := fpMulAdd(a, b, cV, kind, p, mode)
 	c.addFlags(flags)
 	c.writeFP(rd, width, value)
 	return cpu.Continued, nil, nil
+}
+
+// signedRat 返回带符号的精确值,零值返回 0。
+func signedRat(v fpValue) *big.Rat {
+	if v.class == classZero {
+		return new(big.Rat)
+	}
+	if v.neg {
+		return new(big.Rat).Neg(v.rat)
+	}
+	return v.rat
 }
 
 // fpMulAdd 计算 ±a×b ± c(单次舍入),特殊值按 IEEE 规则。
@@ -158,11 +172,19 @@ func fpMulAdd(a, b, cV fpValue, kind uint32, p fpParams, mode fpMode) (uint64, u
 	if cV.class == classInf {
 		return encodeInf(addNeg, p), 0
 	}
-	exact := new(big.Rat).Mul(a.rat, b.rat)
-	if addNeg {
-		exact.Sub(exact, cV.rat)
-	} else {
-		exact.Add(exact, cV.rat)
+	exact := new(big.Rat)
+	if a.class != classZero && b.class != classZero {
+		exact.Mul(signedRat(a), signedRat(b))
+	}
+	if kind&0x2 != 0 {
+		exact.Neg(exact)
+	}
+	if cV.class != classZero {
+		if addNeg {
+			exact.Sub(exact, signedRat(cV))
+		} else {
+			exact.Add(exact, signedRat(cV))
+		}
 	}
 	return fpRound(exact, p, mode, nil)
 }
@@ -266,14 +288,7 @@ func (c *Core) fpAddSub(pc uint64, instruction uint32, width uint, p fpParams, s
 		c.writeFP(rd, width, encodeInf(b.neg, p))
 		return cpu.Continued, nil, nil
 	}
-	av, bv := a.rat, b.rat
-	if a.class == classZero {
-		av = new(big.Rat)
-	}
-	if b.class == classZero {
-		bv = new(big.Rat)
-	}
-	exact := new(big.Rat).Add(av, bv)
+	exact := new(big.Rat).Add(signedRat(a), signedRat(b))
 	var forced *bool
 	if exact.Sign() == 0 && a.class == classZero && b.class == classZero {
 		both := a.neg && b.neg
@@ -315,14 +330,13 @@ func (c *Core) fpBinaryOp(pc uint64, instruction uint32, width uint, p fpParams,
 		c.writeFP(rd, width, encodeInf(a.neg != b.neg, p))
 		return cpu.Continued, nil, nil
 	}
-	av, bv := a.rat, b.rat
-	if a.class == classZero {
-		av = new(big.Rat)
+	exact := op(signedRat(a), signedRat(b))
+	var forced *bool
+	if exact.Sign() == 0 {
+		sign := a.neg != b.neg
+		forced = &sign
 	}
-	if b.class == classZero {
-		bv = new(big.Rat)
-	}
-	value, flags := fpRound(op(av, bv), p, mode, nil)
+	value, flags := fpRound(exact, p, mode, forced)
 	c.addFlags(flags)
 	c.writeFP(rd, width, value)
 	return cpu.Continued, nil, nil
@@ -360,7 +374,12 @@ func (c *Core) fpDiv(pc uint64, instruction uint32, width uint, p fpParams) (cpu
 		c.addFlags(flagDZ)
 		c.writeFP(rd, width, encodeInf(neg, p))
 	default:
-		value, flags := fpRound(new(big.Rat).Quo(a.rat, b.rat), p, mode, nil)
+		exact := new(big.Rat).Quo(signedRat(a), signedRat(b))
+		var forced *bool
+		if exact.Sign() == 0 {
+			forced = &neg
+		}
+		value, flags := fpRound(exact, p, mode, forced)
 		c.addFlags(flags)
 		c.writeFP(rd, width, value)
 	}
@@ -416,7 +435,7 @@ func (c *Core) fpConvertWidth(pc uint64, instruction uint32, single bool) (cpu.O
 		case classZero:
 			c.setFRegS(rd, uint32(negBits(a.neg, fpS)))
 		default:
-			value, flags := fpRound(a.rat, fpS, mode, nil)
+			value, flags := fpRound(signedRat(a), fpS, mode, nil)
 			c.addFlags(flags)
 			c.setFRegS(rd, uint32(value))
 		}
@@ -432,7 +451,7 @@ func (c *Core) fpConvertWidth(pc uint64, instruction uint32, single bool) (cpu.O
 	case classZero:
 		c.setFRegD(rd, negBits(a.neg, fpD))
 	default:
-		value, flags := fpRound(a.rat, fpD, modeRNE, nil)
+		value, flags := fpRound(signedRat(a), fpD, modeRNE, nil)
 		c.addFlags(flags)
 		c.setFRegD(rd, value)
 	}

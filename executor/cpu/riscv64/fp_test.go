@@ -440,3 +440,91 @@ func TestFloatTrapsCarryInstructionEncoding(t *testing.T) {
 		t.Fatalf("trap 应携带指令编码: %#x", trap.Instruction)
 	}
 }
+
+// TestFloatFusedMultiplyAddDouble 覆盖 FMADD/FMSUB/FNMSUB/FNMADD.D 的
+// 操作种类(不能把 fmt 位当作运算选择)与单次舍入结果。
+func TestFloatFusedMultiplyAddDouble(t *testing.T) {
+	const (
+		a = 18034063.0
+		b = 67108864.0
+		c = 38198625.0
+	)
+	setup := func(port *Core) {
+		for register, value := range map[int]float64{1: a, 2: b, 4: c, 5: 1.0 / 9007199254740992.0} {
+			if err := port.WriteFP(register, math.Float64bits(value)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	const fmtDouble = 1 << 25
+	for _, tc := range []struct {
+		name   string
+		opcode uint32
+		want   uint64
+	}{
+		{"fmadd", 0x43 | fmtDouble, math.Float64bits(a*b + c)},
+		{"fmsub", 0x47 | fmtDouble, math.Float64bits(a*b - c)},
+		{"fnmsub", 0x4B | fmtDouble, math.Float64bits(-a*b + c)},
+		{"fnmadd", 0x4F | fmtDouble, math.Float64bits(-a*b - c)},
+	} {
+		port := runFP(t, setup, encodeFMA(tc.opcode, 0, 3, 1, 2, 4))
+		got, err := port.ReadFP(3)
+		if err != nil || got != tc.want {
+			t.Fatalf("%s.d = %#x err=%v want %#x", tc.name, got, err, tc.want)
+		}
+	}
+
+	// 乘法后接乘法:复现 Python random() 的 53 位组合路径。
+	port := runFP(t, setup,
+		encodeFMA(0x43|fmtDouble, 0, 1, 1, 2, 4),
+		encodeFP3(fpFMUL|1, 0, 1, 1, 5))
+	got, err := port.ReadFP(1)
+	if want := math.Float64bits((a*b + c) * (1.0 / 9007199254740992.0)); err != nil || got != want {
+		t.Fatalf("fmadd+fmul.d = %#x err=%v want %#x", got, err, want)
+	}
+}
+
+// TestFloatArithmeticSigns 验证负操作数的加减乘除符号传播。
+func TestFloatArithmeticSigns(t *testing.T) {
+	setup := func(port *Core) {
+		if err := port.WriteFP(1, math.Float64bits(-1.5)); err != nil {
+			t.Fatal(err)
+		}
+		if err := port.WriteFP(2, math.Float64bits(2.25)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		name string
+		code uint32
+		want float64
+	}{
+		{"fadd", fpFADD | 1, 0.75},
+		{"fmul", fpFMUL | 1, -3.375},
+		{"fdiv", fpFDIV | 1, -1.5 / 2.25},
+	} {
+		port := runFP(t, setup, encodeFP3(tc.code, 0, 3, 1, 2))
+		got, err := port.ReadFP(3)
+		if err != nil || math.Float64frombits(got) != tc.want {
+			t.Fatalf("%s.d = %v err=%v want %v", tc.name, math.Float64frombits(got), err, tc.want)
+		}
+	}
+}
+
+// TestFloatMultiplyKeepsExponentFloor 是 log2Floor 的回归用例:
+// 大数乘 2^-53 曾把指数从 -3 误判为 -2,使 Python random() 结果偏移。
+func TestFloatMultiplyKeepsExponentFloor(t *testing.T) {
+	setup := func(port *Core) {
+		if err := port.WriteFP(1, 0x431132d8f91b7584); err != nil {
+			t.Fatal(err)
+		}
+		if err := port.WriteFP(2, math.Float64bits(1.0/9007199254740992.0)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	port := runFP(t, setup, encodeFP3(fpFMUL|1, 0, 3, 1, 2))
+	got, err := port.ReadFP(3)
+	if want := uint64(0x3fc132d8f91b7584); err != nil || got != want {
+		t.Fatalf("fmul.d = %#x err=%v want %#x", got, err, want)
+	}
+}
