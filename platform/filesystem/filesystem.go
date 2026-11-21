@@ -9,15 +9,28 @@ import (
 	vmfs "github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fs"
 )
 
-type Filesystem struct{ base string }
+type Filesystem struct {
+	base string
+	// mountRelative 为真时把客体绝对路径(/file)解释为相对挂载点,
+	// 供 mountfs 把宿主目录挂到任意客体目录;缺省保持宿主路径语义。
+	mountRelative bool
+}
 
 func NewFilesystem(base string) *Filesystem { return &Filesystem{base: base} }
+
+// NewMountFilesystem 创建按客体绝对路径解释的挂载视图。
+func NewMountFilesystem(base string) *Filesystem {
+	return &Filesystem{base: base, mountRelative: true}
+}
 func (f *Filesystem) resolve(name string) (string, error) {
 	if strings.ContainsAny(name, "\x00\\") {
 		return "", &fs.PathError{Op: "resolve", Path: name, Err: fs.ErrPermission}
 	}
 	name = path.Clean(name)
-	if !path.IsAbs(name) {
+	if f.mountRelative {
+		// 客体绝对路径(/file)按挂载点相对路径解释,再落到宿主 base 下。
+		name = path.Join(f.base, strings.TrimPrefix(name, "/"))
+	} else if !path.IsAbs(name) {
 		name = path.Join(f.base, name)
 	}
 	if f.base != "/" && name != f.base && !strings.HasPrefix(name, f.base+"/") {
