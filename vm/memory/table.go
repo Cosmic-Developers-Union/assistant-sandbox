@@ -213,6 +213,17 @@ func (t *Table) checkLocked(address, length uint64, prot Prot) error {
 		return faultError(FaultOverflow, address, "访问区间溢出客体地址空间")
 	}
 
+	// 快速路径:绝大多数访问落在单个映射内,二分查找即可。
+	if index := t.findContainingLocked(address); index >= 0 {
+		region := t.regions[index]
+		if end <= region.End {
+			if err := requireProt(region.Prot, prot); err != nil {
+				return faultError(FaultProtection, address,
+					"访问需要 "+prot.String()+"，该区间为 "+region.Prot.String())
+			}
+			return nil
+		}
+	}
 	// 访问可以跨越相邻映射(Linux 语义):只要整段被映射无缝覆盖,
 	// 且每一段都具备所需保护位即可。动态装载器常在数据段尾部
 	// 紧邻匿名 BSS 页,跨页写入不能被误判为越界。
@@ -695,6 +706,16 @@ func (t *Table) checkBudgetAfterLocked(kept []Region, size uint64) error {
 		return errno.Wrap(errno.NoSpace, "映射超出地址空间预算")
 	}
 	return nil
+}
+
+func (t *Table) findContainingLocked(address uint64) int {
+	index := sort.Search(len(t.regions), func(i int) bool {
+		return t.regions[i].End > address
+	})
+	if index < len(t.regions) && t.regions[index].Contains(address) {
+		return index
+	}
+	return -1
 }
 
 func (t *Table) copyLocked() []Region {

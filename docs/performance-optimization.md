@@ -12,6 +12,15 @@
 - 语义回归:`go test ./abi/linux/common/ -count=1`。
 - 基准:`go test ./abi/linux/common/ -run '^$' -bench BenchmarkWrite -benchmem`。
 
+## 已提交:内存访问保护检查快速路径
+
+- 任务:单映射内的访存用二分查找定位区间,只有跨相邻映射时才
+  做全区间覆盖扫描;保留跨边界语义。
+- 实现:`vm/memory/table.go` `checkLocked` 快速路径。
+- 前:Q03 Python 3.12 最小启动约 77s。
+- 后:同一测试约 49s。
+- 语义回归:`go test ./vm/memory/ -count=1`、Python Q03 测试。
+
 ## 后续独立任务(分别提交)
 
 - CPU:`getpid` 分派已无分配;待有更大负载时再测量,禁止无基准改动。
