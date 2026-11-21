@@ -230,6 +230,9 @@ const (
 	SysSetRobustList
 	SysGetRobustList
 	SysExecve
+
+	SysPread64
+	SysPwrite64
 )
 
 func (s Syscall) String() string {
@@ -244,6 +247,10 @@ func (s Syscall) String() string {
 		return "read"
 	case SysWrite:
 		return "write"
+	case SysPread64:
+		return "pread64"
+	case SysPwrite64:
+		return "pwrite64"
 	case SysOpenAt:
 		return "openat"
 	case SysClose:
@@ -366,6 +373,8 @@ func (s Syscall) String() string {
 		return "ftruncate"
 	case SysFcntl:
 		return "fcntl"
+	case SysIoctl:
+		return "ioctl"
 	case SysPipe:
 		return "pipe"
 	case SysPipe2:

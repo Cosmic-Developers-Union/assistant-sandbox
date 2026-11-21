@@ -207,7 +207,7 @@ func TestDispatchValidation(t *testing.T) {
 func TestSyscallNumberMapping(t *testing.T) {
 	for number, want := range map[uint64]common.Syscall{
 		numberOpenAt: common.SysOpenAt, numberClose: common.SysClose, numberLseek: common.SysLseek,
-		numberRead: common.SysRead, numberWrite: common.SysWrite,
+		numberRead: common.SysRead, numberWrite: common.SysWrite, numberPread64: common.SysPread64, numberPwrite64: common.SysPwrite64,
 		numberExit: common.SysExit, numberExitGroup: common.SysExitGroup,
 		numberClockGettime: common.SysClockGettime, numberBrk: common.SysBrk,
 		numberUname:  common.SysUname,
@@ -368,7 +368,7 @@ func TestOpenFlagTranslation(t *testing.T) {
 		{"读写加追加加 cloexec", 2 | openAppend | openCloseOnExec, &common.OpenFlags{Mode: common.OpenReadWrite, Append: true, CloseOnExec: true}},
 		{"独占加创建", openCreate | openExclusive, &common.OpenFlags{Mode: common.OpenRead, Create: true, Exclusive: true}},
 		{"O_DIRECTORY 接受(目录性由文件系统判定)", 0o200000, &common.OpenFlags{Mode: common.OpenRead}},
-		{"O_NOFOLLOW 未实现", 0o400000, nil},
+		{"O_NOFOLLOW 接受(最终分量由打开路径拒绝)", 0o400000, &common.OpenFlags{Mode: common.OpenRead, NoFollow: true}},
 	} {
 		got := openFlags(tc.raw)
 		switch {

@@ -85,6 +85,7 @@ var handled = map[Syscall]bool{
 	SysEpollPwait2:      true,
 	SysPrlimit64:        true,
 	SysRead:             true,
+	SysPread64:          true,
 	SysReadlinkat:       true,
 	SysReadv:            true,
 	SysRecvfrom:         true,
@@ -137,6 +138,7 @@ var handled = map[Syscall]bool{
 	SysUtimensat:        true,
 	SysWaitid:           true,
 	SysWrite:            true,
+	SysPwrite64:         true,
 	SysWritev:           true,
 }
 

@@ -202,6 +202,78 @@ func TestWriteCopiesFromGuestMemory(t *testing.T) {
 	}
 }
 
+type randomHandle struct {
+	data     []byte
+	readable bool
+	writable bool
+}
+
+func (h *randomHandle) ReadAt(buffer []byte, offset int64) (int, error) {
+	if !h.readable {
+		return 0, errno.BadHandle
+	}
+	if offset < 0 || offset >= int64(len(h.data)) {
+		return 0, nil
+	}
+	return copy(buffer, h.data[offset:]), nil
+}
+
+func (h *randomHandle) WriteAt(buffer []byte, offset int64) (int, error) {
+	if !h.writable {
+		return 0, errno.BadHandle
+	}
+	if offset < 0 {
+		return 0, errno.Invalid
+	}
+	end := int(offset) + len(buffer)
+	if end > len(h.data) {
+		h.data = append(h.data, make([]byte, end-len(h.data))...)
+	}
+	return copy(h.data[offset:], buffer), nil
+}
+
+func (h *randomHandle) Readable() bool { return h.readable }
+func (h *randomHandle) Writable() bool { return h.writable }
+
+func TestPreadPwriteUseExplicitOffset(t *testing.T) {
+	space := newFakeMemory()
+	handle := &randomHandle{data: []byte("abcdef"), readable: true, writable: true}
+	syscalls := Syscalls{Memory: space, Descriptors: &fakeDescriptors{get: handle}}
+	reply := syscalls.Handle(context.Background(), Call{Syscall: SysPread64, Args: [6]uint64{7, 0x2000, 3, 2}})
+	if reply.Errno != "" || reply.Value != 3 {
+		t.Fatalf("pread64 reply=%+v", reply)
+	}
+	for index, want := range []byte("cde") {
+		if got := space.data[0x2000+uint64(index)]; got != want {
+			t.Fatalf("pread64 数据[%d]=%q want %q", index, got, want)
+		}
+	}
+	for index, value := range []byte("XY") {
+		space.data[0x3000+uint64(index)] = value
+	}
+	reply = syscalls.Handle(context.Background(), Call{Syscall: SysPwrite64, Args: [6]uint64{7, 0x3000, 2, 1}})
+	if reply.Errno != "" || reply.Value != 2 {
+		t.Fatalf("pwrite64 reply=%+v", reply)
+	}
+	if string(handle.data) != "aXYdef" {
+		t.Fatalf("pwrite64 文件=%q", handle.data)
+	}
+
+	// 非可定位句柄 ESPIPE;负偏移 EINVAL。
+	pipe := Syscalls{Memory: space, Descriptors: &fakeDescriptors{get: bareHandle{}}}
+	if reply := pipe.Handle(context.Background(), Call{Syscall: SysPread64, Args: [6]uint64{7, 0x2000, 3, 0}}); reply.Errno != errno.Seek {
+		t.Fatalf("pipe pread64=%+v want ESPIPE", reply)
+	}
+	if reply := syscalls.Handle(context.Background(), Call{Syscall: SysPread64, Args: [6]uint64{7, 0x2000, 3, ^uint64(0)}}); reply.Errno != errno.Invalid {
+		t.Fatalf("negative pread64=%+v want EINVAL", reply)
+	}
+	readonly := &randomHandle{data: []byte("abc"), readable: true}
+	locked := Syscalls{Memory: space, Descriptors: &fakeDescriptors{get: readonly}}
+	if reply := locked.Handle(context.Background(), Call{Syscall: SysPwrite64, Args: [6]uint64{7, 0x3000, 1, 0}}); reply.Errno != errno.BadHandle {
+		t.Fatalf("readonly pwrite64=%+v want EBADF", reply)
+	}
+}
+
 func TestReadWritesBackToGuestMemory(t *testing.T) {
 	space := newFakeMemory()
 	descriptors := &fakeDescriptors{input: []byte("abc")}
@@ -2381,7 +2453,7 @@ func TestStatfsEncodesQuotas(t *testing.T) {
 	syscalls := Syscalls{Memory: space, Descriptors: &fakeDescriptors{}, Files: files}
 	writeString(space, 0x1000, "/tmp")
 
-	if reply := syscalls.Handle(ctx, Call{Syscall: SysStatfs, Args: [6]uint64{atCurrentWorkingDirectory, 0x1000, 0x3000}}); reply.Errno != "" {
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysStatfs, Args: [6]uint64{0x1000, 0x3000}}); reply.Errno != "" {
 		t.Fatalf("statfs: %+v", reply)
 	}
 	stat := decodeStatfs(space, 0x3000)
@@ -2412,7 +2484,7 @@ func TestStatfsEncodesQuotas(t *testing.T) {
 	// 未声明配额按 0 报告。
 	empty := &fakeFiles{statfsInfo: StatfsInfo{}}
 	undeclared := Syscalls{Memory: space, Descriptors: &fakeDescriptors{}, Files: empty}
-	if reply := undeclared.Handle(ctx, Call{Syscall: SysStatfs, Args: [6]uint64{atCurrentWorkingDirectory, 0x1000, 0x3000}}); reply.Errno != "" {
+	if reply := undeclared.Handle(ctx, Call{Syscall: SysStatfs, Args: [6]uint64{0x1000, 0x3000}}); reply.Errno != "" {
 		t.Fatalf("未声明: %+v", reply)
 	}
 	stat = decodeStatfs(space, 0x3000)
@@ -2428,11 +2500,11 @@ func TestStatfsEncodesQuotas(t *testing.T) {
 	if reply := (Syscalls{}).Handle(ctx, Call{Syscall: SysStatfs}); reply.Errno != errno.NotImplemented {
 		t.Fatalf("未装配: %+v want ENOSYS", reply)
 	}
-	if reply := syscalls.Handle(ctx, Call{Syscall: SysStatfs, Args: [6]uint64{4, 0x1000, 0x3000}}); reply.Errno != errno.NotSupported {
-		t.Fatalf("非 AT_FDCWD: %+v want ENOTSUP", reply)
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysStatfs, Args: [6]uint64{0x1000, 0x3000}}); reply.Errno != "" {
+		t.Fatalf("statfs(path,buf): %+v", reply)
 	}
 	files.statfsErr = errno.Permission
-	if reply := syscalls.Handle(ctx, Call{Syscall: SysStatfs, Args: [6]uint64{atCurrentWorkingDirectory, 0x1000, 0x3000}}); reply.Errno != errno.Permission {
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysStatfs, Args: [6]uint64{0x1000, 0x3000}}); reply.Errno != errno.Permission {
 		t.Fatalf("容量查询故障: %+v want EACCES", reply)
 	}
 }

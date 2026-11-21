@@ -46,6 +46,7 @@ ENOSYS 清单,归 L/I/H 组后续任务。
 | socket / socketpair / bind / listen / accept / accept4 / connect / sendto / recvfrom / sendmsg / recvmsg / shutdown / getsockname / getpeername / getsockopt / setsockopt | M01–M08(VM 独立命名空间,回环撮合;AF_INET 流式/数据报与 AF_UNIX 流式;SOCK_NONBLOCK/CLOEXEC;选项子集 SO_REUSEADDR/SO_TYPE/SO_ERROR/SO_KEEPALIVE/TCP_NODELAY;AF_INET6 与 AF_UNIX 数据报 ENOTSUP;MSG_NOSIGNAL 忽略;sendmsg/recvmsg 分散缓冲与 AF_UNIX SCM_RIGHTS 共享打开文件描述,控制缓冲不足置 MSG_CTRUNC 并归还引用;socket 就绪经 poll/epoll 水平/边缘触发,M07);`vm/net`、`TestSocketSyscallsDispatchWithSockaddrEncoding`、`TestSendmsg*`、`TestRecvmsg*`、`TestEpollReportsListenerAndConnectionReadiness`、`TestPollNotifies*` |
 | getpid / gettid / getppid | G 组身份查询 |
 | openat / close / read / write | I03/I06;`TestOpenFlag*`、`TestReadWriteShort*` |
+| pread64 / pwrite64 | 显式偏移读写,不改变描述符游标;非可定位描述符 ESPIPE;I03;`TestPreadPwrite*` |
 | readv / writev | I07;`TestReadvWritevScatterGather` |
 | lseek / getdents64 | I09;`TestGetdents64Walks*` |
 | fstat / newfstatat / statx | I08;`TestFstat*`、`TestStatx*` |
@@ -55,6 +56,7 @@ ENOSYS 清单,归 L/I/H 组后续任务。
 | ftruncate / fsync / fdatasync / utimensat | I12;`TestUtimensatAndFtruncate*` |
 | faccessat | G 组;`TestFaccessat*` |
 | fcntl / dup / dup3 | F_DUPFD、F_DUPFD_CLOEXEC、F_GETFL、F_SETFL;I05;`TestDupAndFcntlFlags*` |
+| ioctl | 终端属性/窗口大小与 PTY 控制子集(TCGETS/TCSETS/TIOCGWINSZ/TIOCSWINSZ/TIOCGPTN/TIOCSPTLCK,P08);`TestTerminalIoctl*`、`TestGuestPTYMasterSlave` |
 | pipe2 | I15;EOF/EPIPE/SIGPIPE/PIPE_BUF 原子写/O_NONBLOCK;vm/pipe、`TestPipeProbeSemanticsMatchLinux`、`TestPipeNonBlockingModeViaFcntl` |
 | poll / ppoll | L05;`TestPoll*`、`TestPpoll*` |
 | pselect6 | L06;fd_set 位图、坏描述符 EBADF、空集合纯睡眠、sigmask 结构;`TestPselect6*` |

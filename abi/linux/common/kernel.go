@@ -2,9 +2,11 @@ package common
 
 import (
 	"context"
+	"errors"
 	"io"
 	stdfs "io/fs"
 	"math"
+	"path"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/clock"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/epoll"
@@ -667,6 +669,12 @@ func (p ProcessFiles) Open(ctx context.Context, request OpenRequest) (uint64, er
 	if err != nil {
 		return 0, err
 	}
+	if request.Flags.NoFollow {
+		target, err = p.resolveNoFollow(ctx, request.Path)
+		if err != nil {
+			return 0, err
+		}
+	}
 	file, err := p.System.Open(ctx, target, rawOpenFlags(request.Flags), stdfs.FileMode(request.Perm))
 	if err != nil {
 		return 0, err
@@ -684,6 +692,30 @@ func (p ProcessFiles) Open(ctx context.Context, request OpenRequest) (uint64, er
 		}
 	}
 	return uint64(id), nil
+}
+
+// resolveNoFollow 解析 O_NOFOLLOW 的最终路径分量:目录部分照常
+// 跟随符号链接,最后一级是符号链接时报 ELOOP(Linux open(2) 语义)。
+func (p ProcessFiles) resolveNoFollow(ctx context.Context, name string) (string, error) {
+	cleaned := path.Clean(name)
+	if cleaned == "/" {
+		return "/", nil
+	}
+	parent := path.Dir(cleaned)
+	base := path.Base(cleaned)
+	resolvedParent, err := p.resolver().Resolve(parent)
+	if err != nil {
+		return "", err
+	}
+	final := path.Join(resolvedParent, base)
+	info, err := p.System.Lstat(ctx, final)
+	switch {
+	case err == nil && info.Mode()&stdfs.ModeSymlink != 0:
+		return "", errno.Wrap(errno.LinkLoop, "O_NOFOLLOW 拒绝符号链接: "+name)
+	case err != nil && !errors.Is(err, errno.NotFound):
+		return "", err
+	}
+	return final, nil
 }
 
 func rawOpenFlags(flags OpenFlags) uint32 {

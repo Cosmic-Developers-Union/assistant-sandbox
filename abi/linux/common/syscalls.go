@@ -420,6 +420,10 @@ func (s Syscalls) dispatch(ctx context.Context, call Call) Reply {
 		return s.write(ctx, call)
 	case SysRead:
 		return s.read(ctx, call)
+	case SysPread64:
+		return s.pread(ctx, call)
+	case SysPwrite64:
+		return s.pwrite(ctx, call)
 	case SysOpenAt:
 		return s.openAt(ctx, call)
 	case SysClose:
@@ -868,6 +872,111 @@ func (s Syscalls) buffer(call Call) ([]byte, Reply, bool) {
 		return nil, Reply{Errno: errno.Invalid}, false
 	}
 	return make([]byte, count), Reply{}, true
+}
+
+// pread64/pwrite64 在显式偏移读写,不改变描述符游标(Linux 语义)。
+func (s Syscalls) pread(ctx context.Context, call Call) Reply {
+	if s.Descriptors == nil || s.Memory == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	handle, err := s.Descriptors.Get(ctx, call.Args[0])
+	if err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	count := call.Args[2]
+	if count == 0 {
+		return Reply{}
+	}
+	limit := s.BufferLimit
+	if limit == 0 {
+		limit = DefaultBufferLimit
+	}
+	if count > limit {
+		return Reply{Errno: errno.Invalid}
+	}
+	offset := int64(call.Args[3])
+	if offset < 0 {
+		return Reply{Errno: errno.Invalid}
+	}
+	buffer := make([]byte, count)
+	var loaded int
+	switch file := handle.(type) {
+	case RandomFile:
+		if !file.Readable() {
+			return Reply{Errno: errno.BadHandle}
+		}
+		loaded, err = file.ReadAt(buffer, offset)
+	case io.ReaderAt:
+		loaded, err = file.ReadAt(buffer, offset)
+	default:
+		return Reply{Errno: errno.Seek}
+	}
+	if err != nil && !errors.Is(err, io.EOF) {
+		return Reply{Errno: errnoOf(err)}
+	}
+	if loaded < 0 || loaded > len(buffer) {
+		return Reply{Errno: errno.IO}
+	}
+	if loaded == 0 {
+		return Reply{}
+	}
+	if err := s.Memory.Write(ctx, call.Args[1], buffer[:loaded]); err != nil {
+		return Reply{Errno: errno.Fault}
+	}
+	s.observe(s.descriptorPath(ctx, call.Args[0]), inotify.InAccess, 0, false)
+	return Reply{Value: uint64(loaded)}
+}
+
+func (s Syscalls) pwrite(ctx context.Context, call Call) Reply {
+	if s.Descriptors == nil || s.Memory == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	handle, err := s.Descriptors.Get(ctx, call.Args[0])
+	if err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	count := call.Args[2]
+	if count == 0 {
+		return Reply{}
+	}
+	limit := s.BufferLimit
+	if limit == 0 {
+		limit = DefaultBufferLimit
+	}
+	if count > limit {
+		return Reply{Errno: errno.Invalid}
+	}
+	offset := int64(call.Args[3])
+	if offset < 0 {
+		return Reply{Errno: errno.Invalid}
+	}
+	buffer := make([]byte, count)
+	if err := s.Memory.Read(ctx, call.Args[1], buffer); err != nil {
+		return Reply{Errno: errno.Fault}
+	}
+	var written int
+	switch file := handle.(type) {
+	case RandomFile:
+		if !file.Writable() {
+			return Reply{Errno: errno.BadHandle}
+		}
+		written, err = file.WriteAt(buffer, offset)
+	case io.WriterAt:
+		written, err = file.WriteAt(buffer, offset)
+	default:
+		return Reply{Errno: errno.Seek}
+	}
+	if err != nil {
+		if errors.Is(err, errno.BrokenPipe) {
+			s.raisePipeSignal(ctx)
+		}
+		return Reply{Errno: errnoOf(err)}
+	}
+	if written < 0 || written > len(buffer) {
+		return Reply{Errno: errno.IO}
+	}
+	s.observe(s.descriptorPath(ctx, call.Args[0]), inotify.InModify, 0, false)
+	return Reply{Value: uint64(written)}
 }
 
 // observe 在成功的文件系统操作后向观察端口发事件(I20):未装配
@@ -3788,10 +3897,9 @@ func (s Syscalls) statfs(ctx context.Context, call Call) Reply {
 	if s.Files == nil || s.Memory == nil {
 		return Reply{Errno: errno.NotImplemented}
 	}
-	if call.Args[0] != atCurrentWorkingDirectory {
-		return Reply{Errno: errno.NotSupported}
-	}
-	pathname, code := s.readPath(ctx, call.Args[1])
+	// Linux statfs(2) 的 ABI 是 statfs(path, buf),没有 dirfd 参数;
+	// statfsat 并不存在。路径直接取 Args[0],结果缓冲区取 Args[1]。
+	pathname, code := s.readPath(ctx, call.Args[0])
 	if code != "" {
 		return Reply{Errno: code}
 	}
@@ -3799,7 +3907,7 @@ func (s Syscalls) statfs(ctx context.Context, call Call) Reply {
 	if err != nil {
 		return Reply{Errno: errnoOf(err)}
 	}
-	return s.writeStatfs(ctx, call.Args[2], info)
+	return s.writeStatfs(ctx, call.Args[1], info)
 }
 
 func (s Syscalls) fstatfs(ctx context.Context, call Call) Reply {

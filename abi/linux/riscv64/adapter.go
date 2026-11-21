@@ -41,6 +41,8 @@ const (
 	numberMremap           = 216
 	numberReadv            = 65
 	numberWritev           = 66
+	numberPread64          = 67
+	numberPwrite64         = 68
 	numberUname            = 160
 	numberClockNanosleep   = 115
 	numberGetcwd           = 17
@@ -259,11 +261,12 @@ const (
 	openCloseOnExec = 0o2000000
 	openNoCTTY      = 0o400
 	openNonBlock    = 0o4000
+	openNoFollow    = 0o400000
 
 	// O_LARGEFILE 在 64 位客体 ABI 上无语义(参考 Linux riscv64 接受
 	// 并忽略),libc 的 open/openat 无条件携带,必须纳入已知掩码。
 	// O_DIRECTORY 由 opendir/readdir 携带,目录性质由文件系统判定。
-	openKnown = openAccessMask | openCreate | openExclusive | openTruncate | openAppend | openLargeFile | openCloseOnExec | openDirectory | openNoCTTY | openNonBlock
+	openKnown = openAccessMask | openCreate | openExclusive | openTruncate | openAppend | openLargeFile | openCloseOnExec | openDirectory | openNoCTTY | openNonBlock | openNoFollow
 )
 
 func openFlags(raw uint64) *common.OpenFlags {
@@ -277,6 +280,7 @@ func openFlags(raw uint64) *common.OpenFlags {
 		Truncate:    raw&openTruncate != 0,
 		Append:      raw&openAppend != 0,
 		CloseOnExec: raw&openCloseOnExec != 0,
+		NoFollow:    raw&openNoFollow != 0,
 	}
 	return &flags
 }
@@ -331,6 +335,10 @@ func syscallOf(number uint64) common.Syscall {
 		return common.SysRead
 	case numberWrite:
 		return common.SysWrite
+	case numberPread64:
+		return common.SysPread64
+	case numberPwrite64:
+		return common.SysPwrite64
 	case numberUname:
 		return common.SysUname
 	case numberGetcwd:

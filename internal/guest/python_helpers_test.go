@@ -18,7 +18,7 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/resources"
 )
 
-const python312LibsDigest = "72758236788527466d66787409e89f94efc15e463cb7596a5ac9947db3afef74"
+const python312LibsDigest = "160b7396952f6579de2a5c2ba30f0aa0b398e704f6d24a8727db39f82def84a9"
 
 // python312Guest 启动一台装配了 Alpine CPython 3.12.16、预编译
 // 标准库字节码与运行时共享库的 VM,返回连接。调用方负责关闭 VM。

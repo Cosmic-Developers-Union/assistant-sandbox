@@ -19,6 +19,7 @@ type OpenFlags struct {
 	Truncate    bool
 	Append      bool
 	CloseOnExec bool
+	NoFollow    bool
 }
 
 func (f OpenFlags) Validate() error {

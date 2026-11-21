@@ -511,7 +511,7 @@ func TestStatfsAgainstRealQuota(t *testing.T) {
 
 	// 路径形态:statfs("/")。
 	writeString(syscalls.Memory.(*fakeMemory), 0x1000, "/")
-	if reply := syscalls.Handle(ctx, Call{Syscall: SysStatfs, Args: [6]uint64{atCurrentWorkingDirectory, 0x1000, 0x3000}}); reply.Errno != "" {
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysStatfs, Args: [6]uint64{0x1000, 0x3000}}); reply.Errno != "" {
 		t.Fatalf("statfs: %+v", reply)
 	}
 	memory := syscalls.Memory.(*fakeMemory)
