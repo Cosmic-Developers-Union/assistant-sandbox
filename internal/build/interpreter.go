@@ -45,11 +45,6 @@ func adaptInterpreter(root string) error {
 			if err != nil {
 				return "", err
 			}
-			marker := "\tif st.Background || st.Disown {"
-			if strings.Count(source, marker) != 1 {
-				return "", fmt.Errorf("后台任务适配锚点不唯一")
-			}
-			source = strings.Replace(source, marker, "\tif st.Background || st.Disown || st.Coprocess { r.exit.fatal(fmt.Errorf(\"VM 不支持后台任务\")); return }\n"+marker, 1)
 			return source, nil
 		},
 		"builtin.go": func(source string) (string, error) {

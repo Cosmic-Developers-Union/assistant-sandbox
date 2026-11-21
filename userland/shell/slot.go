@@ -191,7 +191,13 @@ func (s *Slot) Step(ctx context.Context, source []byte) (language.Output, error)
 	// (与 Linux 的后台作业一致)。
 	foreground, background := splitBackground(tree)
 	if background != nil {
-		s.runBackground(ctx, background)
+		// `wait` 必须看到同一条命令行启动的后台作业(P13):此时
+		// 不拆分,交给同一解释器原生管理后台与 wait。
+		if containsWait(foreground) {
+			foreground = tree
+		} else {
+			s.runBackground(ctx, background)
+		}
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	s.interruptMu.Lock()
@@ -243,6 +249,26 @@ func splitBackground(tree *syntax.File) (foreground, background *syntax.File) {
 		return tree, nil
 	}
 	return front, back
+}
+
+// containsWait 报告树中是否出现 wait 命令(P13)。
+func containsWait(tree *syntax.File) bool {
+	found := false
+	syntax.Walk(tree, func(node syntax.Node) bool {
+		if found {
+			return false
+		}
+		call, ok := node.(*syntax.CallExpr)
+		if !ok || len(call.Args) == 0 || len(call.Args[0].Parts) == 0 {
+			return true
+		}
+		if literal, ok := call.Args[0].Parts[0].(*syntax.Lit); ok && literal.Value == "wait" {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
 }
 
 // runBackground 在独立解释器里执行后台语句:上下文与前台命令解耦,
