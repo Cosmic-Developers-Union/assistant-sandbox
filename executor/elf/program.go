@@ -408,6 +408,9 @@ func syscalls(ctx context.Context, process proc.Proc, space *memory.Table, plan 
 	if control, ok := process.Resources.(proc.CredentialControl); ok {
 		handler.Credentials = control
 	}
+	if gaps, ok := process.Control.(proc.GapControl); ok {
+		handler.Gaps = gaps
+	}
 	// getrandom 的熵源(L04):与 loader 随机字节同源,生产模式不固定。
 	if random, err := process.Resources.Random(); err == nil {
 		handler.Random = random

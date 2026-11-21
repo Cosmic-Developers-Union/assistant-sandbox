@@ -207,6 +207,9 @@ type Syscalls struct {
 	// Credentials 是每进程身份变更端口(O01);nil 时 setuid 等 ENOTSUP。
 	Credentials CredentialSetter
 
+	// Gaps 是运行时启动缺口端口(Q02)。
+	Gaps GapSink
+
 	Heap Heap
 
 	Mapper Mappable
@@ -717,6 +720,11 @@ func (s Syscalls) writeBuffer(call Call) ([]byte, *[]byte, Reply, bool) {
 	return make([]byte, count), nil, Reply{}, true
 }
 
+// GapSink 是运行时启动缺口端口(Q02)。
+type GapSink interface {
+	MissingFile(ctx context.Context, path string)
+}
+
 // CredentialSetter 是每进程 UID/GID 变更端口(O01)。
 type CredentialSetter interface {
 	SetCredentials(ctx context.Context, uid, gid uint32) error
@@ -934,6 +942,9 @@ func (s Syscalls) openAt(ctx context.Context, call Call) Reply {
 		Perm:  uint32(call.Args[3]),
 	})
 	if err != nil {
+		if s.Gaps != nil && errors.Is(err, errno.NotFound) {
+			s.Gaps.MissingFile(ctx, path)
+		}
 		return Reply{Errno: errnoOf(err)}
 	}
 	if created {

@@ -8,6 +8,7 @@ import (
 	stdfs "io/fs"
 	"math"
 	"slices"
+	"strings"
 	"sync"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/audit"
@@ -139,6 +140,9 @@ type Kernel struct {
 
 	// credentials 是每进程 UID/GID 表(O01):与宿主身份完全解耦。
 	credentials *identity.Table
+
+	// gaps 是运行时启动缺口(Q02):每进程保留首个缺口。
+	gaps map[proc.PID]GapReport
 }
 
 // robustList 是 set_robust_list 登记的用户态链表描述(K07):
@@ -1816,6 +1820,18 @@ func (k *Kernel) RunRegistered(ctx context.Context, p proc.Proc) (ExitStatus, er
 	if result.Reason == executable.Signaled {
 		status = ExitStatus{Code: signal.ExitCode(result.Signal), Signal: result.Signal}
 	}
+	// Q02:记录首个缺失指令/系统调用;缺失文件由 openat 端口记录。
+	if result.Diagnostic != nil && strings.Contains(result.Diagnostic.Trap, "not-implemented") {
+		k.recordGap(GapReport{Kind: "instruction", PID: uint64(pid), PC: result.Diagnostic.PC, Trap: result.Diagnostic.Trap, Repro: instructionGapRepro(result.Diagnostic.Trap, result.Diagnostic.PC)})
+	}
+	if k.trace != nil {
+		for _, entry := range k.trace.Entries() {
+			if entry.PID == uint64(pid) && (entry.Result == -95 || entry.Result == -38) {
+				k.recordGap(GapReport{Kind: "syscall", PID: uint64(pid), Syscall: entry.Number, Repro: syscallGapRepro(entry.Number)})
+				break
+			}
+		}
+	}
 	// T02:致命故障/崩溃信号在资源清算前抓取 CPU、映射与最近调用。
 	if result.Reason == executable.Fault || (result.Reason == executable.Signaled && crashSignal(result.Signal)) {
 		var recent []trace.Entry
@@ -2301,6 +2317,10 @@ type procControl struct {
 
 func (c procControl) Begin(parent proc.PID, name string, args []string, dir string, env map[string]string, streams fd.Streams) (proc.Proc, error) {
 	return c.k.Begin(parent, name, args, dir, env, streams)
+}
+
+func (c procControl) MissingFile(ctx context.Context, path string) {
+	c.k.MissingFileGap(ctx, c.self, path)
 }
 
 func (c procControl) Finish(parent, id proc.PID, code uint8) error {

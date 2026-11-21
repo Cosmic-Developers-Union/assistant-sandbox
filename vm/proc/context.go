@@ -70,6 +70,11 @@ type CredentialControl interface {
 	SetCredentials(ctx context.Context, uid, gid uint32) error
 }
 
+// GapControl 是运行时启动缺口端口(Q02):文件缺失在 open 失败点上报。
+type GapControl interface {
+	MissingFile(ctx context.Context, path string)
+}
+
 type WaitControl interface {
 	// WaitChild 等待调用进程的子进程:target=0 表示任意子进程;
 	// nohang 时不阻塞,found=false 表示尚无可回收子进程。
