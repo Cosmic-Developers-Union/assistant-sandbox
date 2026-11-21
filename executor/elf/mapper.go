@@ -54,7 +54,7 @@ func (m *mapper) Anonymous(ctx context.Context, request common.MapRequest) (uint
 		return 0, err
 	}
 	var start uint64
-	if request.Fixed {
+	if request.Fixed || request.NoReplace {
 		if request.Hint+request.Length <= request.Hint {
 			return 0, errno.Overflow
 		}
@@ -130,7 +130,7 @@ func (m *mapper) File(ctx context.Context, request common.FileMapRequest) (uint6
 		return 0, err
 	}
 	var start uint64
-	if request.Fixed {
+	if request.Fixed || request.NoReplace {
 		if request.Hint+request.Length <= request.Hint {
 			return 0, errno.Overflow
 		}

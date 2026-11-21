@@ -29,6 +29,11 @@ const (
 
 const clockTicksPerSecond = 100
 
+// rv64HWCAP 声明 linux-rv64gc-1 的 ISA 能力:I/M/A/F/D/C 与
+// Zicsr/Zifencei 用户子集(A02/A03)。V8 等运行时用 AT_HWCAP
+// 判断浮点/压缩指令可用性;零值会被误判为无 FPU。
+const rv64HWCAP = 0x100 | 0x1000 | 0x1 | 0x20 | 0x8 | 0x4 | 1<<22 | 1<<23
+
 const stackAlignment = 16
 
 type auxFacts struct {
@@ -70,7 +75,7 @@ func buildStack(options Options, facts auxFacts) (Stack, error) {
 		{atEntry, facts.entry},
 
 		{atUID, 0}, {atEUID, 0}, {atGID, 0}, {atEGID, 0},
-		{atHWCAP, 0},
+		{atHWCAP, rv64HWCAP},
 		{atClkTCK, clockTicksPerSecond},
 		{atSecure, 0},
 		{atRandom, randomAddress},

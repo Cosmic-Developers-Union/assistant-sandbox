@@ -1676,7 +1676,14 @@ const (
 	MadvSequential = 2
 	MadvWillneed   = 3
 	MadvDontneed   = 4
-	madvSupported  = MadvNormal | MadvRandom | MadvSequential | MadvWillneed | MadvDontneed
+	MadvFree       = 8
+	MadvDontDump   = 16
+	MadvDoDump     = 17
+	MadvWipeOnFork = 18
+	MadvKeepOnFork = 19
+
+	madvSupported = MadvNormal | MadvRandom | MadvSequential | MadvWillneed | MadvDontneed |
+		MadvFree | MadvDontDump | MadvDoDump | MadvWipeOnFork | MadvKeepOnFork
 
 	mapShared         = 0x01
 	mapPrivate        = 0x02
@@ -2072,6 +2079,14 @@ func (s Syscalls) madvise(ctx context.Context, call Call) Reply {
 	advice := call.Args[2]
 	if advice&^uint64(madvSupported) != 0 {
 		return Reply{Errno: errno.Invalid}
+	}
+	switch advice {
+	case uint64(MadvDontDump), uint64(MadvDoDump), uint64(MadvWipeOnFork), uint64(MadvKeepOnFork):
+		// 这些建议不影响当前内存模型,安全忽略。
+		return Reply{}
+	case uint64(MadvFree):
+		// 释放建议按 DONTNEED 处理(内容可丢弃,随后可重新映射零页)。
+		advice = uint64(MadvDontneed)
 	}
 	length := alignPageUp(call.Args[1])
 	if length == 0 {

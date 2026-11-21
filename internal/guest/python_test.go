@@ -152,9 +152,14 @@ func writeGuestFile(t *testing.T, machine *instance.VM, name string, content []b
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := file.Write(content); err != nil {
+	written, err := file.Write(content)
+	if err != nil {
 		_ = file.Close()
 		t.Fatal(err)
+	}
+	if written != len(content) {
+		_ = file.Close()
+		t.Fatalf("写入 %s 短写: %d/%d", name, written, len(content))
 	}
 	if err := file.Close(); err != nil {
 		t.Fatal(err)

@@ -137,7 +137,9 @@ func Build(ctx context.Context, opts Options) (*Root, error) {
 	if !strings.HasPrefix(workdir, "/") || strings.ContainsRune(workdir, 0) {
 		return nil, fmt.Errorf("工作目录 %q 无效: %w", workdir, errno.Invalid)
 	}
-	system, err := memfs.New(source, memfs.Options{})
+	// 根文件系统需要容纳真实运行时(如 Node.js 单文件 >32MiB);
+	// memfs 默认 32MiB 单文件上限会静默截断大二进制。
+	system, err := memfs.New(source, memfs.Options{MaxFileBytes: 256 << 20})
 	if err != nil {
 		return nil, err
 	}

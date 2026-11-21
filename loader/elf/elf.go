@@ -38,7 +38,7 @@ const (
 const (
 	PageSize = memory.PageSize
 
-	DefaultStackSize = 1 << 20
+	DefaultStackSize = 8 << 20
 
 	MaxStackSize = 64 << 20
 
