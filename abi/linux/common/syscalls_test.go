@@ -892,6 +892,63 @@ func TestClockGettimePropagatesRealtimeErrors(t *testing.T) {
 	}
 }
 
+// TestClockGettimeDerivedClocks 验证 Linux 派生时钟:raw/coarse
+// monotonic 与 boottime 走单调源,coarse realtime 走墙钟。Node/libuv
+// 的快速计时路径依赖这些 ID 不返回 ENOTSUP(Q19 回归)。
+func TestClockGettimeDerivedClocks(t *testing.T) {
+	space := newFakeMemory()
+	source := &fakeClock{wall: 1_500_000_000, monotonic: 2_250_000_000}
+	syscalls := Syscalls{Memory: space, Clock: source}
+	read := func(clock uint64) (int64, int64) {
+		t.Helper()
+		reply := syscalls.Handle(context.Background(), Call{Syscall: SysClockGettime, Args: [6]uint64{clock, 0x3000}})
+		if reply.Errno != "" {
+			t.Fatalf("clock %d reply=%+v", clock, reply)
+		}
+		var encoded [16]byte
+		for index := range encoded {
+			encoded[index] = space.data[0x3000+uint64(index)]
+		}
+		return int64(binary.LittleEndian.Uint64(encoded[0:])), int64(binary.LittleEndian.Uint64(encoded[8:]))
+	}
+	for _, clock := range []uint64{clockMonotonicRaw, clockMonotonicCoarse, clockBoottime} {
+		if seconds, nanos := read(clock); seconds != 2 || nanos != 250_000_000 {
+			t.Fatalf("clock %d=%d.%09d want 2.250000000", clock, seconds, nanos)
+		}
+	}
+	if seconds, nanos := read(clockRealtimeCoarse); seconds != 1 || nanos != 500_000_000 {
+		t.Fatalf("CLOCK_REALTIME_COARSE=%d.%09d", seconds, nanos)
+	}
+}
+
+// TestClockGetresDerivedClocks 验证 coarse 时钟报告 1ms 分辨率,
+// 未知时钟返回 ENOTSUP,而不是对所有 clockid 谎报 1ns。
+func TestClockGetresDerivedClocks(t *testing.T) {
+	space := newFakeMemory()
+	syscalls := Syscalls{Memory: space}
+	read := func(clock uint64) (int64, int64) {
+		t.Helper()
+		reply := syscalls.Handle(context.Background(), Call{Syscall: SysClockGetres, Args: [6]uint64{clock, 0x3000}})
+		if reply.Errno != "" {
+			t.Fatalf("clock_getres %d reply=%+v", clock, reply)
+		}
+		var encoded [16]byte
+		for index := range encoded {
+			encoded[index] = space.data[0x3000+uint64(index)]
+		}
+		return int64(binary.LittleEndian.Uint64(encoded[0:])), int64(binary.LittleEndian.Uint64(encoded[8:]))
+	}
+	if seconds, nanos := read(clockMonotonicCoarse); seconds != 0 || nanos != 1_000_000 {
+		t.Fatalf("CLOCK_MONOTONIC_COARSE res=%d.%09d", seconds, nanos)
+	}
+	if seconds, nanos := read(clockMonotonic); seconds != 0 || nanos != 1 {
+		t.Fatalf("CLOCK_MONOTONIC res=%d.%09d", seconds, nanos)
+	}
+	if reply := syscalls.Handle(context.Background(), Call{Syscall: SysClockGetres, Args: [6]uint64{2, 0x3000}}); reply.Errno != errno.NotSupported {
+		t.Fatalf("未知时钟 res reply=%+v want ENOTSUP", reply)
+	}
+}
+
 func TestRawOpenFlagsTranslation(t *testing.T) {
 	for _, tc := range []struct {
 		label string

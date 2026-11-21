@@ -1162,6 +1162,12 @@ func (s Syscalls) readPath(ctx context.Context, address uint64) (string, errno.C
 const (
 	clockRealtime  = 0
 	clockMonotonic = 1
+	// Linux 的派生时钟:Node/libuv 的快速时钟路径会先查
+	// CLOCK_MONOTONIC_COARSE 分辨率,再直接读取它。
+	clockMonotonicRaw    = 4
+	clockRealtimeCoarse  = 5
+	clockMonotonicCoarse = 6
+	clockBoottime        = 7
 )
 
 func (s Syscalls) lseek(ctx context.Context, call Call) Reply {
@@ -1300,13 +1306,13 @@ func (s Syscalls) clockGettime(ctx context.Context, call Call) Reply {
 	}
 	var nanoseconds int64
 	switch call.Args[0] {
-	case clockRealtime:
+	case clockRealtime, clockRealtimeCoarse:
 		wall, err := s.Clock.Wall(ctx)
 		if err != nil {
 			return Reply{Errno: errnoOf(err)}
 		}
 		nanoseconds = wall
-	case clockMonotonic:
+	case clockMonotonic, clockMonotonicRaw, clockMonotonicCoarse, clockBoottime:
 		monotonic, err := s.Clock.Monotonic(ctx)
 		if err != nil {
 			return Reply{Errno: errnoOf(err)}
@@ -1316,7 +1322,6 @@ func (s Syscalls) clockGettime(ctx context.Context, call Call) Reply {
 		}
 		nanoseconds = int64(monotonic)
 	default:
-
 		return Reply{Errno: errno.NotSupported}
 	}
 	seconds := nanoseconds / nanosPerSecond
@@ -2704,8 +2709,17 @@ func (s Syscalls) clockGetres(ctx context.Context, call Call) Reply {
 	if s.Memory == nil {
 		return Reply{Errno: errno.NotImplemented}
 	}
-	// 1ns resolution claim.
-	encoded := encodeTimespec(0, 1)
+	// 支持的时钟返回实际可用的分辨率;coarse 时钟报告 1ms,
+	// 使 libuv 的快速时钟选择与 Linux 一致。未知时钟 ENOTSUP。
+	nanoseconds := int64(1)
+	switch call.Args[0] {
+	case clockRealtime, clockMonotonic, clockMonotonicRaw, clockBoottime:
+	case clockRealtimeCoarse, clockMonotonicCoarse:
+		nanoseconds = 1_000_000
+	default:
+		return Reply{Errno: errno.NotSupported}
+	}
+	encoded := encodeTimespec(0, nanoseconds)
 	if err := s.Memory.Write(ctx, call.Args[1], encoded[:]); err != nil {
 		return Reply{Errno: errno.Fault}
 	}

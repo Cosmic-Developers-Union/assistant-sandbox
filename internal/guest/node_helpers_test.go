@@ -53,6 +53,15 @@ func node22GuestWith(t *testing.T, configure func(*instance.Options)) (*instance
 	return machine, connection
 }
 
+// node22RealtimeGuest 使用宿主时钟启动 Node VM;定时器与事件循环
+// 验收(Q19-Q22)不能依赖确定性虚拟时钟。
+func node22RealtimeGuest(t *testing.T) (*instance.VM, *instance.Connection) {
+	t.Helper()
+	return node22GuestWith(t, func(options *instance.Options) {
+		options.Deterministic = false
+	})
+}
+
 // extractNodeRuntime 展开 Node 运行时归档;归档已去除 uid/gid、
 // mtime 与宿主路径,内容摘要由 node22RuntimeDigest 锁定。
 func extractNodeRuntime(t *testing.T, machine *instance.VM, archive []byte) {
