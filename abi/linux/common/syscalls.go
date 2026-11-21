@@ -247,6 +247,9 @@ type Syscalls struct {
 
 	Directories DirectoryControl
 
+	// Umask 是每进程文件创建掩码(I13)。
+	Umask UmaskControl
+
 	// CPUs 是客体可见的 CPU 数;0 按单 CPU 报告。
 	CPUs uint64
 
@@ -650,8 +653,7 @@ func (s Syscalls) dispatch(ctx context.Context, call Call) Reply {
 	case SysReadlinkat:
 		return s.readlinkat(ctx, call)
 	case SysUmask:
-		// 文件创建掩码由 I13 交付;未落地前明确 ENOTSUP。
-		return Reply{Errno: errno.NotSupported}
+		return s.umask(ctx, call)
 	case SysFsync:
 		return s.fsync(ctx, call, false)
 	case SysFdatasync:
@@ -2665,6 +2667,20 @@ func (s Syscalls) fchmodat(ctx context.Context, call Call) Reply {
 		return Reply{Errno: code}
 	}
 	return s.chmodPath(ctx, path, call.Args[2])
+}
+
+func (s Syscalls) umask(ctx context.Context, call Call) Reply {
+	if s.Umask == nil {
+		return Reply{Errno: errno.NotSupported}
+	}
+	old, err := s.Umask.Umask()
+	if err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	if err := s.Umask.SetUmask(stdfs.FileMode(call.Args[0] & 0o777)); err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	return Reply{Value: uint64(old & 0o777)}
 }
 
 func (s Syscalls) chmodPath(ctx context.Context, path string, mode uint64) Reply {

@@ -55,6 +55,7 @@ ENOSYS 清单,归 L/I/H 组后续任务。
 | symlinkat / linkat / readlinkat | I11;`TestLinkSymlinkLifecycle*` |
 | ftruncate / fsync / fdatasync / utimensat | I12;`TestUtimensatAndFtruncate*` |
 | fchmod / fchmodat | I13 权限位;`TestFchmodat*`、Q12 venv |
+| umask | I13 每进程文件创建掩码;`TestUmask*`、Q12 pip |
 | chdir / fchdir | I01 工作目录;Q12 venv、`TestChdir*` |
 | faccessat | G 组;`TestFaccessat*` |
 | fcntl / dup / dup3 | F_DUPFD、F_DUPFD_CLOEXEC、F_GETFL、F_SETFL;I05;`TestDupAndFcntlFlags*` |
@@ -89,7 +90,6 @@ ENOSYS 清单,归 L/I/H 组后续任务。
 | getitimer / setitimer | 未纳入配置(需要时立任务) |
 | getpriority / setpriority | 未纳入配置(需要时立任务) |
 | mlock / munlock / mlockall / munlockall / mincore | E15(映射/物理页预算) |
-| umask | I13(权限/umask/所有权) |
 | setuid / setgid / setreuid / setregid / setresuid / setresgid / setfsuid / setfsgid | O01(客体身份) |
 
 ### 声明语义(4 项:返回值即配置,不是缺陷)

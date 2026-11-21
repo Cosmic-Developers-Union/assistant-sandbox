@@ -501,9 +501,22 @@ type ProcessFiles struct {
 	Dir string
 
 	Directory *DirectoryState
+
+	Umask UmaskControl
 }
 
 // resolver 返回按工作目录解析客体路径的统一入口(I01)。
+func (p ProcessFiles) applyUmask(mode stdfs.FileMode) stdfs.FileMode {
+	if p.Umask == nil {
+		return mode
+	}
+	mask, err := p.Umask.Umask()
+	if err != nil {
+		return mode
+	}
+	return mode &^ mask
+}
+
 func (p ProcessFiles) resolver() Resolver {
 	dir := p.Dir
 	if p.Directory != nil {
@@ -520,7 +533,7 @@ func (p ProcessFiles) Mkdir(ctx context.Context, path string, mode uint32) error
 	if err != nil {
 		return err
 	}
-	return p.System.Mkdir(ctx, target, stdfs.FileMode(mode))
+	return p.System.Mkdir(ctx, target, p.applyUmask(stdfs.FileMode(mode)))
 }
 
 func (p ProcessFiles) Remove(ctx context.Context, path string) error {
@@ -683,7 +696,7 @@ func (p ProcessFiles) Open(ctx context.Context, request OpenRequest) (uint64, er
 			return 0, err
 		}
 	}
-	file, err := p.System.Open(ctx, target, rawOpenFlags(request.Flags), stdfs.FileMode(request.Perm))
+	file, err := p.System.Open(ctx, target, rawOpenFlags(request.Flags), p.applyUmask(stdfs.FileMode(request.Perm)))
 	if err != nil {
 		return 0, err
 	}

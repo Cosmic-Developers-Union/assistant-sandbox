@@ -2,6 +2,7 @@ package common
 
 import (
 	"context"
+	stdfs "io/fs"
 	"sync"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
@@ -45,6 +46,12 @@ func (d *DirectoryState) Set(dir string) {
 // DirectoryControl 是内核进程工作目录端口(chdir/fchdir)。
 type DirectoryControl interface {
 	Chdir(ctx context.Context, path string) error
+}
+
+// UmaskControl 是每进程文件创建掩码端口(I13)。
+type UmaskControl interface {
+	Umask() (stdfs.FileMode, error)
+	SetUmask(stdfs.FileMode) error
 }
 
 // Resolve 返回按当前工作目录解析后的客体绝对路径。

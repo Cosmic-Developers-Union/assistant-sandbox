@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	stdfs "io/fs"
 	"slices"
 	"strings"
 	"sync"
@@ -397,10 +398,29 @@ func populateSpace(ctx context.Context, space *memory.Table, plan *loaderelf.Pla
 	return nil
 }
 
+type processUmask struct{ process proc.Proc }
+
+func (u processUmask) Umask() (stdfs.FileMode, error) {
+	if u.process.Resources == nil {
+		return 0, errno.Wrap(errno.NotImplemented, "进程没有资源能力")
+	}
+	return u.process.Resources.Umask()
+}
+
+func (u processUmask) SetUmask(mask stdfs.FileMode) error {
+	control, ok := u.process.Control.(proc.UmaskControl)
+	if !ok {
+		return errno.Wrap(errno.NotSupported, "进程控制不支持 umask")
+	}
+	return control.SetUmask(u.process.ID, mask)
+}
+
 func syscalls(ctx context.Context, process proc.Proc, space *memory.Table, plan *loaderelf.Plan, core cpu.Port) common.Syscalls {
 	handler := common.Syscalls{Memory: space, Sysname: "Linux", Nodename: "assistant-sandbox", Release: "6.8.0", Version: "#1", Machine: "riscv64", Domainname: "(none)", Cwd: process.Dir}
 	directory := common.NewDirectoryState(process.Dir)
 	handler.Directory = directory
+	umask := processUmask{process: process}
+	handler.Umask = umask
 	if control, ok := process.Control.(proc.DirectoryControl); ok {
 		handler.Directories = control
 	}
@@ -454,6 +474,7 @@ func syscalls(ctx context.Context, process proc.Proc, space *memory.Table, plan 
 					PID:       uint64(process.ID),
 					Dir:       process.Dir,
 					Directory: directory,
+					Umask:     umask,
 				}
 			}
 		}

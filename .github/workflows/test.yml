@@ -69,6 +69,22 @@ jobs:
         run: go test ./executor/cpu/... -count=1 -v 2>&1 | grep -E '^(=== RUN|--- FAIL|FAIL|ok)' | tail -120
 
   # T08:固定配置的 CPU/系统调用基准,结果作为可比对工件保存。
+  # Q12:Python venv/pip 离线安装属于重型运行时测试,独立任务避免
+  # 与集成任务共享 40 分钟预算。
+  python-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      GOFLAGS: -p=2
+      GOMEMLIMIT: 768MiB
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Offline venv, pip and native wheel (Q12)
+        run: go test ./internal/guest/ -run TestPython312VenvOfflineInstall -count=1 -timeout 2400s
+
   benchmark:
     runs-on: ubuntu-latest
     timeout-minutes: 15

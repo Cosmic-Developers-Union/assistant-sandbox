@@ -3796,3 +3796,26 @@ func TestFcntlFileLocks(t *testing.T) {
 		t.Fatalf("释放后 F_SETLK: %v", reply.Errno)
 	}
 }
+
+type fakeUmask struct{ mask stdfs.FileMode }
+
+func (f *fakeUmask) Umask() (stdfs.FileMode, error) { return f.mask, nil }
+func (f *fakeUmask) SetUmask(mask stdfs.FileMode) error {
+	f.mask = mask
+	return nil
+}
+
+func TestUmaskReturnsPreviousAndUpdates(t *testing.T) {
+	control := &fakeUmask{mask: 0o022}
+	syscalls := Syscalls{Umask: control}
+	reply := syscalls.Handle(context.Background(), Call{Syscall: SysUmask, Args: [6]uint64{0o077}})
+	if reply.Errno != "" || reply.Value != 0o022 {
+		t.Fatalf("umask reply=%+v want previous 022", reply)
+	}
+	if control.mask != 0o077 {
+		t.Fatalf("umask 新值=%o want 077", control.mask)
+	}
+	if reply := (Syscalls{}).Handle(context.Background(), Call{Syscall: SysUmask, Args: [6]uint64{0}}); reply.Errno != errno.NotSupported {
+		t.Fatalf("未装配 umask=%+v want ENOTSUP", reply)
+	}
+}
