@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/clock"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fd"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/proc"
@@ -61,7 +62,12 @@ func (c *Connection) Exec(ctx context.Context, spec ExecSpec) (proc.Proc, error)
 	// 执行上下文由 VM 掌握:关闭时统一取消,不依赖执行器登记时机。
 	runCtx, cancel := context.WithCancel(ctx)
 	if c.vm.processTimeout > 0 {
-		runCtx, cancel = context.WithTimeout(ctx, c.vm.processTimeout)
+		// 墙钟上限用生产时钟计量,不把宿主 time 引入客体核心。
+		go func() {
+			if err := clock.NewReal().Sleep(runCtx, c.vm.processTimeout); err == nil {
+				cancel()
+			}
+		}()
 	}
 	c.vm.registerRunning(process.ID, cancel)
 	c.vm.executions.Add(1)

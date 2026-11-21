@@ -81,7 +81,7 @@ func TestProcessWallTimeoutStopsRunaway(t *testing.T) {
 	machine, err := New(t.Context(), Options{
 		Deterministic:  true,
 		Seed:           1,
-		ProcessTimeout: 60 * time.Millisecond,
+		ProcessTimeout: 60_000_000,
 		Session:        resources.Limits{Memory: 128 << 20, Work: 1 << 32},
 		Process:        resources.Limits{Memory: 64 << 20, Work: 1 << 32},
 	})

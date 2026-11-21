@@ -8,7 +8,6 @@ import (
 	"context"
 	"io"
 	"sync"
-	"time"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/executor/elf"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/filesystem/devfs"
@@ -83,8 +82,8 @@ type Options struct {
 	Session resources.Limits
 	Process resources.Limits
 
-	// ProcessTimeout 是每客体进程的墙钟上限;0 表示不额外限制。
-	ProcessTimeout time.Duration
+	// ProcessTimeout 是每客体进程的墙钟上限(纳秒);0 表示不额外限制。
+	ProcessTimeout uint64
 
 	// Programs 是追加到内置 Shell 程序表之上的客体程序;同名条目
 	// 覆盖内置实现。
@@ -121,8 +120,8 @@ type VM struct {
 	// meters 是 VM 级/每进程资源预算(O03/O04)。
 	meters *resources.Meters
 
-	// processTimeout 是每进程墙钟上限(O03)。
-	processTimeout time.Duration
+	// processTimeout 是每进程墙钟上限(纳秒,O03)。
+	processTimeout uint64
 
 	// env 是客体会话默认环境(N04)。
 	env map[string]string

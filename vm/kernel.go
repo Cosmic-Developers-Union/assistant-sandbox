@@ -1680,8 +1680,14 @@ func (k *Kernel) Pipe(owner proc.PID, capacity int) (uint32, uint32, error) {
 }
 
 func (k *Kernel) RunRegistered(ctx context.Context, p proc.Proc) (ExitStatus, error) {
-	if err := ctx.Err(); err != nil {
+	// 启动前失败也必须把已登记进程终结为僵尸,否则 wait 永久挂起
+	// (取消与启动竞争的回归由 O08 覆盖)。
+	abort := func(err error) (ExitStatus, error) {
+		_ = k.Finish(p.Parent, p.ID, ExitStatus{Code: 125})
 		return ExitStatus{Code: 125}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return abort(err)
 	}
 	k.mu.Lock()
 	actual, err := k.table.Get(p.ID)
@@ -1698,7 +1704,7 @@ func (k *Kernel) RunRegistered(ctx context.Context, p proc.Proc) (ExitStatus, er
 
 	resolved, err := k.resolve(actual.Program)
 	if err != nil {
-		return ExitStatus{Code: 125}, err
+		return abort(err)
 	}
 
 	actual.Resources = capability.Scope(uint64(actual.ID), k.services.Set, k.meters)
@@ -1708,7 +1714,7 @@ func (k *Kernel) RunRegistered(ctx context.Context, p proc.Proc) (ExitStatus, er
 	instance, err := executable.NewBuiltin().Start(proc.WithContext(runCtx, actual), resolved.Program, actual)
 	if err != nil {
 		cancel(nil)
-		return ExitStatus{Code: 125}, err
+		return abort(err)
 	}
 	k.mu.Lock()
 	k.instances[pid] = instance
