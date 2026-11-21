@@ -170,6 +170,14 @@ func (s scopedFDs) Terminal(ctx context.Context, _ uint64, id uint32) (fd.Termin
 	return s.base.Terminal(ctx, s.pid, id)
 }
 
+func (s scopedFDs) SetTerminalState(ctx context.Context, _ uint64, id uint32, state fd.TerminalState) error {
+	setter, ok := s.base.(fd.TerminalSetter)
+	if !ok {
+		return errno.Wrap(errno.NotSupported, "描述符表不支持终端状态")
+	}
+	return setter.SetTerminalState(ctx, s.pid, id, state)
+}
+
 // Pipe 实现 fd.Creator:以作用域绑定的进程创建管道描述符。
 func (s scopedFDs) Pipe(uint64) (uint32, uint32, error) {
 	if creator, ok := s.base.(fd.Creator); ok {
@@ -546,6 +554,36 @@ func (f *chargeFile) Seek(offset int64, whence int) (int64, error) {
 func (f *chargeFile) Close() error { return f.base.Close() }
 
 func (f *chargeFile) Stat() (stdfs.FileInfo, error) { return f.base.Stat() }
+
+// 终端能力转发(P08):PTY/终端句柄经作用域包装后仍可被 isatty/
+// ioctl 识别,否则真实路径恒报 ENOTTY。
+func (f *chargeFile) Dimensions() (uint16, uint16) {
+	if terminal, ok := f.base.(interface{ Dimensions() (uint16, uint16) }); ok {
+		return terminal.Dimensions()
+	}
+	return 24, 80
+}
+
+func (f *chargeFile) State() fd.TerminalState {
+	if terminal, ok := f.base.(fd.StatefulTerminal); ok {
+		return terminal.State()
+	}
+	return fd.TerminalState{}
+}
+
+func (f *chargeFile) SetState(state fd.TerminalState) error {
+	if terminal, ok := f.base.(fd.StatefulTerminal); ok {
+		return terminal.SetState(state)
+	}
+	return errno.Wrap(errno.NotSupported, "句柄不支持终端状态")
+}
+
+func (f *chargeFile) PTYNumber() uint32 {
+	if numbered, ok := f.base.(interface{ PTYNumber() uint32 }); ok {
+		return numbered.PTYNumber()
+	}
+	return 0
+}
 
 // GuestPath 转发客体路径查询(I20):inotify 的 fd 侧事件按路径
 // 匹配监视;底层句柄无该能力时 ok=false(无事件,尽力而为)。

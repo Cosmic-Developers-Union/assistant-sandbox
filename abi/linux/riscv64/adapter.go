@@ -143,6 +143,7 @@ const (
 	numberEpollCtl         = 21
 	numberEpollPwait       = 22
 	numberEpollPwait2      = 441
+	numberIoctl            = 29
 	numberFutex            = 98
 	numberSetTidAddress    = 96
 	numberMsync            = 227
@@ -256,11 +257,13 @@ const (
 	openDirectory   = 0o200000
 	openLargeFile   = 0o100000
 	openCloseOnExec = 0o2000000
+	openNoCTTY      = 0o400
+	openNonBlock    = 0o4000
 
 	// O_LARGEFILE 在 64 位客体 ABI 上无语义(参考 Linux riscv64 接受
 	// 并忽略),libc 的 open/openat 无条件携带,必须纳入已知掩码。
 	// O_DIRECTORY 由 opendir/readdir 携带,目录性质由文件系统判定。
-	openKnown = openAccessMask | openCreate | openExclusive | openTruncate | openAppend | openLargeFile | openCloseOnExec | openDirectory
+	openKnown = openAccessMask | openCreate | openExclusive | openTruncate | openAppend | openLargeFile | openCloseOnExec | openDirectory | openNoCTTY | openNonBlock
 )
 
 func openFlags(raw uint64) *common.OpenFlags {
@@ -530,6 +533,8 @@ func syscallOf(number uint64) common.Syscall {
 		return common.SysEpollPwait2
 	case numberFutex:
 		return common.SysFutex
+	case numberIoctl:
+		return common.SysIoctl
 	case numberSetTidAddress:
 		return common.SysSetTidAddress
 	case numberMsync:

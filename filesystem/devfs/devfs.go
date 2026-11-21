@@ -11,6 +11,7 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/entropy"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 	vmfs "github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fs"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/pty"
 )
 
 const (
@@ -19,6 +20,7 @@ const (
 	randomName  = "random"
 	urandomName = "urandom"
 	ttyName     = "tty"
+	ptmxName    = "ptmx"
 
 	fdDir = "fd"
 
@@ -43,6 +45,9 @@ type Options struct {
 
 	Provider Provider
 
+	// PTY 提供 /dev/ptmx 主端与 /dev/pts 从端(P08)。
+	PTY *pty.Manager
+
 	Owner uint32
 
 	Mode map[string]stdfs.FileMode
@@ -53,7 +58,7 @@ type Options struct {
 }
 
 func defaultMode(name string) stdfs.FileMode {
-	if name == ttyName {
+	if name == ttyName || name == ptmxName {
 		return 0o600
 	}
 	return 0o666
@@ -63,6 +68,7 @@ type FS struct {
 	entropy  entropy.Source
 	terminal Terminal
 	provider Provider
+	pty      *pty.Manager
 	owner    uint32
 	modes    map[string]stdfs.FileMode
 	subdirs  map[string]vmfs.System
@@ -87,13 +93,14 @@ func New(options Options) (*FS, error) {
 		entropy:  options.Entropy,
 		terminal: options.Terminal,
 		provider: options.Provider,
+		pty:      options.PTY,
 		owner:    options.Owner,
 		modes:    modes,
 		subdirs:  subdirs,
 	}, nil
 }
 
-var deviceNames = []string{fdDir, nullName, randomName, stderrName, stdinName, stdoutName, ttyName, urandomName, zeroName}
+var deviceNames = []string{fdDir, nullName, ptmxName, randomName, stderrName, stdinName, stdoutName, ttyName, urandomName, zeroName}
 
 var directoryNames = map[string]bool{fdDir: true}
 
@@ -373,6 +380,16 @@ func (f *FS) Open(ctx context.Context, path string, flags uint32, mode stdfs.Fil
 	}
 	if len(segments) != 1 {
 		return nil, errno.Wrap(errno.NotFound, "没有该条目: "+path)
+	}
+	if name == ptmxName {
+		if f.pty == nil {
+			return nil, errno.Wrap(errno.NoDevice, "没有 PTY 主端")
+		}
+		master, err := f.pty.OpenMaster()
+		if err != nil {
+			return nil, err
+		}
+		return &file{fs: f, name: ptmxName, flags: flags, stream: master}, nil
 	}
 	if err := f.checkAccess(name, flags); err != nil {
 		return nil, err

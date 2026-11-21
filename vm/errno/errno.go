@@ -31,6 +31,7 @@ const (
 	ReadOnlyFS   Code = "EROFS：存储只读"
 	LinkLoop     Code = "ELOOP：符号链接解析过深"
 	NoDevice     Code = "ENXIO：设备不存在或没有控制终端"
+	NotATerminal Code = "ENOTTY：不是终端"
 	NoSpace      Code = "ENOSPC：客体存储预算耗尽"
 	NoMemory     Code = "ENOMEM：客体地址空间或内存预算耗尽"
 
@@ -70,7 +71,7 @@ const (
 var declared = []Code{
 	NotImplemented, NotSupported, NetworkUnreachable, Invalid, NoProcess, NoChild, Busy, Limit, NotFound,
 	Permission, NotPermitted, Exist, NotDirectory, IsDirectory, NotEmpty, BadHandle, BrokenPipe, NameTooLong, ReadOnlyFS,
-	LinkLoop, NoDevice, NoSpace, NoMemory, CrossDevice, Cancelled, Interrupted, WouldBlock, Range, Overflow,
+	LinkLoop, NoDevice, NoSpace, NoMemory, CrossDevice, Cancelled, Interrupted, WouldBlock, Range, Overflow, NotATerminal,
 	TimedOut, NoExec, Version, Fault, IO, Seek, TooBig,
 	AddressInUse, AddressNotAvail, IsConn, NotConn, NotSock, ConnRefused, ConnReset, ConnAborted, Already,
 	InProgress, MessageSize, HostUnreachable, DestAddrReq,
@@ -100,26 +101,27 @@ var wasiNumbers = map[Code]uint16{
 	NotEmpty:           55,
 	CrossDevice:        18,
 
-	Fault:       21,
-	IO:          29,
-	BadHandle:   8,
-	BrokenPipe:  64,
-	NameTooLong: 37,
-	ReadOnlyFS:  69,
-	LinkLoop:    32,
-	NoDevice:    60,
-	NoSpace:     51,
-	NoMemory:    48,
-	Seek:        70,
-	Cancelled:   11,
-	Interrupted: 27,
-	WouldBlock:  6,
-	Range:       68,
-	Overflow:    61,
-	TimedOut:    73,
-	NoExec:      45,
-	TooBig:      57,
-	Version:     75,
+	Fault:        21,
+	IO:           29,
+	BadHandle:    8,
+	BrokenPipe:   64,
+	NameTooLong:  37,
+	ReadOnlyFS:   69,
+	LinkLoop:     32,
+	NoDevice:     60,
+	NotATerminal: 59,
+	NoSpace:      51,
+	NoMemory:     48,
+	Seek:         70,
+	Cancelled:    11,
+	Interrupted:  27,
+	WouldBlock:   6,
+	Range:        68,
+	Overflow:     61,
+	TimedOut:     73,
+	NoExec:       45,
+	TooBig:       57,
+	Version:      75,
 	// 网络族(M 组;Go wasip1 表数值)。
 	AddressInUse:    3,
 	AddressNotAvail: 4,
@@ -155,6 +157,7 @@ var linuxNumbers = map[Code]int32{
 	IO:                 5,
 	Seek:               29,
 	NoDevice:           6,
+	NotATerminal:       25,
 	NoExec:             8,
 	BadHandle:          9,
 	NoChild:            10,

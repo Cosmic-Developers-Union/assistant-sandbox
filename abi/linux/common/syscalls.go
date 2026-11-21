@@ -604,6 +604,8 @@ func (s Syscalls) dispatch(ctx context.Context, call Call) Reply {
 		return s.pselect6(ctx, call)
 	case SysFutex:
 		return s.futex(ctx, call)
+	case SysIoctl:
+		return s.ioctl(ctx, call)
 	case SysSetTidAddress:
 		return s.setTidAddress(ctx, call)
 	case SysTimerfdCreate:

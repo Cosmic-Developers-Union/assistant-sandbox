@@ -282,6 +282,31 @@ func (t *Terminal) Close() error {
 	return nil
 }
 
+// DrainContext 等待并取出终端输出(P08):无输出时阻塞到有新输出
+// 或上下文结束,供 PTY master 读取。
+func (t *Terminal) DrainContext(ctx context.Context) ([]byte, error) {
+	for {
+		t.mu.Lock()
+		if t.closed {
+			t.mu.Unlock()
+			return nil, errno.BadHandle
+		}
+		if len(t.out) > 0 {
+			t.mu.Unlock()
+			return t.Drain(), nil
+		}
+		t.mu.Unlock()
+		if _, err := t.wake.Wait(ctx, func() (bool, wait.Reason, error) {
+			t.mu.Lock()
+			ready := len(t.out) > 0 || t.closed
+			t.mu.Unlock()
+			return ready, wait.Data, nil
+		}); err != nil {
+			return nil, err
+		}
+	}
+}
+
 func (t *Terminal) Drain() []byte {
 	t.mu.Lock()
 	defer t.mu.Unlock()

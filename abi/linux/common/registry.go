@@ -73,6 +73,7 @@ var handled = map[Syscall]bool{
 	SysPpoll:            true,
 	SysPselect6:         true,
 	SysFutex:            true,
+	SysIoctl:            true,
 	SysSetTidAddress:    true,
 	SysTimerfdCreate:    true,
 	SysTimerfdSettime:   true,

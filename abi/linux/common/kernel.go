@@ -61,6 +61,32 @@ func (p ProcessDescriptors) Close(ctx context.Context, descriptor uint64) error 
 	return p.Table.Close(ctx, p.PID, uint32(descriptor))
 }
 
+// Terminal 返回描述符的终端视图(P08);非终端返回 TTY=false。
+func (p ProcessDescriptors) Terminal(ctx context.Context, descriptor uint64) (fd.Terminal, error) {
+	if p.Table == nil {
+		return fd.Terminal{}, errno.Wrap(errno.NotImplemented, "描述符端口未装配")
+	}
+	if descriptor > math.MaxUint32 {
+		return fd.Terminal{}, errno.Wrap(errno.BadHandle, "描述符编号超出表示范围")
+	}
+	return p.Table.Terminal(ctx, p.PID, uint32(descriptor))
+}
+
+// SetTerminalState 更新终端状态(P08)。
+func (p ProcessDescriptors) SetTerminalState(ctx context.Context, descriptor uint64, state fd.TerminalState) error {
+	if p.Table == nil {
+		return errno.Wrap(errno.NotImplemented, "描述符端口未装配")
+	}
+	if descriptor > math.MaxUint32 {
+		return errno.Wrap(errno.BadHandle, "描述符编号超出表示范围")
+	}
+	setter, ok := p.Table.(fd.TerminalSetter)
+	if !ok {
+		return errno.Wrap(errno.NotSupported, "描述符表不支持终端状态")
+	}
+	return setter.SetTerminalState(ctx, p.PID, uint32(descriptor), state)
+}
+
 func (p ProcessDescriptors) Seek(ctx context.Context, descriptor uint64, offset int64, whence SeekWhence) (int64, error) {
 	stream, err := p.stream(ctx, descriptor)
 	if err != nil {

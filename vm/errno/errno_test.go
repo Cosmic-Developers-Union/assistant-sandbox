@@ -22,7 +22,7 @@ func TestWASIMappingIsStable(t *testing.T) {
 	}
 	cases := map[Code]uint16{
 		Invalid: 28, NoProcess: 71, NoChild: 12, Busy: 10, Limit: 6, NotFound: 44,
-		NotImplemented: 52, NotSupported: 58, NetworkUnreachable: 40, Permission: 2, NotPermitted: 63,
+		NotImplemented: 52, NotSupported: 58, NetworkUnreachable: 40, Permission: 2, NotPermitted: 63, NotATerminal: 59,
 		Exist: 20, NotDirectory: 54, IsDirectory: 31, NotEmpty: 55, BadHandle: 8,
 		NameTooLong: 37, ReadOnlyFS: 69, LinkLoop: 32, NoSpace: 51, NoMemory: 48,
 		Cancelled: 11, Interrupted: 27, WouldBlock: 6, Range: 68, Overflow: 61,
@@ -63,7 +63,7 @@ func TestLinuxMappingIsStable(t *testing.T) {
 		t.Fatalf("unexpected ABI version %q", version)
 	}
 	cases := map[Code]int32{
-		Permission: 13, NotPermitted: 1, NotFound: 2, NoProcess: 3, Interrupted: 4, NoDevice: 6,
+		Permission: 13, NotPermitted: 1, NotFound: 2, NoProcess: 3, Interrupted: 4, NoDevice: 6, NotATerminal: 25,
 		NoExec: 8, BadHandle: 9, NoChild: 10, Limit: 11, WouldBlock: 11, Busy: 16,
 		Exist: 17, CrossDevice: 18, NotDirectory: 20, IsDirectory: 21, Invalid: 22,
 		NoSpace: 28, NoMemory: 12, TooBig: 7, ReadOnlyFS: 30, BrokenPipe: 32, Range: 34, NameTooLong: 36,

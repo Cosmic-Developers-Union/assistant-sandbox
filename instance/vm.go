@@ -28,6 +28,7 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/identity"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/net"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/proc"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/pty"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/resources"
 	"mvdan.cc/sh/v3/interp"
 )
@@ -220,7 +221,8 @@ func newVM(ctx context.Context, opts Options, root *memfs.FS, source clock.Sourc
 	if err != nil {
 		return nil, err
 	}
-	devices, err := devfs.New(devfs.Options{Entropy: random, Subdirs: map[string]vmfs.System{"shm": shm}})
+	terminals := pty.NewManager()
+	devices, err := devfs.New(devfs.Options{Entropy: random, PTY: terminals, Subdirs: map[string]vmfs.System{"shm": shm, "pts": terminals.SlaveFS()}})
 	if err != nil {
 		return nil, err
 	}

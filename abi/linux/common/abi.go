@@ -186,6 +186,8 @@ const (
 
 	SysPselect6
 
+	SysIoctl
+
 	SysFutex
 
 	SysSetTidAddress
