@@ -8,6 +8,7 @@ import (
 	stdfs "io/fs"
 	"math"
 	"strings"
+	"sync"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/executor/cpu"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/clock"
@@ -646,13 +647,16 @@ func (s Syscalls) write(ctx context.Context, call Call) Reply {
 			return Reply{Errno: errnoOf(err)}
 		}
 	}
-	buffer, reply, ready := s.buffer(call)
+	buffer, slot, reply, ready := s.writeBuffer(call)
 	if !ready {
 		return reply
 	}
 	if len(buffer) == 0 {
 		// 零长度写不触碰缓冲区(Linux:合法 fd 上返回 0)。
 		return Reply{Value: 0}
+	}
+	if slot != nil {
+		defer writeBufferPool.Put(slot)
 	}
 	if err := s.Memory.Read(ctx, call.Args[1], buffer); err != nil {
 
@@ -675,6 +679,40 @@ func (s Syscalls) write(ctx context.Context, call Call) Reply {
 	// I20:成功写入向文件监视发 IN_MODIFY。
 	s.observe(s.descriptorPath(ctx, call.Args[0]), inotify.InModify, 0, false)
 	return Reply{Value: uint64(written)}
+}
+
+var writeBufferPool = sync.Pool{New: func() any {
+	buffer := make([]byte, 0, 4096)
+	return &buffer
+}}
+
+// writeBuffer 为 write 提供有界缓冲(T11):小写入复用池,大写入按需
+// 分配;slot 非空表示缓冲来自池,调用方写完后必须归还。
+func (s Syscalls) writeBuffer(call Call) ([]byte, *[]byte, Reply, bool) {
+	if s.Memory == nil || s.Descriptors == nil {
+		return nil, nil, Reply{Errno: errno.NotImplemented}, false
+	}
+	count := call.Args[2]
+	if count == 0 {
+		return nil, nil, Reply{}, false
+	}
+	limit := s.BufferLimit
+	if limit == 0 {
+		limit = DefaultBufferLimit
+	}
+	if count > limit {
+		return nil, nil, Reply{Errno: errno.Invalid}, false
+	}
+	if count <= 4096 {
+		slot := writeBufferPool.Get().(*[]byte)
+		if cap(*slot) < int(count) {
+			*slot = make([]byte, count)
+		} else {
+			*slot = (*slot)[:count]
+		}
+		return *slot, slot, Reply{}, true
+	}
+	return make([]byte, count), nil, Reply{}, true
 }
 
 // sigPipe 是 asm-generic 的 SIGPIPE 信号号。
