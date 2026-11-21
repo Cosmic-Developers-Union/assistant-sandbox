@@ -106,8 +106,8 @@ func TestReadWriteFaults(t *testing.T) {
 	if err := table.Write(ctx, page(9), []byte{1}); !errors.Is(err, errno.Permission) {
 		t.Errorf("写只读页=%v want EACCES", err)
 	}
-	if err := table.Read(ctx, page(10)-4, make([]byte, 8)); !errors.Is(err, errno.Range) {
-		t.Errorf("跨映射边界=%v want ERANGE", err)
+	if err := table.Read(ctx, page(10)-4, make([]byte, 8)); err != nil {
+		t.Errorf("跨相邻映射读取=%v want nil", err)
 	}
 	if err := table.Read(ctx, ^uint64(0)-3, make([]byte, 8)); !errors.Is(err, errno.Invalid) {
 		t.Errorf("区间溢出=%v want EINVAL", err)

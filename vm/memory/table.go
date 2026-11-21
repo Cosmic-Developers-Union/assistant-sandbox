@@ -213,18 +213,20 @@ func (t *Table) checkLocked(address, length uint64, prot Prot) error {
 		return faultError(FaultOverflow, address, "访问区间溢出客体地址空间")
 	}
 
-	index := t.findContainingLocked(address)
-	if index < 0 {
-		return faultError(FaultUnmapped, address, "地址未映射")
+	// 访问可以跨越相邻映射(Linux 语义):只要整段被映射无缝覆盖,
+	// 且每一段都具备所需保护位即可。动态装载器常在数据段尾部
+	// 紧邻匿名 BSS 页,跨页写入不能被误判为越界。
+	if !t.coversLocked(address, end) {
+		return faultError(FaultUnmapped, address, "访问跨越未映射区间")
 	}
-	region := t.regions[index]
-
-	if end > region.End {
-		return faultError(FaultUnmapped, address, "访问跨越映射边界")
-	}
-	if err := requireProt(region.Prot, prot); err != nil {
-		return faultError(FaultProtection, address,
-			"访问需要 "+prot.String()+"，该区间为 "+region.Prot.String())
+	for _, region := range t.regions {
+		if region.End <= address || region.Start >= end {
+			continue
+		}
+		if err := requireProt(region.Prot, prot); err != nil {
+			return faultError(FaultProtection, max(address, region.Start),
+				"访问需要 "+prot.String()+"，该区间为 "+region.Prot.String())
+		}
 	}
 	return nil
 }
@@ -693,15 +695,6 @@ func (t *Table) checkBudgetAfterLocked(kept []Region, size uint64) error {
 		return errno.Wrap(errno.NoSpace, "映射超出地址空间预算")
 	}
 	return nil
-}
-
-func (t *Table) findContainingLocked(address uint64) int {
-	for index, region := range t.regions {
-		if region.Contains(address) {
-			return index
-		}
-	}
-	return -1
 }
 
 func (t *Table) copyLocked() []Region {

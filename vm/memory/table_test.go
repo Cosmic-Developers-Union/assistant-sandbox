@@ -846,3 +846,30 @@ func TestFaultErrorsExposeKindAndErrno(t *testing.T) {
 		t.Fatalf("溢出: %v want FaultOverflow+EINVAL", overflow)
 	}
 }
+
+// TestAccessAcrossAdjacentMappings 验证 T02/Python 装载回归:访问可
+// 跨越相邻映射,只要整段被覆盖且每段保护位兼容;空洞仍报越界。
+func TestAccessAcrossAdjacentMappings(t *testing.T) {
+	ctx := context.Background()
+	table := New(0)
+	if err := table.Map(ctx, Region{Start: page(1), End: page(2), Prot: ProtRead | ProtWrite, Name: "a"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := table.Map(ctx, Region{Start: page(2), End: page(3), Prot: ProtRead | ProtWrite, Name: "b"}); err != nil {
+		t.Fatal(err)
+	}
+	data := []byte("abcdefgh")
+	if err := table.Write(ctx, page(2)-4, data); err != nil {
+		t.Fatalf("跨相邻映射写: %v", err)
+	}
+	got := make([]byte, len(data))
+	if err := table.Read(ctx, page(2)-4, got); err != nil || string(got) != string(data) {
+		t.Fatalf("跨相邻映射读=%q err=%v", got, err)
+	}
+	if err := table.Check(ctx, page(2)-4, 8, ProtRead|ProtWrite); err != nil {
+		t.Fatalf("跨相邻映射检查: %v", err)
+	}
+	if err := table.Check(ctx, page(3)-4, 8, ProtRead); !errors.Is(err, errno.Range) {
+		t.Fatalf("跨越未映射空洞 err=%v want EFAULT", err)
+	}
+}
