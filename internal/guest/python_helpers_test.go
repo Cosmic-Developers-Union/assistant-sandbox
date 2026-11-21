@@ -116,3 +116,31 @@ func extractPython312Libs(t *testing.T, machine *instance.VM, archive []byte) {
 		}
 	}
 }
+
+// runPython312Module 在客体中运行 python3.12 -S -m <module>,用于
+// multiprocessing spawn 的模块主程序。
+func runPython312Module(t *testing.T, connection *instance.Connection, module string, timeout time.Duration) (string, uint8) {
+	t.Helper()
+	output := &bytes.Buffer{}
+	diagnostic := &bytes.Buffer{}
+	runCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	process, err := connection.Exec(runCtx, instance.ExecSpec{
+		Program: "/usr/bin/python3.12",
+		Args:    []string{"-S", "-m", module},
+		Dir:     "/work",
+		Env: map[string]string{
+			"PATH": "/usr/bin:/bin", "HOME": "/work", "LANG": "C.UTF-8",
+			"PYTHONHOME": "/usr", "PYTHONPATH": "/work",
+		},
+		Streams: fd.Streams{Output: output, Error: diagnostic},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := connection.Wait(runCtx, process.ID)
+	if err != nil {
+		t.Fatalf("python -m %s: %v (stdout=%q stderr=%q)", module, err, output.String(), diagnostic.String())
+	}
+	return output.String() + diagnostic.String(), state.ExitCode
+}
