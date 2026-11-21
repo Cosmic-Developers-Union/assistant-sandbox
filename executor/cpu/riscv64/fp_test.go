@@ -342,6 +342,48 @@ func TestFloatClassifyAndCompare(t *testing.T) {
 	}
 }
 
+// TestFloatClassifySignBits 验证 FCLASS.D 按符号位区分正负规格化数、
+// 零与无穷;符号位取位型最高位,而非尾数最高位(回归)。
+func TestFloatClassifySignBits(t *testing.T) {
+	port := runFP(t, func(port *Core) {
+		_ = port.WriteFP(0, math.Float64bits(1))
+		_ = port.WriteFP(1, math.Float64bits(-1))
+		_ = port.WriteFP(2, math.Float64bits(0))
+		_ = port.WriteFP(3, math.Float64bits(math.Copysign(0, -1)))
+	},
+		encodeFP3(0x71, 0x0, 10, 0, 1), // fclass.d a0 = +normal → bit6
+		encodeFP3(0x71, 0x0, 11, 1, 1), // fclass.d a1 = -normal → bit1
+		encodeFP3(0x71, 0x0, 12, 2, 1), // fclass.d a2 = +0 → bit4
+		encodeFP3(0x71, 0x0, 13, 3, 1), // fclass.d a3 = -0 → bit3
+	)
+	want := map[int]uint64{10: 1 << 6, 11: 1 << 1, 12: 1 << 4, 13: 1 << 3}
+	for register, expected := range want {
+		if got, err := port.ReadRegister(register); err != nil || got != expected {
+			t.Fatalf("fclass.d f%d = %#x want %#x (err=%v)", register, got, expected, err)
+		}
+	}
+}
+
+// TestFloatEqualityForInfinities 验证 FEQ 对同号无穷返回真、异号无穷
+// 返回假;此前只比较有限值,导致 Math.min/Math.max 的 NaN 检查误判。
+func TestFloatEqualityForInfinities(t *testing.T) {
+	port := runFP(t, func(port *Core) {
+		_ = port.WriteFP(0, math.Float64bits(math.Inf(1)))
+		_ = port.WriteFP(1, math.Float64bits(math.Inf(1)))
+		_ = port.WriteFP(2, math.Float64bits(math.Inf(-1)))
+	},
+		encodeFP3(0x51, 0x2, 10, 0, 1), // feq.d a0,+Inf,+Inf → 1
+		encodeFP3(0x51, 0x2, 11, 0, 2), // feq.d a1,+Inf,-Inf → 0
+		encodeFP3(0x51, 0x2, 12, 2, 2), // feq.d a2,-Inf,-Inf → 1
+	)
+	want := map[int]uint64{10: 1, 11: 0, 12: 1}
+	for register, expected := range want {
+		if got, err := port.ReadRegister(register); err != nil || got != expected {
+			t.Fatalf("feq.d a%d = %d want %d (err=%v)", register, got, expected, err)
+		}
+	}
+}
+
 func TestFloatConvertWidthAndFlagsAccumulate(t *testing.T) {
 	// FCVT.D.S 精确扩展;FCVT.S.D 舍回。
 	write := func(port *Core) {

@@ -489,6 +489,9 @@ func fpEQ(a, b fpValue) bool {
 	if a.class == classZero && b.class == classZero {
 		return true
 	}
+	if a.class == classInf && b.class == classInf {
+		return a.neg == b.neg
+	}
 	if a.class != classFinite || b.class != classFinite {
 		return false
 	}
@@ -625,7 +628,7 @@ func (c *Core) writeFP(rd int, width uint, value uint64) {
 
 // fclassBits 计算 FCLASS 的 10 位掩码。
 func fclassBits(bits uint64, p fpParams) uint64 {
-	neg := bits>>(p.prec-1)&1 != 0
+	neg := bits>>p.signShift()&1 != 0
 	mant := bits & ((uint64(1) << (p.prec - 1)) - 1)
 	rawExp := int(bits>>p.expShift()) & p.expMask()
 	maxExp := p.expMask()
