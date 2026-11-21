@@ -62,6 +62,9 @@ func TestVMProductionCodeHasNoAmbientHostImports(t *testing.T) {
 		"platform/entropy/entropy_native.go": {"crypto/rand": true},
 		"platform/entropy/entropy_wasi.go":   {"crypto/rand": true},
 
+		// M09 宿主出口适配器:仅由部署层注入,策略在 vm/net 裁决。
+		"platform/network/network.go": {"net": true, "time": true},
+
 		"filesystem/memfs/file.go": {"time": true},
 		// 时钟读数只用于测量耗时(系统调用轨迹),不作为客体可见时间。
 		"vm/clock/monotonic.go": {"time": true},

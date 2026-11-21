@@ -9,6 +9,7 @@ package net
 
 import (
 	"context"
+	"io"
 	"net/netip"
 	"sync"
 	"sync/atomic"
@@ -83,6 +84,11 @@ type Namespace struct {
 	udpBound  map[listenKey]*UDPEndpoint
 	unixPaths map[string]*UnixListener
 
+	// egress/policy 是宿主出口(M09):未配置时非回环连接拒绝。
+	egress    Network
+	policy    *EgressPolicy
+	hostConns map[io.Closer]struct{}
+
 	// nextCookie 供 accept/connect 观察用(测试)。
 	nextCookie uint64
 
@@ -130,6 +136,11 @@ func (n *Namespace) Close() {
 		unix = append(unix, listener)
 	}
 	n.unixPaths = map[string]*UnixListener{}
+	hosts := make([]io.Closer, 0, len(n.hostConns))
+	for host := range n.hostConns {
+		hosts = append(hosts, host)
+	}
+	n.hostConns = nil
 	n.mu.Unlock()
 	for _, listener := range listeners {
 		listener.closeByNamespace()
@@ -139,6 +150,9 @@ func (n *Namespace) Close() {
 	}
 	for _, listener := range unix {
 		listener.closeByNamespace()
+	}
+	for _, host := range hosts {
+		_ = host.Close()
 	}
 	n.wake.WakeAll(wait.Data)
 }

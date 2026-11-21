@@ -63,7 +63,11 @@ type Set struct {
 	Snapshots   storage.Snapshots
 	Replay      replay.Journal
 	Net         net.Network
-	IPC         ipc.IPC
+
+	// Egress 是宿主 TCP 出口的默认拒绝策略(M09);与 Net 同时装配。
+	Egress *net.EgressPolicy
+
+	IPC ipc.IPC
 }
 
 type UmaskSource interface {

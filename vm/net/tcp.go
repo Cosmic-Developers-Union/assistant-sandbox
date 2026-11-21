@@ -511,6 +511,10 @@ func (l *TCPListener) Write(p []byte) (int, error) {
 // 客户端端连接(可立即读写,数据在 accept 前已缓冲,与 TCP 一致)。
 // 未绑定的 local 由命名空间分配临时端口。
 func (n *Namespace) ConnectTCP(ctx context.Context, local Addr, remote Addr) (*TCPConn, error) {
+	// 非回环目标走宿主出口策略(M09);回环仍只指向本命名空间。
+	if remote.IP.IsValid() && remote.IP != LoopbackIPv4 {
+		return n.dialEgress(ctx, local, remote)
+	}
 	listener, ok := n.LookupTCPListener(remote)
 	if !ok {
 		return nil, errno.Wrap(errno.ConnRefused, "回环无监听")

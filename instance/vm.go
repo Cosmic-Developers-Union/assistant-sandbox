@@ -26,6 +26,7 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fd"
 	vmfs "github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fs"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/identity"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/net"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/proc"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/resources"
 	"mvdan.cc/sh/v3/interp"
@@ -84,6 +85,11 @@ type Options struct {
 
 	// ProcessTimeout 是每客体进程的墙钟上限(纳秒);0 表示不额外限制。
 	ProcessTimeout uint64
+
+	// HostNetwork/Egress 装配受策略约束的宿主 TCP 出口(M09);
+	// 两者同时提供才启用,零值保持非回环拒绝。
+	HostNetwork net.Network
+	Egress      *net.EgressPolicy
 
 	// Programs 是追加到内置 Shell 程序表之上的客体程序;同名条目
 	// 覆盖内置实现。
@@ -263,6 +269,8 @@ func newVM(ctx context.Context, opts Options, root *memfs.FS, source clock.Sourc
 			Clock:     source,
 			Entropy:   random,
 			Resources: meters,
+			Net:       opts.HostNetwork,
+			Egress:    opts.Egress,
 		},
 		Programs: registry,
 		Binaries: binaries,

@@ -61,6 +61,17 @@ func (n *Namespace) SendTo(ctx context.Context, from *UDPEndpoint, data []byte, 
 	if len(data) > udpDatagramLimit {
 		return 0, errno.MessageSize
 	}
+	// 非回环 UDP 需要宿主出口;当前只交付受策略控制的 TCP 出口,
+	// 未允许或未实现的协议明确 ENETUNREACH/ENOTSUP(M09)。
+	if to.IP.IsValid() && to.IP != LoopbackIPv4 {
+		n.mu.Lock()
+		policy := n.policy
+		n.mu.Unlock()
+		if policy == nil || !policy.Allows(ProtocolUDP, to.IP, to.Port) {
+			return 0, errno.Wrap(errno.NetworkUnreachable, "UDP 出口策略拒绝目标")
+		}
+		return 0, errno.Wrap(errno.NotSupported, "宿主 UDP 出口未实现")
+	}
 	n.mu.Lock()
 	if n.closed {
 		n.mu.Unlock()

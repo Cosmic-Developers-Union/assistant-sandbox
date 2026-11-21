@@ -223,6 +223,11 @@ func New(services Services, maxProcesses int) (*Kernel, error) {
 	k.prepared = map[proc.PID]*memory.Table{}
 	k.notifies = inotify.NewBroker()
 	k.network = net.New()
+	if policy := services.Egress; policy != nil {
+		if host, err := capability.Require(services.Net); err == nil {
+			k.network.SetEgress(host, policy)
+		}
+	}
 	k.locks = locks.New()
 	k.init = root.ID
 	k.signals.Spawn(uint64(root.ID))

@@ -43,7 +43,9 @@ var hostImportAllowlist = map[string]map[string]bool{
 		"platform/entropy/entropy_native.go": true, "platform/entropy/entropy_wasi.go": true,
 	},
 	"unsafe": {"platform/modules/modules_wasi.go": true},
-	"net":    {},
+	"net": {
+		"platform/network/network.go": true,
+	},
 }
 
 var processLaunchAllowlist = map[string]bool{

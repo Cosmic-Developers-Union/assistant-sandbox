@@ -15,7 +15,7 @@
 | 宿主文件系统 | `platform/filesystem`（`os.Root`）、`filesystem/persistent` | 只通过授权根；客体路径由 `vm/fs` 与 allowlist 解析，不直接使用宿主绝对路径 |
 | 宿主时间 | `vm/clock`（`clock.Real`） | 客体可见时间只经时钟端口；`time` 包仅用于测量/展示 |
 | 宿主随机 | `platform/entropy`（`crypto/rand`） | 生产熵源；确定性模式用 `vm/entropy.Seeded`，无环境旁路 |
-| 宿主网络 | `vm/net.Network`，默认 `Denied` | 未实现受策略出口；guest socket 默认只在 VM 命名空间内回环 |
+| 宿主网络 | `vm/net.Network`、`platform/network`，默认 `Denied` | M09 出口策略在 vm/net 逐地址/端口/协议裁决；未配置时非回环目标 ENETUNREACH；guest socket 回环仍在 VM 命名空间内 |
 | 宿主进程 | `internal/build`、`internal/diff`、`test/posix` | 仅构建、差分参考执行与 POSIX 测试；客体执行路径不可达 |
 | 扩展模块 | `vm/bridge.Bridge`、`capability.Set.Bridge` | 扩展调用必须经能力端口，不能取得宿主引用 |
 | WASI 部署 | `wasm.go`、`platform/modules` | 旧部署路径；不构成新 VM 契约（R06 收敛） |
