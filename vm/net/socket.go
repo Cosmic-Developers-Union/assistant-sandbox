@@ -335,6 +335,39 @@ func (s *INETSocket) WriteContext(ctx context.Context, p []byte) (int, error) {
 	return conn.WriteContext(ctx, p)
 }
 
+// Send 统一 send/sendto:to 为 nil 时等价于 send(2),作用于已连接流。
+func (s *INETSocket) Send(ctx context.Context, data []byte, to *Addr) (int, error) {
+	if to == nil {
+		s.mu.Lock()
+		typ := s.typ
+		state := s.state
+		conn := s.conn
+		s.mu.Unlock()
+		if typ == SockStream && state == stateConnected && conn != nil {
+			return conn.WriteContext(ctx, data)
+		}
+		if typ == SockDatagram {
+			return 0, errno.DestAddrReq
+		}
+		return 0, errno.NotConn
+	}
+	return s.SendTo(ctx, data, *to)
+}
+
+// Recv 统一 recv/recvfrom:已连接流从连接读取,数据报走来源队列。
+func (s *INETSocket) Recv(ctx context.Context, buffer []byte) (int, Addr, error) {
+	s.mu.Lock()
+	typ := s.typ
+	state := s.state
+	conn := s.conn
+	s.mu.Unlock()
+	if typ == SockStream && state == stateConnected && conn != nil {
+		loaded, err := conn.ReadContext(ctx, buffer)
+		return loaded, Addr{}, err
+	}
+	return s.RecvFrom(ctx, buffer)
+}
+
 // SendTo UDP 投递(M05);TCP 连接形态不支持 sendto 目标语义。
 func (s *INETSocket) SendTo(ctx context.Context, data []byte, to Addr) (int, error) {
 	s.mu.Lock()

@@ -49,7 +49,13 @@ func (p processSockets) Socket(domain, typ, protocol uint64, nonblock, cloexec b
 		return 0, errno.Wrap(errno.NotSupported, "网络命名空间未装配")
 	}
 	if protocol != 0 {
-		return 0, errno.NotSupported
+		// Linux 允许显式指定与类型匹配的协议号:IPPROTO_TCP=6、
+		// IPPROTO_UDP=17。getaddrinfo/asyncio 会携带该协议号。
+		matched := (typ == uint64(net.SockStream) && protocol == 6) ||
+			(typ == uint64(net.SockDatagram) && protocol == 17)
+		if !matched {
+			return 0, errno.NotSupported
+		}
 	}
 	switch domain {
 	case uint64(net.AFInet):
@@ -171,11 +177,7 @@ func (p processSockets) SendTo(ctx context.Context, fd uint64, data []byte, to *
 	}
 	switch socket := handle.(type) {
 	case *net.INETSocket:
-		target := net.Addr{Domain: net.AFInet, IP: net.LoopbackIPv4}
-		if to != nil {
-			target = *to
-		}
-		return socket.SendTo(ctx, data, target)
+		return socket.Send(ctx, data, to)
 	default:
 		return 0, errno.NotSock
 	}
@@ -188,7 +190,7 @@ func (p processSockets) RecvFrom(ctx context.Context, fd uint64, buffer []byte) 
 	}
 	switch socket := handle.(type) {
 	case *net.INETSocket:
-		return socket.RecvFrom(ctx, buffer)
+		return socket.Recv(ctx, buffer)
 	default:
 		return 0, net.Addr{}, errno.NotSock
 	}
