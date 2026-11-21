@@ -1747,6 +1747,12 @@ func (s Syscalls) mmap(ctx context.Context, call Call) Reply {
 	if shared && call.Args[2]&ProtWrite != 0 && !file.Writable() {
 		return Reply{Errno: errno.Permission}
 	}
+	// 文件映射独立于描述符生命周期(Linux:mmap 后关闭 fd 仍然有效)。
+	// 复制描述符让底层句柄保持打开;映射随地址空间销毁,重复描述符
+	// 随进程退出统一回收。复制失败不阻断映射(尽力保留)。
+	if duplicate, dupErr := s.Descriptors.DupFrom(ctx, call.Args[4]); dupErr == nil {
+		_, _ = s.Descriptors.Fcntl(ctx, duplicate, fSetFD, 1)
+	}
 	start, err := s.Mapper.File(ctx, FileMapRequest{
 		MapRequest: request, File: file, Offset: call.Args[5], Shared: shared,
 	})

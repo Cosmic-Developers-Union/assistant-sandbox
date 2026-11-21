@@ -18,6 +18,7 @@ const (
 	tiocswinsz = 0x5414
 	tiocgptn   = 0x80045430
 	tiocsptlck = 0x40045431
+	fionbio    = 0x5421
 
 	termiosSize   = 60
 	termiosLFlag  = 12
@@ -28,7 +29,17 @@ const (
 )
 
 func (s Syscalls) ioctl(ctx context.Context, call Call) Reply {
-	if s.Descriptors == nil || s.Memory == nil || s.Identity == nil {
+	if s.Descriptors == nil || s.Memory == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	request := uint32(call.Args[1])
+	arg := call.Args[2]
+	// FIONBIO 与终端无关,必须在 TTY 判定之前处理:musl/Python
+	// 的 socket.setblocking 用它切换 O_NONBLOCK。
+	if request == fionbio {
+		return s.setNonBlocking(ctx, call)
+	}
+	if s.Identity == nil {
 		return Reply{Errno: errno.NotImplemented}
 	}
 	terminalSource, ok := s.Descriptors.(interface {
@@ -44,8 +55,6 @@ func (s Syscalls) ioctl(ctx context.Context, call Call) Reply {
 	if !terminal.TTY {
 		return Reply{Errno: errno.NotATerminal}
 	}
-	request := uint32(call.Args[1])
-	arg := call.Args[2]
 	switch request {
 	case tcgets:
 		return s.getTermios(ctx, arg, terminal)
@@ -94,6 +103,46 @@ func (s Syscalls) ioctl(ctx context.Context, call Call) Reply {
 	default:
 		return Reply{Errno: errno.NotATerminal}
 	}
+}
+
+// setNonBlocking 实现 FIONBIO:arg 指向 4 字节整数,非零表示非阻塞。
+func (s Syscalls) setNonBlocking(ctx context.Context, call Call) Reply {
+	handle, err := s.Descriptors.Get(ctx, call.Args[0])
+	if err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	flags, ok := handle.(interface {
+		StatusFlags() (uint32, error)
+	})
+	if !ok {
+		return Reply{Errno: errno.NotATerminal}
+	}
+	setter, ok := handle.(interface {
+		SetStatusFlags(uint32) error
+	})
+	if !ok {
+		return Reply{Errno: errno.NotATerminal}
+	}
+	if call.Args[2] == 0 {
+		return Reply{Errno: errno.Fault}
+	}
+	var raw [4]byte
+	if err := s.Memory.Read(ctx, call.Args[2], raw[:]); err != nil {
+		return Reply{Errno: errno.Fault}
+	}
+	current, err := flags.StatusFlags()
+	if err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	if binary.LittleEndian.Uint32(raw[:]) != 0 {
+		current |= oNonBlock
+	} else {
+		current &^= oNonBlock
+	}
+	if err := setter.SetStatusFlags(current); err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	return Reply{}
 }
 
 func (s Syscalls) getTermios(ctx context.Context, address uint64, terminal fd.Terminal) Reply {
