@@ -420,7 +420,7 @@ Python 和 Node.js 的验收必须执行客体运行时，不能通过调用宿�
 - [ ] U05 通过 Python 发布场景。验收：标准库、原生扩展、线程、多进程、asyncio、网络、venv 与 pip 全部通过固定测试清单。
 - [ ] U06 通过 Node 发布场景。验收：模块、事件循环、worker、子进程、网络、原生扩展与 npm 全部通过固定测试清单。
 - [ ] U07 通过包源码构建场景。验收：Python sdist 与 Node addon 均在客体编译安装后运行，不以宿主预编译作为此项通过证据。
-- [ ] U08 通过隔离与故障验收。验收：资源耗尽、恶意输入、后台死循环、双 VM 并发及强制关闭不会逃逸或拖垮宿主管理面。
+- [x] U08 通过隔离与故障验收。验收：资源耗尽、恶意输入、后台死循环、双 VM 并发及强制关闭不会逃逸或拖垮宿主管理面。 证据:instance/fault_acceptance_test.go TestIsolationAndFaultAcceptance(两台真实 VM 并发:第一台 CPU 死循环被指令预算终止后仍可执行 quick;畸形 ELF 被拒绝且 VM 可继续;进程上限耗尽只影响第一台,第二台 quick 正常;第二台后台死循环在 2s 内强制关闭,第一台仍响应;第一台客体 SIGSEGV 产生崩溃报告而 VM 保持 running 并可继续执行,新建第三台 VM 不受影响)+ 既有 O04/O08/O09 资源、双 VM、恶意客体测试。测试:`go test ./instance/ -run TestIsolationAndFaultAcceptance -count=1`。CI:Test 工作流 integration 任务。
 - [ ] U09 通过独立仓库验收。验收：干净 CI 不访问原项目目录即可构建、测试、打包和执行全部必做验收。
 - [ ] U10 通过实际部署后端验收。验收：对每个声明支持的宿主平台和后端执行同一兼容配置；不满足者不标为支持。
 - [ ] U11 生成版本化能力报告。验收：逐项列出 Linux、ISA、Python、Node、JIT、设备和网络的实现与测试证据，无未关闭必做缺口。
