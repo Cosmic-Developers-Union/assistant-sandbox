@@ -321,7 +321,7 @@ Python 和 Node.js 的验收必须执行客体运行时，不能通过调用宿�
 
 - [ ] Q01 建立 CPython 客体构建产物流水线。验收：固定工具链构建真实解释器及标准库，产物摘要与依赖可追溯。
 - [ ] Q02 建立运行时启动缺口追踪。验收：Python/Node 每次启动记录首个缺失指令、系统调用或文件，自动生成可复现最小用例；每个新缺口单独建任务。
-- [ ] Q03 打通 Python 最小启动。验收：客体执行 `python3 --version` 与算术脚本，退出码和输出正确。
+- [x] Q03 打通 Python 最小启动。验收：客体执行 `python3 --version` 与算术脚本，退出码和输出正确。 证据:internal/guest/python_test.go TestPython312MinimalStartup 从固定 Alpine APK(internal/guest/testdata/python312/python3-3.12.16-r0.apk,sha256=38e902b0…d487)解包真实 CPython 3.12.16 到客体 /usr/bin、/usr/lib,使用 testdata/lib/ld-musl-riscv64.so.1;不经宿主解释器。客体执行 `python3.12 --version` 输出 Python 3.12.16 且 exit 0,`python3.12 -S -c 'print(2+3)'` 输出 5 且 exit 0。因解释器开销,测试显式设置 Session/Process Work=1<<34(默认 64M 指令会以 125 结束,记录为运行时配置要求)。测试:`go test ./internal/guest/ -run TestPython312MinimalStartup -count=1`。CI:Test 工作流 integration 任务。
 - [ ] Q04 验证 Python 标准库加载。验收：路径、编码、json、re、datetime、math 的固定用例通过。
 - [ ] Q05 验证 Python 文件与压缩模块。验收：pathlib、tempfile、zipfile、gzip 在客体工作区完成读写与清理。
 - [ ] Q06 验证 Python 原生扩展装载。验收：构建一个目标 ABI 扩展并在客体 import、调用，错误架构产物被拒绝。
