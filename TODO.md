@@ -397,7 +397,7 @@ Python 和 Node.js 的验收必须执行客体运行时，不能通过调用宿�
 
 依赖：对应内核能力；本组不以优化替代功能正确性。
 
-- [ ] T01 提供统一 VM 状态与进程检查。验收：列出 VM 状态、进程/线程、等待原因、fd 与预算使用，不依赖内部指针。
+- [x] T01 提供统一 VM 状态与进程检查。验收：列出 VM 状态、进程/线程、等待原因、fd 与预算使用，不依赖内部指针。 证据:instance/status.go(State running/failed/closed、Status{Connections,Processes,Session,Network,Trace,Storage};ProcessStatus 含 ID/Parent/TID/TGID/PGID/SID、程序/参数/目录、State 与等待类别、退出码/信号、Nice、fd 列表与每进程 BudgetStatus;全部字段为值类型/切片,JSON 编码不含内核指针)+ vm/kernel.go Failed/SessionBudget/ProcessBudget 暴露内核生命周期与资源视图。测试:instance TestVMStatusReportsUnifiedInspection(运行中的 hold 进程出现在快照:线程标识、运行/等待状态、fd 0/1、Work/Memory/Descriptor 限额与已用量、会话预算、存储已用字节、trace 计数;JSON 往返不含内部字段;取消并回收后条目消失;Close 后状态为 closed)。测试:`go test ./instance/ -run TestVMStatusReportsUnifiedInspection -count=1`。CI:Test 工作流 integration 任务。
 - [ ] T02 提供客体崩溃报告。验收：包含 PID/TID、PC、寄存器、映射和最近有限调用记录，可复现最小失败程序。
 - [ ] T03 接入资源指标。验收：CPU 工作量、内存、磁盘、网络和输出指标与配额扣减一致。
 - [x] T04 明确快照范围与安全点。验收：区分文件系统、关机磁盘快照、进程状态与整机状态，不把部分序列化宣称为整机快照。 证据:vm/proc/snapshot.go、filesystem/memfs/snapshot_codec.go、deployment Matrix 的 Snapshot/Replay 字段、vm/snapshot_table_test.go。测试:`go test ./vm/ ./deployment/...`。CI:Test 工作流。

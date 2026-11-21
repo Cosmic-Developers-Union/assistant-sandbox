@@ -1960,6 +1960,29 @@ func (k *Kernel) Closed() (bool, error) {
 	return k.closed, nil
 }
 
+// Failed 报告内核是否因客体故障进入失败状态(T01/T02)。
+func (k *Kernel) Failed() bool {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return k.failed
+}
+
+// SessionBudget 返回 VM 级资源预算视图(T01/T03)。
+func (k *Kernel) SessionBudget(ctx context.Context) (resources.View, error) {
+	if k.meters == nil {
+		return resources.View{}, errno.NotImplemented
+	}
+	return k.meters.SessionView(ctx)
+}
+
+// ProcessBudget 返回指定进程的资源预算视图(T01/T03)。
+func (k *Kernel) ProcessBudget(ctx context.Context, pid proc.PID) (resources.View, error) {
+	if k.meters == nil {
+		return resources.View{}, errno.NotImplemented
+	}
+	return k.meters.View(ctx, uint64(pid))
+}
+
 func (k *Kernel) OpenFDs(pid proc.PID) ([]uint32, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
