@@ -143,7 +143,7 @@ func runSegvHandler(t *testing.T, exitCode uint8, main []uint32) []byte {
 		0x00000073, // ecall
 	}, main...)
 	binary.LittleEndian.PutUint64(action[0:], imageEntry+uint64(len(main))*4)
-	binary.LittleEndian.PutUint32(action[16:], common.SigactionSigInfo)
+	binary.LittleEndian.PutUint64(action[8:], uint64(common.SigactionSigInfo))
 	image := buildSigactionImage(t, append(append([]uint32{}, main...), handler...), [8]byte{}, action)
 	harness := newHarness(t, image, nil)
 	stub := &sigControlStub{actions: map[signal.Number]signal.ActionConfig{}}

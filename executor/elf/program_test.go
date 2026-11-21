@@ -1145,8 +1145,8 @@ func TestRealELFRegistersSignalDisposition(t *testing.T) {
 	binary.LittleEndian.PutUint64(set[0:], 1<<(12-1))
 	var action [32]byte
 	binary.LittleEndian.PutUint64(action[0:], 0xCAFE)
-	binary.LittleEndian.PutUint64(action[8:], 1<<(10-1))
-	binary.LittleEndian.PutUint32(action[16:], 0x04000004) // SA_RESTORER|SA_SIGINFO
+	binary.LittleEndian.PutUint64(action[8:], 0x04000004) // SA_RESTORER|SA_SIGINFO
+	binary.LittleEndian.PutUint64(action[16:], 1<<(10-1))
 	binary.LittleEndian.PutUint64(action[24:], 0x9000)
 
 	guestProgram := []uint32{
@@ -1241,7 +1241,7 @@ func TestRealELFDeliversSignalHandlerAndReturns(t *testing.T) {
 	// 处理器地址 = 入口 + 主程序指令数 × 4。
 	var action [32]byte
 	binary.LittleEndian.PutUint64(action[0:], imageEntry+uint64(len(main))*4)
-	binary.LittleEndian.PutUint32(action[16:], 0x04000004) // SA_RESTORER|SA_SIGINFO
+	binary.LittleEndian.PutUint64(action[8:], 0x04000004) // SA_RESTORER|SA_SIGINFO
 	binary.LittleEndian.PutUint64(action[24:], 0x9000)
 	image := buildSigactionImage(t, append(append([]uint32{}, main...), handler...), set, action)
 	harness := newHarness(t, image, nil)

@@ -3406,10 +3406,12 @@ func (s Syscalls) writeSigchld(ctx context.Context, address uint64, state ChildS
 }
 
 // asm-generic 的 struct sigaction(32 字节)与 rt_sigprocmask 的 how。
+// 布局:handler(0)、flags(8)、mask(16,8 字节)、unused(24)。
+// riscv64 没有 SA_RESTORER,restorer 槽位由内核忽略。
 const (
 	sigactionHandler  = 0
-	sigactionMask     = 8
-	sigactionFlags    = 16
+	sigactionFlags    = 8
+	sigactionMask     = 16
 	sigactionRestorer = 24
 	sigactionSize     = 32
 
@@ -3464,8 +3466,8 @@ func (s Syscalls) rtSigaction(ctx context.Context, call Call) Reply {
 		}
 		var encoded [sigactionSize]byte
 		binary.LittleEndian.PutUint64(encoded[sigactionHandler:], current.Handler)
+		binary.LittleEndian.PutUint64(encoded[sigactionFlags:], uint64(current.Flags))
 		binary.LittleEndian.PutUint64(encoded[sigactionMask:], current.Mask)
-		binary.LittleEndian.PutUint32(encoded[sigactionFlags:], current.Flags)
 		binary.LittleEndian.PutUint64(encoded[sigactionRestorer:], current.Restorer)
 		if err := s.Memory.Write(ctx, call.Args[2], encoded[:]); err != nil {
 			return Reply{Errno: errno.Fault}

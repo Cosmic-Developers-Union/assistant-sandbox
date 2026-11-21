@@ -20,6 +20,16 @@ import (
 // 运行时归档:usr/bin/node、musl 加载器、17 个共享库与 ICU 数据。
 const node22RuntimeDigest = "49c1cca5b16b0ada706083d8e50b003a3e79723d9d2e760cf3400e24442210df"
 
+// busyboxDigest 锁定 N10 的静态 busybox;Node 子进程与 npm 生命周期
+// 脚本用它提供客体 /bin/sh。
+const busyboxDigest = "62831fb7c4a0da509481107a8aeb022244235c5dced18101e3d39131d303d704"
+
+const (
+	bashDigest     = "009e1bab308b4c6df742c7768ae0fa7b182b78256f92f93acdb10d516bf39a94"
+	readlineDigest = "e8cce022079187a8b353a6baa7611f44092d97bd98096d538cc5a6f81729cca2"
+	ncurseswDigest = "28e544f2e21d8a9a0458b8f3425ee46a416c0d35d2ec1a4ae44fa60b9019c3e4"
+)
+
 // node22Guest 启动一台装配真实 riscv64 Node.js 22.23.5 的 VM。
 func node22Guest(t *testing.T) (*instance.VM, *instance.Connection) {
 	t.Helper()
@@ -99,6 +109,25 @@ func extractNodeRuntime(t *testing.T, machine *instance.VM, archive []byte) {
 			_ = machine.Filesystem().Symlink(t.Context(), header.Linkname, target)
 		}
 	}
+}
+
+// installGuestShell 把 N10 的真实 Bash(及其 readline/ncurses 依赖)
+// 装入客体,/bin/sh 指向 Bash 的 POSIX 模式;/bin/sleep 由静态
+// busybox 提供(Q21/Q25 的客体子进程与包脚本)。
+func installGuestShell(t *testing.T, machine *instance.VM) {
+	t.Helper()
+	bash := python312Asset(t, "testdata/n10/bin/bash", bashDigest)
+	writeGuestFile(t, machine, "/bin/bash", bash, 0o755)
+	readline := python312Asset(t, "testdata/n10/usr/lib/libreadline.so.8.2", readlineDigest)
+	writeGuestFile(t, machine, "/usr/lib/libreadline.so.8.2", readline, 0o755)
+	_ = machine.Filesystem().Symlink(t.Context(), "libreadline.so.8.2", "/usr/lib/libreadline.so.8")
+	ncurses := python312Asset(t, "testdata/n10/usr/lib/libncursesw.so.6.5", ncurseswDigest)
+	writeGuestFile(t, machine, "/usr/lib/libncursesw.so.6.5", ncurses, 0o755)
+	_ = machine.Filesystem().Symlink(t.Context(), "libncursesw.so.6.5", "/usr/lib/libncursesw.so.6")
+	busybox := python312Asset(t, "testdata/n10/bin/busybox.static", busyboxDigest)
+	writeGuestFile(t, machine, "/bin/busybox", busybox, 0o755)
+	_ = machine.Filesystem().Symlink(t.Context(), "bash", "/bin/sh")
+	_ = machine.Filesystem().Symlink(t.Context(), "busybox", "/bin/sleep")
 }
 
 // runNode22 在客体中运行 /usr/bin/node,分别返回 stdout 与 stderr。

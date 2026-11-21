@@ -2339,6 +2339,19 @@ func (c procControl) FinishCurrent(id proc.PID, code uint8) error {
 	return c.k.Finish(p.Parent, id, ExitStatus{Code: code})
 }
 
+// FinishSignaled 以默认致命信号结束进程:ExitStatus 同时携带信号与
+// 128+signum 退出码,并走 Finish 的资源清算路径(关闭子进程描述符,
+// 使父进程的 stdio 管道得到 EOF)。
+func (c procControl) FinishSignaled(id proc.PID, n signal.Number) error {
+	c.k.mu.Lock()
+	p, err := c.k.table.Get(id)
+	c.k.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	return c.k.Finish(p.Parent, id, ExitStatus{Code: signal.ExitCode(n), Signal: n})
+}
+
 func (c procControl) Tgkill(tgid, tid int64, number signal.Number) error {
 	return c.k.Tgkill(proc.PID(tgid), proc.PID(tid), number)
 }

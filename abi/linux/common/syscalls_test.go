@@ -2903,8 +2903,8 @@ func TestRtSigactionRegistersAndWritesBackOld(t *testing.T) {
 	// 登记:32 字节 struct sigaction 逐字段读取。
 	var action [32]byte
 	binary.LittleEndian.PutUint64(action[0:], 0x4040)
-	binary.LittleEndian.PutUint64(action[8:], 1<<10)
-	binary.LittleEndian.PutUint32(action[16:], 0x14000000)
+	binary.LittleEndian.PutUint64(action[8:], 0x14000000)
+	binary.LittleEndian.PutUint64(action[16:], 1<<10)
 	binary.LittleEndian.PutUint64(action[24:], 0x9000)
 	if err := space.Write(ctx, 0x1000, action[:]); err != nil {
 		t.Fatal(err)
@@ -2928,7 +2928,7 @@ func TestRtSigactionRegistersAndWritesBackOld(t *testing.T) {
 	if handler := binary.LittleEndian.Uint64(oldact[0:]); handler != 0x4040 {
 		t.Fatalf("回写处理器=%#x want 0x4040", handler)
 	}
-	if flags := binary.LittleEndian.Uint32(oldact[16:]); flags != 0x14000000 {
+	if flags := uint32(binary.LittleEndian.Uint64(oldact[8:])); flags != 0x14000000 {
 		t.Fatalf("回写标志=%#x", flags)
 	}
 	// act=NULL 仅查询:不改变登记项。

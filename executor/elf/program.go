@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/abi/linux/common"
 	linuxriscv64 "github.com/Cosmic-Developers-Union/assistant-sandbox/abi/linux/riscv64"
@@ -1096,8 +1097,29 @@ func (f processForker) Fork(ctx context.Context) (uint64, error) {
 	go func() {
 		// 子进程生命周期独立于 fork 调用方上下文:调用返回后子进程
 		// 继续执行直到自身退出;随内核关闭的传播由 C06/C12 复核。
-		runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-		defer cancel()
+		runCtx, cancel := context.WithCancelCause(context.WithoutCancel(ctx))
+		defer cancel(nil)
+		// K08:fork 子进程与线程/vfork 子进程一样登记信号中断钩子;
+		// 否则默认致命信号只挂起 pending,阻塞中的子进程不会退出。
+		var interrupted atomic.Uint32
+		rebindInterrupt := func() {
+			if binder, ok := child.Control.(proc.ThreadInterruptControl); ok {
+				binder.BindThreadInterrupt(child.ID, func(n signal.Number) {
+					interrupted.Store(uint32(n))
+					cancel(errno.Wrap(errno.Interrupted, "信号中断"))
+				})
+			}
+		}
+		rebindInterrupt()
+		if delivery, ok := child.Control.(proc.SignalDeliveryControl); ok {
+			if pending, _, found := delivery.PendingDeliverable(); found {
+				if defaultAction, actionErr := signal.Default(pending); actionErr == nil &&
+					(defaultAction == signal.Terminate || defaultAction == signal.Core) {
+					interrupted.Store(uint32(pending))
+					cancel(errno.Wrap(errno.Interrupted, "信号中断"))
+				}
+			}
+		}
 		childCore, err := riscv64.New(cpu.Config{
 			Memory: childSpace,
 			Entry:  state.PC,
@@ -1120,7 +1142,7 @@ func (f processForker) Fork(ctx context.Context) (uint64, error) {
 		if dispositions, ok := child.Control.(proc.SignalDispositionControl); ok {
 			deliverer.disposition = dispositions
 		}
-		childHandler.Execs = &processExec{process: child, space: childSpace, core: childCore, handler: &childHandler}
+		childHandler.Execs = &processExec{process: child, space: childSpace, core: childCore, handler: &childHandler, rebindInterrupt: rebindInterrupt}
 		childConfig := common.Config{
 			Core:       childCore,
 			Dispatcher: faultDispatching{next: &linuxriscv64.Adapter{Handler: &childHandler, Registers: childCore}, deliver: deliverer},
@@ -1142,6 +1164,14 @@ func (f processForker) Fork(ctx context.Context) (uint64, error) {
 			return
 		}
 		code, runErr := runner.Run(runCtx)
+		if pending := signal.Number(interrupted.Load()); pending.Valid() {
+			if finisher, ok := child.Control.(interface {
+				FinishSignaled(proc.PID, signal.Number) error
+			}); ok {
+				_ = finisher.FinishSignaled(child.ID, pending)
+				return
+			}
+		}
 		if runErr != nil {
 			// 子进程执行故障:按 fail-closed 以 125 退出并转僵尸。
 			code = 125
@@ -1529,6 +1559,10 @@ type processExec struct {
 	core    cpu.Port
 	handler *common.Syscalls
 	vf      *vforkBinding
+	// rebindInterrupt 在 exec 复位信号表后重新登记默认致命信号的
+	// 中断钩子(H07/K08):fork 子进程的 cancel/interrupted 状态
+	// 属于创建它的闭包。
+	rebindInterrupt func()
 }
 
 // maxShebangDepth 与 Linux BINPRM_MAX_INTERP 一致:解释器链最深 4 层。
@@ -1614,6 +1648,9 @@ func (p *processExec) Exec(ctx context.Context, path string, argv, envp []string
 		if err := control.ResetForExec(path, finalArgv, environmentFromList(envp)); err != nil {
 			return err
 		}
+	}
+	if p.rebindInterrupt != nil {
+		p.rebindInterrupt()
 	}
 	if p.vf != nil {
 		if p.vf.rebindInterrupt != nil {
