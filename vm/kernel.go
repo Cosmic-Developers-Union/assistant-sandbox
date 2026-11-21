@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	stdfs "io/fs"
 	"math"
 	"slices"
@@ -479,6 +480,16 @@ func (k *Kernel) Begin(parent proc.PID, name string, args []string, dir string, 
 	p.State = proc.Running
 	p.Resources = capability.Scope(uint64(p.ID), k.services.Set, k.meters)
 	p.Control = procControl{k: k, self: p.ID}
+	if k.meters != nil {
+		// T03:标准输出/错误按字节计入 Output 预算;超限由 write
+		// 如实返回 EAGAIN,指标与配额扣减同源。
+		if streams.Output != nil {
+			streams.Output = meteredStream{inner: streams.Output, meters: k.meters, pid: uint64(p.ID)}
+		}
+		if streams.Error != nil {
+			streams.Error = meteredStream{inner: streams.Error, meters: k.meters, pid: uint64(p.ID)}
+		}
+	}
 	if k.fds != nil {
 		k.fds.Attach(uint64(p.ID), streams)
 	}
@@ -1976,6 +1987,23 @@ func (k *Kernel) Closed() (bool, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	return k.closed, nil
+}
+
+// meteredStream 把客体输出按字节计入进程 Output 预算(T03)，
+// 底层写入器保留原语义。
+type meteredStream struct {
+	inner  io.Writer
+	meters *resources.Meters
+	pid    uint64
+}
+
+func (m meteredStream) Write(p []byte) (int, error) {
+	if m.meters != nil && len(p) > 0 {
+		if err := m.meters.ChargeKind(context.Background(), m.pid, resources.KindOutput, uint64(len(p))); err != nil {
+			return 0, err
+		}
+	}
+	return m.inner.Write(p)
 }
 
 // Failed 报告内核是否因客体故障进入失败状态(T01/T02)。
