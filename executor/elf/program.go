@@ -404,6 +404,10 @@ func syscalls(ctx context.Context, process proc.Proc, space *memory.Table, plan 
 
 		return handler
 	}
+	// getrandom 的熵源(L04):与 loader 随机字节同源,生产模式不固定。
+	if random, err := process.Resources.Random(); err == nil {
+		handler.Random = random
+	}
 	if descriptors, err := process.Resources.Descriptors(); err == nil {
 		handler.Descriptors = common.ProcessDescriptors{Table: descriptors, PID: uint64(process.ID)}
 		// timerfd 的描述符端口(L10):创建/武装/查询经描述符表。
