@@ -83,6 +83,24 @@ jobs:
           name: benchmark-baseline
           path: benchmark.txt
 
+  # Q01:从固定源码构建 CPython 3.12.16(riscv64-linux-musl),保存摘要工件。
+  python-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.17.0
+      - name: Install qemu-riscv64
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq qemu-user-static
+      - name: Build CPython 3.12.16 from source (Q01)
+        run: bash internal/guest/testdata/python312/build.sh "$RUNNER_TEMP/python312-build"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cpython-3.12.16-manifest
+          path: ${{ runner.temp }}/python312-build/manifest.txt
+
   # B08:差分任务——同一客体字节码在 qemu-riscv64 参考与本 VM 对拍(A09)。
   differential:
     runs-on: ubuntu-latest
