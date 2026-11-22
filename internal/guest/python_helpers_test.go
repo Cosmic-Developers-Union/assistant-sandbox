@@ -165,3 +165,23 @@ func runPython312Module(t *testing.T, connection *instance.Connection, module st
 	}
 	return output.String() + diagnostic.String(), state.ExitCode
 }
+
+// readGuestFile 读取客体文件内容,用于失败时报告进度标记。
+func readGuestFile(machine *instance.VM, name string) (string, error) {
+	file, err := machine.Filesystem().Open(context.Background(), name, 0, 0)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = file.Close() }()
+	content, err := io.ReadAll(io.LimitReader(file, 1<<20))
+	if err != nil {
+		return "", err
+	}
+	return string(content), nil
+}
+
+// extractPython312Test 把固定 CPython 上游 test 包展开到客体标准库。
+func extractPython312Test(t *testing.T, machine *instance.VM, archive []byte) {
+	t.Helper()
+	extractPython312PipTo(t, machine, archive, "/usr/lib/python3.12")
+}

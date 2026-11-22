@@ -78,6 +78,12 @@ print("reconnect", result.returncode, repr(result.stdout), repr(result.stderr[-5
 // extractPython312Pip 把预编译 pip 归档展开到 venv site-packages。
 func extractPython312Pip(t *testing.T, machine *instance.VM, archive []byte) {
 	t.Helper()
+	extractPython312PipTo(t, machine, archive, python312VenvSitePack)
+}
+
+// extractPython312PipTo 把预编译 pip 归档展开到指定 site-packages。
+func extractPython312PipTo(t *testing.T, machine *instance.VM, archive []byte, destination string) {
+	t.Helper()
 	reader, err := gzip.NewReader(bytes.NewReader(archive))
 	if err != nil {
 		t.Fatal(err)
@@ -93,7 +99,7 @@ func extractPython312Pip(t *testing.T, machine *instance.VM, archive []byte) {
 			t.Fatal(err)
 		}
 		name := path.Clean(strings.TrimPrefix(header.Name, "./"))
-		target := python312VenvSitePack + "/" + name
+		target := destination + "/" + name
 		switch header.Typeflag {
 		case tar.TypeDir:
 			_ = machine.Filesystem().Mkdir(t.Context(), target, 0o755)
