@@ -180,7 +180,9 @@ func fpMulAdd(a, b, cV fpValue, kind uint32, p fpParams, mode fpMode) (uint64, u
 		exact.Neg(exact)
 	}
 	if cV.class != classZero {
-		if addNeg {
+		// signedRat 已携带 c 的符号;FMSUB 才需要减法,不能再用
+		// addNeg 二次取反(否则负 c 会被加成正数)。
+		if kind&0x1 != 0 {
 			exact.Sub(exact, signedRat(cV))
 		} else {
 			exact.Add(exact, signedRat(cV))

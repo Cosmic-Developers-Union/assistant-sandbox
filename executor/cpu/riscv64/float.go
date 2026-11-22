@@ -26,7 +26,7 @@ func (p fpParams) expMask() int { return (1 << p.expBits()) - 1 }
 
 var (
 	fpS = fpParams{width: 32, prec: 24, emin: -126, emax: 127, bias: 127, qnan: 0x7FC00000}
-	fpD = fpParams{width: 64, prec: 53, emin: -1023, emax: 1023, bias: 1023, qnan: 0x7FF8000000000000}
+	fpD = fpParams{width: 64, prec: 53, emin: -1022, emax: 1023, bias: 1023, qnan: 0x7FF8000000000000}
 )
 
 // fpMode 对应 RISC-V 的 frm 编码。

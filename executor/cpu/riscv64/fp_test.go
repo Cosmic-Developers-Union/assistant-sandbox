@@ -596,3 +596,49 @@ func TestFloatConvertZeroToInt(t *testing.T) {
 		}
 	}
 }
+
+// TestFloatFusedMultiplyAddMatchesExactRound 以随机有限值与 math.FMA
+// 对拍 R4 单次舍入语义,并覆盖此前暴露的负加数双重取反与 double
+// 次正规数 emin 偏一回归。
+func TestFloatFusedMultiplyAddMatchesExactRound(t *testing.T) {
+	cases := []struct {
+		a, b, c float64
+	}{
+		{-1.4312293629962995e-176, 5.610006227236238e-74, -1.4378317755093846e-112},
+		{-6.348033151701217e-309, -1.3893533102313824e+81, 1.9268697580886924e-279},
+	}
+	for index, entry := range cases {
+		gotBits, _ := fpMulAdd(decodeFP(math.Float64bits(entry.a), fpD), decodeFP(math.Float64bits(entry.b), fpD),
+			decodeFP(math.Float64bits(entry.c), fpD), 0, fpD, modeRNE)
+		want := math.FMA(entry.a, entry.b, entry.c)
+		if gotBits != math.Float64bits(want) {
+			t.Fatalf("case %d got=%g want=%g", index, math.Float64frombits(gotBits), want)
+		}
+	}
+	state := uint64(1)
+	next := func() uint64 {
+		state ^= state << 13
+		state ^= state >> 7
+		state ^= state << 17
+		return state
+	}
+	for index := 0; index < 100000; index++ {
+		a := math.Float64frombits(next())
+		b := math.Float64frombits(next())
+		c := math.Float64frombits(next())
+		if math.IsNaN(a) || math.IsNaN(b) || math.IsNaN(c) ||
+			math.IsInf(a, 0) || math.IsInf(b, 0) || math.IsInf(c, 0) {
+			continue
+		}
+		gotBits, _ := fpMulAdd(decodeFP(math.Float64bits(a), fpD), decodeFP(math.Float64bits(b), fpD),
+			decodeFP(math.Float64bits(c), fpD), 0, fpD, modeRNE)
+		want := math.FMA(a, b, c)
+		if math.IsNaN(want) {
+			continue
+		}
+		if gotBits != math.Float64bits(want) {
+			t.Fatalf("random %d a=%g b=%g c=%g got=%g want=%g", index, a, b, c,
+				math.Float64frombits(gotBits), want)
+		}
+	}
+}
