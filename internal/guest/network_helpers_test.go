@@ -62,10 +62,10 @@ func guestDNSResponse(query []byte) []byte {
 	answers := uint16(0)
 	var answer []byte
 	switch {
-	case (name == "\x05guest\x04test" || name == "\x03tls\x04test") && qtype == 1:
+	case (name == "\x05guest\x04test" || name == "\x03tls\x04test" || name == "\x04pypi\x04test" || name == "\x08registry\x04test") && qtype == 1:
 		answers = 1
 		answer = []byte{0xc0, 0x0c, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x3c, 0x00, 0x04, 10, 0, 2, 2}
-	case (name == "\x05guest\x04test" || name == "\x03tls\x04test") && qtype == 28:
+	case (name == "\x05guest\x04test" || name == "\x03tls\x04test" || name == "\x04pypi\x04test" || name == "\x08registry\x04test") && qtype == 28:
 		// 空 NOERROR:客户端回退到 IPv4。
 	default:
 		flags = 0x8183 // NXDOMAIN

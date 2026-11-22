@@ -100,6 +100,21 @@ jobs:
       - name: CPython upstream test slice
         run: go test ./internal/guest/ -run TestPython312UpstreamTestSlice -count=1 -timeout 3000s
 
+  # Q13:客体 pip 通过受控 DNS、HTTPS 索引与 CA 校验完成安装/回滚。
+  python-network:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GOFLAGS: -p=2
+      GOMEMLIMIT: 768MiB
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Controlled pip network install
+        run: go test ./internal/guest/ -run TestPython312ControlledPipInstall -count=1 -timeout 2400s
+
   # Q16-Q23:Node.js 客体运行时测试独立任务,避免与集成任务共享预算。
   node-runtime:
     runs-on: ubuntu-latest

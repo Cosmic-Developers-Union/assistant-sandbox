@@ -11,6 +11,7 @@ import (
 	"io"
 	"math/big"
 	"net"
+	"net/http"
 	"net/netip"
 	"testing"
 	"time"
@@ -65,10 +66,20 @@ func (ca *testCA) issueServer(t *testing.T, dnsNames []string, notBefore, notAft
 	if err != nil {
 		t.Fatal(err)
 	}
+	dnsNamesOnly := make([]string, 0, len(dnsNames))
+	var ipAddresses []net.IP
+	for _, name := range dnsNames {
+		if ip := net.ParseIP(name); ip != nil {
+			ipAddresses = append(ipAddresses, ip)
+		} else {
+			dnsNamesOnly = append(dnsNamesOnly, name)
+		}
+	}
 	template := &x509.Certificate{
 		SerialNumber: big.NewInt(serial),
 		Subject:      pkix.Name{CommonName: dnsNames[0]},
-		DNSNames:     dnsNames,
+		DNSNames:     dnsNamesOnly,
+		IPAddresses:  ipAddresses,
 		NotBefore:    notBefore,
 		NotAfter:     notAfter,
 		KeyUsage:     x509.KeyUsageDigitalSignature,
@@ -106,6 +117,24 @@ func startTLSServer(t *testing.T, certificate tls.Certificate) uint16 {
 			}()
 		}
 	}()
+	return uint16(listener.Addr().(*net.TCPAddr).Port) //nolint:gosec // 内核分配端口在 uint16 范围
+}
+
+// startGuestHTTPS 在宿主回环启动 HTTPS 服务,供受控包索引使用。
+func startGuestHTTPS(t *testing.T, certificate tls.Certificate, handler http.Handler) uint16 {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &http.Server{Handler: handler, ReadHeaderTimeout: 20 * time.Second}
+	server.SetKeepAlivesEnabled(false)
+	tlsListener := tls.NewListener(listener, &tls.Config{
+		Certificates: []tls.Certificate{certificate},
+		MinVersion:   tls.VersionTLS12,
+	})
+	t.Cleanup(func() { _ = server.Close() })
+	go func() { _ = server.Serve(tlsListener) }()
 	return uint16(listener.Addr().(*net.TCPAddr).Port) //nolint:gosec // 内核分配端口在 uint16 范围
 }
 
