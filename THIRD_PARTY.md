@@ -38,3 +38,28 @@ N10 真实 Bash 与基础工具验收资产(Alpine 3.22 riscv64 官方包;
 - GNU Readline 8.2.13-r1,GPL-3.0-or-later。包:https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/readline-8.2.13-r1.apk (sha256=4b6c7e5f…05fa);库 sha256=e8cce022…cca2。完整许可 [GPL-3.0.txt](licenses/GPL-3.0.txt)。
 - NCurses 6.5_p20250503-r0,X11。包:https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/libncursesw-6.5_p20250503-r0.apk (sha256=7d88384b…9607);库 sha256=28e544f2…c3e4。完整许可 [ncurses-X11.txt](licenses/ncurses-X11.txt)。
 - musl 1.2.6 动态加载器沿用 A04 固定版本(testdata/lib/ld-musl-riscv64.so.1 sha256=4fdd77ec…4123),MIT。
+
+Q28 客体原生编译链验收资产(Alpine 3.22 riscv64 官方包;归档摘要由
+internal/guest/q28_toolchain_test.go 锁定):
+
+- TinyCC 0.9.27_git20250106-r0,LGPL-2.1-or-later。来源包:tcc、tcc-libs、
+tcc-libs-static、tcc-dev(community/riscv64);执行文件、`libtcc.so`、musl
+头文件、crt 与 `libc.a` 归档为
+`testdata/tcc-riscv64-toolchain.tar.gz` sha256=dc16d9d4…3ce04。完整许可
+[LGPL-2.1.txt](licenses/LGPL-2.1.txt)。
+- GCC 14.2.0-r6,GPL-2.0-or-later;分发的 cc1plus/链接支持受 GCC Runtime
+Library Exception 约束。来源:main/riscv64/gcc-14.2.0-r6.apk。完整许可
+[GPL-2.0.txt](licenses/GPL-2.0.txt) 与
+[GCC-Runtime-Library-Exception-3.1.txt](licenses/GCC-Runtime-Library-Exception-3.1.txt)。
+- GNU Binutils 2.44-r3,GPL-2.0-or-later AND LGPL-2.1-or-later AND
+BSD-3-Clause(`as`、`ld`)。来源:main/riscv64/binutils-2.44-r3.apk。许可
+[GPL-2.0.txt](licenses/GPL-2.0.txt)、[LGPL-2.1.txt](licenses/LGPL-2.1.txt)、
+[BSD-3-Clause.txt](licenses/BSD-3-Clause.txt)。
+- GCC 运行依赖:GMP 6.3.0-r3(LGPL-3.0-or-later OR GPL-2.0-or-later)、
+MPFR 4.2.1_p1-r0(LGPL-3.0-or-later)、MPC 1.3.1-r1(LGPL-3.0-or-later)、
+isl 0.25-r2(MIT)、Jansson 2.14.1-r0(MIT)、zlib 1.4(Zlib)、
+Zstandard 1.5.7-r0(BSD-3-Clause OR GPL-2.0-or-later)。许可
+[LGPL-3.0.txt](licenses/LGPL-3.0.txt)、[MIT.txt](licenses/MIT.txt)、
+[Zlib.txt](licenses/Zlib.txt)、[BSD-3-Clause.txt](licenses/BSD-3-Clause.txt)。
+上述 C++ 子集归档为 `testdata/gcc14-cxx-riscv64-toolchain.tar.gz`
+sha256=a9a452dc…199d5。

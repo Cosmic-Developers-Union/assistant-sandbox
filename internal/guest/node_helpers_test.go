@@ -110,6 +110,11 @@ func extractNodeRuntime(t *testing.T, machine *instance.VM, archive []byte) {
 			writeGuestFile(t, machine, target, data, mode)
 		case tar.TypeSymlink:
 			_ = machine.Filesystem().Symlink(t.Context(), header.Linkname, target)
+		case tar.TypeLink:
+			source := "/" + path.Clean(strings.TrimPrefix(header.Linkname, "./"))
+			if err := machine.Filesystem().Link(t.Context(), source, target); err != nil {
+				t.Fatalf("硬链接 %s -> %s: %v", target, source, err)
+			}
 		}
 	}
 }
