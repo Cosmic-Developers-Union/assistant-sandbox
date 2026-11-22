@@ -6,7 +6,7 @@ PREFIX ?= $(HOME)/.local
 # 客体工具链 = 同一 Go 工具链(GOOS=wasip1 GOARCH=wasm)+ gzip,无外部交叉编译器。
 GOLANGCI_LINT_VERSION := v2.14.0
 
-.PHONY: guest build install clean lint test docker-test toolchain isolated-check offline-check
+.PHONY: guest build install clean lint test docker-test toolchain isolated-check offline-check getting-started
 
 # B01:全新克隆仅依赖模块缓存即可构建(无 replace/无宿主绝对路径,
 # 由 internal/metadata TestModuleResolvesWithoutLocalReplacements 锁定)。
@@ -64,3 +64,11 @@ docker-test:
 	status=$$?; \
 	chown --quiet "$$(id -u):$$(id -g)" assistant-bash.wasm assistant-bash.wasm.gz 2>/dev/null || true; \
 	exit $$status
+
+# R09:新检出按 docs/getting-started.md 完成构建、Bash/Python/Node 启动。
+getting-started: build
+	./assistant-sandbox --dir "$$(pwd)" -c 'printf getting-started-ok' | grep -q getting-started-ok
+	go test ./deployment/native/ -run Example -count=1
+	go test ./internal/guest/ -run TestPython312MinimalStartup -count=1 -timeout 1800s
+	go test ./internal/guest/ -run TestNode22MinimalStartup -count=1 -timeout 1800s
+	@echo "getting-started: 构建、Bash、Python、Node 与关闭通过"

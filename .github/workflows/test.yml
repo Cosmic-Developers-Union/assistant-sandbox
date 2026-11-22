@@ -118,6 +118,21 @@ jobs:
           name: benchmark-baseline
           path: benchmark.txt
 
+  # R09:新检出按 docs/getting-started.md 复验构建、Bash/Python/Node 与关闭。
+  getting-started:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GOFLAGS: -p=2
+      GOMEMLIMIT: 768MiB
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build and run the documented getting-started flow
+        run: make getting-started
+
   # Q01:从固定源码构建 CPython 3.12.16(riscv64-linux-musl),保存摘要工件。
   python-build:
     runs-on: ubuntu-latest

@@ -3,6 +3,12 @@
 Go 沙箱 SDK、WASI Bash 客体和独立执行入口。模块路径为
 `github.com/Cosmic-Developers-Union/assistant-sandbox`。
 
+当前主线是 Linux ABI 虚拟机:客体 CPU/地址空间、进程线程、文件系统、
+设备与网络由 `vm/`、`executor/` 实现,并在客体中运行真实 CPython 与
+Node.js。新检出请先读 [独立开发入门](docs/getting-started.md),其中
+给出构建、创建 VM、运行 Bash/Python/Node 与关闭的完整命令
+(`make getting-started`)。
+
 SDK 不内嵌生成物，不依赖 assistant 的内部包。`Config.ShellArchive` 接收 gzip
 压缩的 WASM，宿主自行加载固定版本的 Release 资源；`Config.MessageSource`
 提供本轮消息文本和 JSON 消息记录。SDK 不自行联网下载客体。
