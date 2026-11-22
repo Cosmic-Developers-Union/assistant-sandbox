@@ -24,9 +24,10 @@ type Domain uint64
 
 // socket 域(Linux include/linux/socket.h)。
 const (
-	AFUnix  Domain = 1
-	AFInet  Domain = 2
-	AFInet6 Domain = 10
+	AFUnix    Domain = 1
+	AFInet    Domain = 2
+	AFInet6   Domain = 10
+	AFNetlink Domain = 16
 )
 
 // SockType 是 socket 类型,取值为 Linux 常量。

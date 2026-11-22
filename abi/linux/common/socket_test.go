@@ -175,6 +175,39 @@ func TestSocketSyscallsDispatchWithSockaddrEncoding(t *testing.T) {
 		t.Fatalf("连接地址=%+v", sockets.connected)
 	}
 
+	// IPv4-mapped sockaddr_in6(Node/libuv 在 AF_INET6 socket 上使用):
+	// 映射为同一 IPv4 目标,而不是把整个域名族报 ENOTSUP。
+	var mapped [sockaddrInet6Size]byte
+	binary.LittleEndian.PutUint16(mapped[0:2], uint16(net.AFInet6))
+	binary.BigEndian.PutUint16(mapped[2:4], 0x1F90)
+	mapped[18], mapped[19] = 0xff, 0xff
+	copy(mapped[20:24], []byte{127, 0, 0, 1})
+	if err := handler.Memory.Write(ctx, 0xA200, mapped[:]); err != nil {
+		t.Fatal(err)
+	}
+	if reply := handler.Handle(ctx, Call{Syscall: SysSocket, Args: [6]uint64{uint64(net.AFInet6), 1}}); reply.Errno != "" || reply.Value != 4 {
+		t.Fatalf("socket AF_INET6: %+v", reply)
+	}
+	if reply := handler.Handle(ctx, Call{Syscall: SysConnect, Args: [6]uint64{4, 0xA200, sockaddrInet6Size}}); reply.Errno != "" {
+		t.Fatalf("connect mapped AF_INET6: %+v", reply)
+	}
+	if sockets.connected.Port != 0x1F90 || sockets.connected.IP.String() != "127.0.0.1" {
+		t.Fatalf("IPv4-mapped 连接地址=%+v", sockets.connected)
+	}
+	var compatible [sockaddrInet6Size]byte
+	binary.LittleEndian.PutUint16(compatible[0:2], uint16(net.AFInet6))
+	binary.BigEndian.PutUint16(compatible[2:4], 0x1F90)
+	copy(compatible[20:24], []byte{10, 0, 2, 2})
+	if err := handler.Memory.Write(ctx, 0xA240, compatible[:]); err != nil {
+		t.Fatal(err)
+	}
+	if reply := handler.Handle(ctx, Call{Syscall: SysConnect, Args: [6]uint64{4, 0xA240, sockaddrInet6Size}}); reply.Errno != "" {
+		t.Fatalf("connect IPv4-compatible AF_INET6: %+v", reply)
+	}
+	if sockets.connected.IP.String() != "10.0.2.2" {
+		t.Fatalf("IPv4-compatible 连接地址=%+v", sockets.connected)
+	}
+
 	// shutdown(SHUT_WR)。
 	if reply := handler.Handle(ctx, Call{Syscall: SysShutdown, Args: [6]uint64{3, 1}}); reply.Errno != "" {
 		t.Fatalf("shutdown: %+v", reply)

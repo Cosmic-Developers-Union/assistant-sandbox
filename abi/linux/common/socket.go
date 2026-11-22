@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"net/netip"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/net"
@@ -28,8 +29,12 @@ const msgNosignal = 0x4000
 // msgCtrunc 是 recvmsg 的控制消息截断标志(Linux MSG_CTRUNC)。
 const msgCtrunc = 0x8
 
-// sockaddrInetSize 是 sockaddr_in 的字节数(asm-generic)。
-const sockaddrInetSize = 16
+// sockaddrInetSize/sockaddrInet6Size 是 sockaddr_in/sockaddr_in6 的
+// asm-generic 字节数。
+const (
+	sockaddrInetSize  = 16
+	sockaddrInet6Size = 28
+)
 
 // sockaddrUnixSize 是 sockaddr_un 的字节数(family + 108 路径字节)。
 const sockaddrUnixSize = 110
@@ -112,9 +117,46 @@ func parseSockaddr(ctx context.Context, s Syscalls, addr uint64, length uint64) 
 		port := binary.BigEndian.Uint16(raw[2:4])
 		ip := net.AddrIPv4FromBytes(raw[4:8])
 		return net.Addr{Domain: net.AFInet, IP: ip, Port: port}, nil
+	case uint16(net.AFInet6):
+		if length < sockaddrInet6Size {
+			return net.Addr{}, errno.Invalid
+		}
+		var raw [sockaddrInet6Size]byte
+		if err := s.Memory.Read(ctx, addr, raw[:]); err != nil {
+			return net.Addr{}, errno.Fault
+		}
+		var packed [16]byte
+		copy(packed[:], raw[8:24])
+		ip := netip.AddrFrom16(packed)
+		switch {
+		case ip.Is4In6():
+			ip = ip.Unmap()
+		case ip == netip.IPv6Loopback():
+			ip = net.LoopbackIPv4
+		case isIPv4Compatible(packed):
+			ip = netip.AddrFrom4([4]byte{packed[12], packed[13], packed[14], packed[15]})
+		default:
+			// 当前兼容配置只提供 IPv4 回环与出口,非映射 IPv6 不得
+			// 被静默当作回环。
+			return net.Addr{}, errno.NotSupported
+		}
+		return net.Addr{Domain: net.AFInet, IP: ip, Port: binary.BigEndian.Uint16(raw[2:4])}, nil
+	case uint16(net.AFNetlink):
+		// 本 VM 不提供 netlink 路由消息;用空端点满足工具链的
+		// 接口探测,具体 socket 操作在 executor 侧无操作处理。
+		return net.Addr{Domain: net.AFNetlink}, nil
 	default:
 		return net.Addr{}, errno.NotSupported
 	}
+}
+
+func isIPv4Compatible(raw [16]byte) bool {
+	for _, value := range raw[:12] {
+		if value != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // encodeSockaddr 把地址编码为客体 sockaddr 并回写;返回编码长度。
