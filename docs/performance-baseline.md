@@ -19,3 +19,20 @@ go test ./abi/linux/common/ -run '^$' -bench 'BenchmarkGetpid|BenchmarkWrite' -b
 
 容差:门限相对当前测量保留约一个数量级余量,适配共享 CI 主机抖动;
 若测量环境变化,先更新本文件与 T08 记录,再调整门限。
+
+## Python/Node 场景基线(T09)
+
+以下数据由 `go test ./internal/guest/ -run 'TestPythonNodeSceneBaseline|TestRuntimeMemorySnapshot' -count=1 -v`
+在同一台 Linux amd64 主机、真实 RISC-V 客体运行时上测得;启动时间包含
+固定运行时资产写入 VM 的时间,不是宿主解释器启动时间。
+
+| 场景 | 启动 | 文件/并发工作量 | 进程内存 |
+| --- | ---: | ---: | ---: |
+| Python 3.12.16 | 240 ms | 1 MiB 读写 + 4 线程 × 2,000 次加锁:37.8 s | 15.4 MiB |
+| Node.js 22.23.5(js 模式 `--jitless`) | 432 ms | 1 MiB 读写 + 20,000 次算术:73.2 s | 77.0 MiB |
+
+内存值来自运行中的 `instance.Status` 进程预算(`MemoryUsed`),不是宿主
+`getrusage`;两者都执行客体 ELF。并发服务基线由 Q11/Q19/Q22/Q31 的
+asyncio、Node HTTP/TLS 与双运行时重连用例固定,依赖导入基线由 Q13/Q14/
+Q27/Q29/Q30 的固定运行时用例固定。基线仅用于同配置前后比较,不作为
+跨主机绝对性能承诺。

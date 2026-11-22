@@ -193,6 +193,21 @@ jobs:
           name: benchmark-baseline
           path: benchmark.txt
 
+  # T09:Python/Node 真实客体场景基线(启动、文件、线程/算术、内存)。
+  scene-baseline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GOFLAGS: -p=2
+      GOMEMLIMIT: 768MiB
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Python and Node scene baseline
+        run: go test ./internal/guest/ -run 'TestPythonNodeSceneBaseline|TestRuntimeMemorySnapshot' -count=1 -v -timeout 900s
+
   # R09:新检出按 docs/getting-started.md 复验构建、Bash/Python/Node 与关闭。
   getting-started:
     runs-on: ubuntu-latest
