@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path"
@@ -73,6 +74,23 @@ func runPython312(t *testing.T, connection *instance.Connection, script string, 
 // runPython312Env 在 runPython312 的基础上追加客体环境变量(M11 CA 配置)。
 func runPython312Env(t *testing.T, connection *instance.Connection, script string, timeout time.Duration, extra map[string]string) (string, uint8) {
 	t.Helper()
+	output, code, err := runPython312Outcome(t, connection, script, timeout, extra)
+	if err != nil {
+		t.Fatalf("python 脚本: %v", err)
+	}
+	return output, code
+}
+
+// runPython312Outcome 与 runPython312 相同,但把执行错误返回给调用方。
+// 失败诊断需要在 VM 关闭前读取客体状态文件时使用。
+func runPython312Outcome(
+	t *testing.T,
+	connection *instance.Connection,
+	script string,
+	timeout time.Duration,
+	extra map[string]string,
+) (string, uint8, error) {
+	t.Helper()
 	output := &bytes.Buffer{}
 	diagnostic := &bytes.Buffer{}
 	runCtx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -95,9 +113,10 @@ func runPython312Env(t *testing.T, connection *instance.Connection, script strin
 	}
 	state, err := connection.Wait(runCtx, process.ID)
 	if err != nil {
-		t.Fatalf("python 脚本: %v (stdout=%q stderr=%q)", err, output.String(), diagnostic.String())
+		return output.String() + diagnostic.String(), 0, fmt.Errorf(
+			"%w (stdout=%q stderr=%q)", err, output.String(), diagnostic.String())
 	}
-	return output.String() + diagnostic.String(), state.ExitCode
+	return output.String() + diagnostic.String(), state.ExitCode, nil
 }
 
 // extractPython312Libs 把客体 CPython 依赖的共享库与符号链接装入 /usr/lib。

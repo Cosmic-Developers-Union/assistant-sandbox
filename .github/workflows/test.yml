@@ -63,7 +63,7 @@ jobs:
         shell: bash
         run: |
           ulimit -d 1048576
-          go test -count=1 -skip 'TestPython312Multiprocessing|TestPython312VenvOfflineInstall|TestNode' ./abi/... ./filesystem/... ./loader/... ./vm/... ./executor/... ./model/... ./internal/guest/ ./deployment/... ./contract/... ./inspect/...
+          go test -count=1 -skip 'TestPython312Multiprocessing|TestPython312VenvOfflineInstall|TestPython312ControlledPipInstall|TestPythonNodeCoexist|TestNode' ./abi/... ./filesystem/... ./loader/... ./vm/... ./executor/... ./model/... ./internal/guest/ ./deployment/... ./contract/... ./inspect/...
       - name: ISA regression gate (D13)
         shell: bash
         run: go test ./executor/cpu/... -count=1 -v 2>&1 | grep -E '^(=== RUN|--- FAIL|FAIL|ok)' | tail -120
@@ -114,6 +114,21 @@ jobs:
           go-version-file: go.mod
       - name: Node.js guest runtime
         run: go test ./internal/guest/ -run 'TestNode' -count=1 -timeout 3000s
+
+  # Q31:同一 VM 内的 Python/Node 文件、管道、回环 HTTP 与重连。
+  coexist-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GOFLAGS: -p=2
+      GOMEMLIMIT: 768MiB
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Python and Node coexistence
+        run: go test ./internal/guest/ -run TestPythonNodeCoexist -count=1 -timeout 1800s
 
   benchmark:
     runs-on: ubuntu-latest

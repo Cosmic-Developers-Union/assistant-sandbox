@@ -349,7 +349,7 @@ Python 和 Node.js 的验收必须执行客体运行时，不能通过调用宿�
 - [ ] Q28 构建客体原生扩展编译链。验收：客体编译器、链接器和构建工具生成可运行的最小 C/C++ 程序，不调用宿主工具替代客体执行。
 - [ ] Q29 验证 pip 从源码构建扩展。验收：在客体构建固定 sdist，安装并 import，产物架构和依赖正确。（依赖 Q28）
 - [ ] Q30 验证 node-gyp 从源码构建扩展。验收：客体 Python、构建链与 Node 头文件构建固定 addon，并由客体 Node 加载。（依赖 Q28、Q03、Q23）
-- [ ] Q31 增加双运行时共存场景。验收：同 VM 中 Python/Node 经文件、管道及回环 HTTP 交换数据，重连不影响后台服务。
+- [x] Q31 增加双运行时共存场景。验收：同 VM 中 Python/Node 经文件、管道及回环 HTTP 交换数据，重连不影响后台服务。 证据:internal/guest/python_q31_test.go(同一 VM 同时装入 Alpine riscv64 CPython 3.12.16 与 Node.js 22.23.5;Node 后台 HTTP 服务监听 `127.0.0.1:39201`,Python 客户端以 `urllib.request` 发起带 `X-Q31` 头的 GET 并得到 `node:python`;Node 经 HTTP `/write` 写 `/work/q31_node.txt`,Python 直接读取后写 `/work/q31_python.txt`,Node 再经 `/read-python` 读回;`/pipe` 由 Node `child_process.execFile` 启动客体 Python,Node 显式 `child.stdin.end("pipe")` 关闭管道写端,Python 从 stdin 读得输入并输出 `python:pipe`,Node 将结果写 `/work/q31_pipe.txt`;断开原连接并重新 Connect 后再次请求同一后台服务得到 `node:reconnect`,后台服务与已交换文件均保留;输出依次包含 PING-OK、FILE-NODE-OK、FILE-PYTHON-OK、PIPE-OK、RECONNECT-OK)。该用例定位并修正了测试自身的管道语义:`execFile` 的 stdin 默认保持打开,不发送 EOF 时客体 Python 的 stdin.read() 正确等待,并非 VM 缺陷。测试:`go test ./internal/guest/ -run TestPythonNodeCoexist -count=1 -v`(本机 325s)。CI:Test 工作流 coexist-runtime 任务。
 
 ## R. SDK、CLI 与 assistant 集成
 
