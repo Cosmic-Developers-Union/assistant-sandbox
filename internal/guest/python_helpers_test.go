@@ -204,3 +204,12 @@ func extractPython312Test(t *testing.T, machine *instance.VM, archive []byte) {
 	t.Helper()
 	extractPython312PipTo(t, machine, archive, "/usr/lib/python3.12")
 }
+
+// disablePythonVFork 让客体 Python 的 subprocess 使用 fork 路径。当前
+// VM 的 vfork 兼容路径在 pip/node-gyp 的嵌套构建子进程中会让子进程以
+// 125 退出;fork 路径已由 H12/fork 验收覆盖,构建工具应走该路径。
+func disablePythonVFork(t *testing.T, machine *instance.VM) {
+	t.Helper()
+	writeGuestFile(t, machine, "/usr/lib/python3.12/sitecustomize.py",
+		[]byte("import subprocess\nsubprocess._USE_VFORK = False\n"), 0o644)
+}

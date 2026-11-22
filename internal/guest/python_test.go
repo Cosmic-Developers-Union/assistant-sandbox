@@ -103,7 +103,8 @@ func extractPython312(t *testing.T, machine *instance.VM, apk []byte) {
 		}
 		name := path.Clean(strings.TrimPrefix(header.Name, "./"))
 		wanted := name == "usr/bin/python3.12" || name == "usr/lib/libpython3.12.so.1.0" ||
-			strings.HasPrefix(name, "usr/lib/python3.12/")
+			strings.HasPrefix(name, "usr/lib/python3.12/") ||
+			strings.HasPrefix(name, "usr/include/python3.12/")
 		if !wanted {
 			continue
 		}
