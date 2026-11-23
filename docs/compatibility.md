@@ -35,14 +35,14 @@ CPU 拓扑、transparent hugepage 与 clocksource）；`/proc` 继续由内核
 
 已知问题：
 
-- Python 启动已从分钟级降到秒级。同一机器上，C++ 快速路径
-  `python --version` 约 1.0 秒、`python -S -c 'print(1)'` 约 2.1 秒
-  （均包含约 0.9 秒开发根安装）；纯 Go 回退分别约 1.6 秒和 4.7 秒。
-  同一客体二进制在 QEMU user-mode TCG 下 `-S -c 'print(1)'` 约
-  0.20 秒，因此扣除安装后的 VM 指令层仍约有 5.9 倍损失；计入根文件
-  安装时整条 CLI 约为 10.3 倍。
+- Python 启动已从分钟级降到秒级。开发根改为 zstd 资产并行装入后，
+  C++ 快速路径空命令约 0.4 秒，`python --version` 约 0.45 秒，
+  `python -S -c 'print(1)'` 约 1.38 秒；纯 Go 回退空命令约 0.54 秒，
+  后两项分别约 1.10 秒和 4.67 秒。同一客体二进制在 QEMU user-mode
+  TCG 下 `-S -c 'print(1)'` 约 0.21 秒，因此扣除安装后的 VM 指令层
+  仍约有 4.6 倍损失；计入开发根装入时整条 CLI 约为 6.5 倍。
 - Node.js 使用 `--jitless`，C++ 快速路径下
-  `node -e 'console.log(1)'` 约 12 秒，纯 Go 回退约 20 秒。
+  `node -e 'console.log(1)'` 约 11.6 秒，纯 Go 回退约 20 秒。
 - npm 已打包，但 `npm --version` 在当前解释器中需要数分钟，仍需优化。
 - pip 暂不打包；完整 pip CLI 导入超过 180 秒，不能作为可用开发工具发布。
 - 当前 `apk` 是真实 apk-tools 二进制，但包索引/仓库未预置；离线安装
@@ -50,6 +50,9 @@ CPU 拓扑、transparent hugepage 与 clocksource）；`/proc` 继续由内核
 - C++ 快速路径只覆盖整数 ALU、乘除、访存与分支；浮点、原子、CSR 和
   系统调用仍回退单步。Linux 默认 `make build` 启用它，其他平台或
   `CGO_ENABLED=0` 使用纯 Go 解释器。
+- CLI 单次执行会创建新 VM，开发根必须进入本次 VM 的 memfs；当前
+  优化是并行 zstd 解包，而不是跨进程复用 VM。交互 `--session` 只在
+  启动时安装一次。
 
 ## 外部 LTP
 

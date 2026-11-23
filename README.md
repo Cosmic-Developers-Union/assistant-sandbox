@@ -57,6 +57,9 @@ assistant-sandbox -c 'python --version; node --version; git --version; apk --ver
 
 只需要 Bash/BusyBox 时使用 `--tools=minimal`。
 
+单次 `-c` 执行会创建一台新 VM，开发根需要装入该 VM 的 memfs；当前
+使用并行 zstd 解包。交互 `--session` 只在启动时装入一次。
+
 在终端直接运行 `assistant-sandbox --dir .` 会进入客体 Bash 会话；
 交互会话通过 VM PTY 提供回显、`Ctrl-C`/`Ctrl-D` 与作业控制。Bash
 当前使用 `--noediting`，CLI 在宿主侧提供上下键命令历史和命令级 Tab
