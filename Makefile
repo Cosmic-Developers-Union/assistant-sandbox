@@ -6,7 +6,7 @@ PREFIX ?= $(HOME)/.local
 # 客体工具链 = 同一 Go 工具链(GOOS=wasip1 GOARCH=wasm)+ gzip,无外部交叉编译器。
 GOLANGCI_LINT_VERSION := v2.14.0
 
-.PHONY: guest build install clean lint test docker-test toolchain isolated-check offline-check getting-started
+.PHONY: guest build release install clean lint test docker-test toolchain isolated-check offline-check getting-started
 
 # B01:全新克隆仅依赖模块缓存即可构建(无 replace/无宿主绝对路径,
 # 由 internal/metadata TestModuleResolvesWithoutLocalReplacements 锁定)。
@@ -30,6 +30,16 @@ guest:
 
 build: guest
 	CGO_ENABLED=0 go build -trimpath -o assistant-sandbox ./cmd/assistant-sandbox
+
+# U12:生成可上传的 CLI/客体与摘要、模块 SBOM 清单。
+release: build
+	rm -rf dist
+	mkdir -p dist
+	cp assistant-sandbox dist/assistant-sandbox
+	cp assistant-bash.wasm.gz dist/assistant-bash.wasm.gz
+	cd dist && sha256sum assistant-sandbox assistant-bash.wasm.gz > SHA256SUMS
+	go version -m assistant-sandbox > dist/SBOM.txt
+	@echo "release: dist/SHA256SUMS 与 dist/SBOM.txt 已生成"
 
 install: build
 	install -d "$(PREFIX)/bin" "$(PREFIX)/share/assistant-sandbox"

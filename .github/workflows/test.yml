@@ -286,6 +286,10 @@ jobs:
           go-version-file: go.mod
       - name: Offline VM lifecycle (B05)
         run: make offline-check
+      - name: Package release artifacts (U12)
+        run: make release
+      - name: Verify release checksums
+        run: cd dist && sha256sum -c SHA256SUMS
       - name: Build CLI
         run: go build -trimpath -o assistant-sandbox ./cmd/assistant-sandbox
       - name: Verify CLI
