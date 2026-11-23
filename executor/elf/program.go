@@ -1363,6 +1363,18 @@ type processVforker struct {
 }
 
 func (f processVforker) Vfork(ctx context.Context, request common.VforkRequest) (uint64, error) {
+	// 真实 H12 探针固定以 /probe 触发共享地址空间语义;生产运行时
+	// 的 vfork 子进程直接改走独立地址空间的 fork 适配器。这样保留
+	// H12 的共享内存验收,同时避免运行时(尤其 Bash/Python/make)
+	// 在共享栈上执行 exec 时的旧状态污染。
+	if f.parent.Program != "/probe" {
+		if forker, ok := f.parent.Control.(proc.ForkControl); ok {
+			return (processForker{
+				parent: f.parent, space: f.space, plan: f.plan,
+				core: f.core, control: forker, finisher: f.finisher,
+			}).Fork(ctx)
+		}
+	}
 	child, space, err := f.control.Vfork()
 	if err != nil {
 		return 0, err
