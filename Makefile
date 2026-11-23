@@ -6,7 +6,7 @@ PREFIX ?= $(HOME)/.local
 # 客体工具链 = 同一 Go 工具链(GOOS=wasip1 GOARCH=wasm)+ gzip,无外部交叉编译器。
 GOLANGCI_LINT_VERSION := v2.14.0
 
-.PHONY: guest build release install clean lint test docker-test toolchain isolated-check offline-check getting-started
+.PHONY: guest build release install clean lint test docker-test toolchain isolated-check offline-check getting-started compat-s3 compat-ltp compat-s4
 
 # B01:全新克隆仅依赖模块缓存即可构建(无 replace/无宿主绝对路径,
 # 由 internal/metadata TestModuleResolvesWithoutLocalReplacements 锁定)。
@@ -82,3 +82,12 @@ getting-started: build
 	go test ./internal/guest/ -run TestPython312MinimalStartup -count=1 -timeout 1800s
 	go test ./internal/guest/ -run TestNode22MinimalStartup -count=1 -timeout 1800s
 	@echo "getting-started: 构建、Bash、Python、Node 与关闭通过"
+
+compat-s3:
+	go test ./internal/guest -run '^TestCompatibilityS3DevelopmentWorkflow$$' -count=1 -v -timeout 20m
+
+compat-ltp:
+	go test ./internal/guest -run '^TestCompatibilityExternalLTP$$' -count=1 -v -timeout 3h
+
+compat-s4:
+	go test ./internal/guest -run '^TestCompatibilityS4DevelopmentImageExternal$$' -count=1 -v -timeout 1h

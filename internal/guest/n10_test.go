@@ -5,10 +5,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"os"
 	"testing"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/instance"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fd"
 	vmfs "github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fs"
 )
@@ -54,7 +56,7 @@ func installN10(t *testing.T, machine *instance.VM) {
 		{"/usr/lib/libncursesw.so.6", "libncursesw.so.6.5"},
 		{"/bin/sh", "bash"},
 	} {
-		if err := machine.Filesystem().Symlink(ctx, link[1], link[0]); err != nil {
+		if err := machine.Filesystem().Symlink(ctx, link[1], link[0]); err != nil && !errors.Is(err, errno.Exist) {
 			t.Fatal(err)
 		}
 	}
@@ -62,7 +64,7 @@ func installN10(t *testing.T, machine *instance.VM) {
 		"cat", "cp", "echo", "find", "grep", "kill", "ls", "mkdir", "ps",
 		"sed", "sleep", "wc", "xargs",
 	} {
-		if err := machine.Filesystem().Symlink(ctx, "busybox.static", "/bin/"+applet); err != nil {
+		if err := machine.Filesystem().Symlink(ctx, "busybox.static", "/bin/"+applet); err != nil && !errors.Is(err, errno.Exist) {
 			t.Fatal(err)
 		}
 	}

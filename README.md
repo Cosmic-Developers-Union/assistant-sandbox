@@ -9,6 +9,8 @@ Node.js。CLI 内嵌真实 riscv64 GNU Bash 5.2.37 和 BusyBox sh;新检出
 请先读 [独立开发入门](docs/getting-started.md),其中给出构建、创建
 VM、运行 shell/Python/Node 与关闭的完整命令
 (`make getting-started`)。
+兼容等级、S3 开发工作流和 LTP/S4 门禁见
+[Linux 兼容性门禁](docs/compatibility.md)。
 
 SDK 的 WASI 兼容入口不内嵌生成物，也不依赖 assistant 的内部包。
 `Config.ShellArchive` 接收 gzip
