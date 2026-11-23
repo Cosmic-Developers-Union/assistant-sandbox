@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	stdfs "io/fs"
+	"path"
 	"sort"
 	"strings"
 	"time"
@@ -489,9 +490,10 @@ func statusOf(entry Entry) string {
 }
 
 func cmdlineOf(entry Entry) string {
-	parts := make([]string, 0, len(entry.Args)+1)
-	parts = append(parts, entry.Program)
-	parts = append(parts, entry.Args...)
+	parts := append([]string(nil), entry.Args...)
+	if len(parts) == 0 || path.Base(parts[0]) != path.Base(entry.Program) {
+		parts = append([]string{entry.Program}, parts...)
+	}
 	return strings.Join(parts, "\x00")
 }
 

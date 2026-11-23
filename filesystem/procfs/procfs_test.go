@@ -184,6 +184,11 @@ func TestCmdlineIsNULSeparated(t *testing.T) {
 	if strings.Contains(content, " ") && !strings.Contains(content, "hello world") {
 		t.Fatal("含空格的参数必须保持完整")
 	}
+
+	provider.entries[1].Args = []string{"/bin/bash", "--noprofile", "--norc"}
+	if content := readFile(t, fs, "/7/cmdline"); strings.Count(content, "/bin/bash") != 1 {
+		t.Fatalf("cmdline 重复了 argv[0]: %q", content)
+	}
 }
 
 func TestFDDirectoryReflectsOpenDescriptors(t *testing.T) {

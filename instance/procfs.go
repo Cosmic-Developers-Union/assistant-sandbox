@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/filesystem/procfs"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm"
@@ -18,7 +19,7 @@ type kernelProcfs struct {
 	machine *VM
 }
 
-// SystemFiles 生成 /proc/meminfo、/proc/cpuinfo 与 /proc/mounts(N08):
+// SystemFiles 生成 /proc 顶层的系统视图文件(N08):
 // 数值来自 VM 配置与挂载表,不读取宿主/proc。
 func (p kernelProcfs) SystemFiles(ctx context.Context) (map[string][]byte, error) {
 	if err := ctx.Err(); err != nil {
@@ -38,10 +39,41 @@ func (p kernelProcfs) SystemFiles(ctx context.Context) (map[string][]byte, error
 	if p.machine.shm != nil {
 		fmt.Fprintf(&mounts, "tmpfs /dev/shm tmpfs rw,nosuid,nodev 0 0\n")
 	}
+	monotonic, err := p.machine.clock.Monotonic(ctx)
+	if err != nil {
+		return nil, err
+	}
+	wall, err := p.machine.clock.Wall(ctx)
+	if err != nil {
+		return nil, err
+	}
+	uptime := float64(monotonic) / float64(time.Second)
+	bootTime := (wall - int64(monotonic)) / int64(time.Second) //nolint:gosec // 纳秒读数在 int64 范围内
+	processes := p.kernel.Processes()
+	running := 0
+	var lastPID proc.PID
+	for _, process := range processes {
+		if process.State == proc.Running {
+			running++
+		}
+		if process.ID > lastPID {
+			lastPID = process.ID
+		}
+	}
+	var stat strings.Builder
+	fmt.Fprintf(&stat, "cpu 0 0 0 0 0 0 0 0 0 0\n")
+	for index := 0; index < p.machine.cpus; index++ {
+		fmt.Fprintf(&stat, "cpu%d 0 0 0 0 0 0 0 0 0 0\n", index)
+	}
+	fmt.Fprintf(&stat, "intr 0\nctxt 0\nbtime %d\nprocesses %d\nprocs_running %d\nprocs_blocked 0\n",
+		bootTime, len(processes), running)
 	return map[string][]byte{
 		"meminfo": []byte(meminfo),
 		"cpuinfo": []byte(cpu.String()),
 		"mounts":  []byte(mounts.String()),
+		"stat":    []byte(stat.String()),
+		"uptime":  fmt.Appendf(nil, "%.2f %.2f\n", uptime, uptime),
+		"loadavg": fmt.Appendf(nil, "0.00 0.00 0.00 %d/%d %d\n", running, len(processes), lastPID),
 	}, nil
 }
 

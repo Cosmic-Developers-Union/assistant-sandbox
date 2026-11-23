@@ -197,4 +197,15 @@ func TestProcSystemViewsReflectVMConfiguration(t *testing.T) {
 			t.Fatalf("mounts 缺少 %s:\n%s", point, mounts)
 		}
 	}
+	stat := readProcFile(t, machine, t.Context(), "/proc/stat")
+	if !strings.HasPrefix(stat, "cpu ") || !strings.Contains(stat, "btime ") ||
+		!strings.Contains(stat, "processes ") {
+		t.Fatalf("stat=%q", stat)
+	}
+	if uptime := readProcFile(t, machine, t.Context(), "/proc/uptime"); !strings.Contains(uptime, ".") {
+		t.Fatalf("uptime=%q", uptime)
+	}
+	if loadavg := readProcFile(t, machine, t.Context(), "/proc/loadavg"); !strings.Contains(loadavg, "/") {
+		t.Fatalf("loadavg=%q", loadavg)
+	}
 }

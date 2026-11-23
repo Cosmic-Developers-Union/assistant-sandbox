@@ -117,6 +117,9 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		"LOGNAME": "sandbox", "TMPDIR": "/tmp", "SHELL": selectedShell.Program(),
 		"TERM": terminalName,
 	}
+	if selectedShell == nativeshell.Bash {
+		environmentMap["PS1"] = `sandbox:${PWD}\$ `
+	}
 	connection, err := machine.Connect(ctx)
 	if err != nil {
 		return 1, err
