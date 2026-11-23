@@ -43,6 +43,17 @@ N10 真实 Bash 与基础工具验收资产(Alpine 3.22 riscv64 官方包;
 同时作为 CLI 的 `go:embed` 输入位于 `guest/native/assets`,版本、摘要与
 许可以上一段为准。
 
+CLI 的 `--tools=dev` 还内嵌以下固定资产,位于 `guest/devroot/assets`:
+
+- CPython 3.12.16(Alpine 3.22 riscv64),PSF-2.0;来源包
+  `python3-3.12.16-r0.apk`。
+- Node.js 22.23.5 与 ICU 数据,MIT;来源归档由
+  `internal/guest/node_helpers_test.go` 的摘要锁定。
+- npm 11.6.4,Artistic-2.0;来源归档由 `internal/guest/node_helpers_test.go`
+  的摘要锁定。
+- TinyCC 0.9.27_git20250106-r0,LGPL-2.1-or-later;来源与许可见上文 N10/Q28
+  资产条目及 [LGPL-2.1.txt](licenses/LGPL-2.1.txt)。
+
 Q28 客体原生编译链验收资产(Alpine 3.22 riscv64 官方包;归档摘要由
 internal/guest/q28_toolchain_test.go 锁定):
 

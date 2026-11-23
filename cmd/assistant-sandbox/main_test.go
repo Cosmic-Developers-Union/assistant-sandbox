@@ -2,10 +2,12 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestCLISingleExecutionUsesVMAndHostMount 验证 R02:单次执行经同一
@@ -13,7 +15,7 @@ import (
 func TestCLISingleExecutionUsesVMAndHostMount(t *testing.T) {
 	dir := t.TempDir()
 	output, diagnostic := &bytes.Buffer{}, &bytes.Buffer{}
-	code, err := run(t.Context(), []string{"--dir", dir, "-c", "printf cli-ok; printf data > /work/file"}, strings.NewReader(""), output, diagnostic)
+	code, err := run(t.Context(), []string{"--tools=minimal", "--dir", dir, "-c", "printf cli-ok; printf data > /work/file"}, strings.NewReader(""), output, diagnostic)
 	if err != nil || code != 0 || output.String() != "cli-ok" {
 		t.Fatalf("code=%d err=%v out=%q stderr=%q", code, err, output.String(), diagnostic.String())
 	}
@@ -29,7 +31,7 @@ func TestCLISessionKeepsSameVM(t *testing.T) {
 	dir := t.TempDir()
 	output, diagnostic := &bytes.Buffer{}, &bytes.Buffer{}
 	input := "X=kept\nprintf \"$X\"; printf session > /work/session\n"
-	code, err := run(t.Context(), []string{"--dir", dir, "--session"}, strings.NewReader(input), output, diagnostic)
+	code, err := run(t.Context(), []string{"--tools=minimal", "--dir", dir, "--session"}, strings.NewReader(input), output, diagnostic)
 	if err != nil || code != 0 || output.String() != "kept" {
 		t.Fatalf("code=%d err=%v out=%q stderr=%q", code, err, output.String(), diagnostic.String())
 	}
@@ -43,7 +45,7 @@ func TestCLISessionKeepsSameVM(t *testing.T) {
 func TestCLIDryRunIsSideEffectFree(t *testing.T) {
 	dir := t.TempDir()
 	output, diagnostic := &bytes.Buffer{}, &bytes.Buffer{}
-	code, err := run(t.Context(), []string{"--dir", dir, "--dry-run", "--debug", "-c", "printf never > /work/file"}, strings.NewReader(""), output, diagnostic)
+	code, err := run(t.Context(), []string{"--tools=minimal", "--dir", dir, "--dry-run", "--debug", "-c", "printf never > /work/file"}, strings.NewReader(""), output, diagnostic)
 	if err != nil || code != 0 || output.Len() != 0 ||
 		!strings.Contains(diagnostic.String(), "工作区=") ||
 		!strings.Contains(diagnostic.String(), "shell=bash") {
@@ -67,7 +69,7 @@ func TestCLIDefaultDoesNotMountWorkingDirectory(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chdir(original) })
 	output, diagnostic := &bytes.Buffer{}, &bytes.Buffer{}
-	code, err := run(t.Context(), []string{"-c", "printf data > /work/private"}, strings.NewReader(""), output, diagnostic)
+	code, err := run(t.Context(), []string{"--tools=minimal", "-c", "printf data > /work/private"}, strings.NewReader(""), output, diagnostic)
 	if err != nil || code != 0 {
 		t.Fatalf("code=%d err=%v stdout=%q stderr=%q", code, err, output.String(), diagnostic.String())
 	}
@@ -79,20 +81,40 @@ func TestCLIDefaultDoesNotMountWorkingDirectory(t *testing.T) {
 func TestCLINativeShellSelection(t *testing.T) {
 	dir := t.TempDir()
 	output, diagnostic := &bytes.Buffer{}, &bytes.Buffer{}
-	code, err := run(t.Context(), []string{"--dir", dir, "-c", `printf '%s\n' "$BASH_VERSION"; ls /work`}, strings.NewReader(""), output, diagnostic)
+	code, err := run(t.Context(), []string{"--tools=minimal", "--dir", dir, "-c", `printf '%s\n' "$BASH_VERSION"; ls /work`}, strings.NewReader(""), output, diagnostic)
 	if err != nil || code != 0 || !strings.HasPrefix(output.String(), "5.2.") {
 		t.Fatalf("bash: code=%d err=%v stdout=%q stderr=%q", code, err, output.String(), diagnostic.String())
 	}
 	output.Reset()
 	diagnostic.Reset()
-	code, err = run(t.Context(), []string{"--dir", dir, "--shell", "sh", "-c", `printf '%s' "$0"`}, strings.NewReader(""), output, diagnostic)
+	code, err = run(t.Context(), []string{"--tools=minimal", "--dir", dir, "--shell", "sh", "-c", `printf '%s' "$0"`}, strings.NewReader(""), output, diagnostic)
 	if err != nil || code != 0 || output.String() != "/bin/sh" {
 		t.Fatalf("sh: code=%d err=%v stdout=%q stderr=%q", code, err, output.String(), diagnostic.String())
 	}
 	output.Reset()
 	diagnostic.Reset()
-	code, err = run(t.Context(), []string{"--dir", dir, "--shell", "zsh", "-c", "true"}, strings.NewReader(""), output, diagnostic)
+	code, err = run(t.Context(), []string{"--tools=minimal", "--dir", dir, "--shell", "zsh", "-c", "true"}, strings.NewReader(""), output, diagnostic)
 	if err == nil || code == 0 || !strings.Contains(err.Error(), "zsh 暂不支持") {
 		t.Fatalf("zsh 应明确拒绝: code=%d err=%v", code, err)
+	}
+}
+
+func TestCLIDevelopmentTools(t *testing.T) {
+	dir := t.TempDir()
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
+	defer cancel()
+	script := `set -eu
+python -c 'print("python-ok")'
+node -e 'process.stdout.write("node-ok\n")'
+printf 'int main(void){return 0;}\n' > /work/dev.c
+cc -o /work/dev /work/dev.c
+/work/dev
+printf 'tools-ok\n'`
+	output, diagnostic := &bytes.Buffer{}, &bytes.Buffer{}
+	code, err := run(ctx, []string{"--dir", dir, "-c", script}, strings.NewReader(""), output, diagnostic)
+	if err != nil || code != 0 ||
+		output.String() != "python-ok\nnode-ok\ntools-ok\n" {
+		t.Fatalf("dev tools: code=%d err=%v stdout=%q stderr=%q",
+			code, err, output.String(), diagnostic.String())
 	}
 }

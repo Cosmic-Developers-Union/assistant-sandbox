@@ -8,7 +8,7 @@
 | S0 | Bash/BusyBox、基础文件和进程 | 通过 |
 | S1 | POSIX、coreutils、管道、信号、PTY | 通过已覆盖子集 |
 | S2 | CPython、Node.js、标准库、子进程 | 通过已覆盖子集 |
-| S3 | 同一 VM 的 shell、Python、Node、C 编译链和子进程开发流 | 通过 |
+| S3 | 同一 VM 的 shell、Python、Node、C 编译链和子进程开发流 | 通过，CLI `--tools=dev` 默认提供 |
 | S4 | 发行版镜像、`apk`、`git`、`cc`、`/proc`、`/sys`、init | 外部镜像门禁 |
 
 ## S3
@@ -25,6 +25,16 @@ make compat-s3
 - Node.js 读写文件和创建子进程
 - 客体 C 编译、静态链接和运行
 - 产出的文件内容
+
+默认 CLI 现在通过 `--tools=dev` 安装同一套开发工具：Python 3.12.16、
+Node.js 22.23.5、npm 11.6.4、TinyCC，以及 Python 开发头文件。
+`--tools=minimal` 只安装 Bash/BusyBox。
+
+已知问题：
+
+- Node.js 使用 `--jitless`，启动明显慢于宿主。
+- npm 已打包，但 `npm --version` 在当前解释器中需要数分钟，仍需优化。
+- pip 暂不打包；完整 pip CLI 导入超过 180 秒，不能作为可用开发工具发布。
 
 ## 外部 LTP
 
@@ -54,9 +64,8 @@ S4 门禁检查：
 - `/proc/self/status`
 - `/sys`
 
-当前 CLI 默认镜像只包含 Bash/BusyBox，不包含 Python、Node 或包管理器，
-因此默认 CLI 还没有达到 S3/S4 镜像合同。S3 测试验证的是兼容内核和
-完整开发 rootfs 组合后的能力，不等同于默认 CLI 已经打包该 rootfs。
+默认 CLI 已达到 S3 工具存在性合同，但 Python/Node 仍受解释器性能限制，
+S4 的 init、`apk`、`/sys`、namespace 等合同仍未达到。
 
 ## 参考与差分
 

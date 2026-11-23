@@ -10,10 +10,12 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/guest/devroot"
 	nativeshell "github.com/Cosmic-Developers-Union/assistant-sandbox/guest/native"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/instance"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/platform/filesystem"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fd"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/resources"
 	"github.com/spf13/pflag"
 	"golang.org/x/term"
 )
@@ -30,6 +32,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	module := flags.String("module", "", "已弃用：兼容旧 WASI CLI 参数，原生 VM 忽略")
 	command := flags.StringP("command", "c", "", "shell 脚本（默认 Bash）；未指定时读取标准输入")
 	shellName := flags.String("shell", "bash", "原生客体 shell: bash 或 sh（zsh 暂不支持）")
+	tools := flags.String("tools", "dev", "开发工具包: dev 或 minimal")
 	noPTY := flags.Bool("no-pty", false, "禁用宿主 PTY，仅用于排查终端兼容问题")
 	readOnly := flags.Bool("read-only", false, "工作区只读（当前原生 VM 明确拒绝）")
 	session := flags.Bool("session", false, "从 stdin 运行 shell 并保持同一 VM 会话")
@@ -49,6 +52,9 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	}
 	if *readOnly {
 		return 1, errors.New("原生 VM 尚未接入只读工作区")
+	}
+	if *tools != "dev" && *tools != "minimal" {
+		return 1, fmt.Errorf("不支持的开发工具包 %q（可用: dev, minimal）", *tools)
 	}
 	selectedShell, err := nativeshell.Parse(*shellName)
 	if err != nil {
@@ -86,7 +92,12 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		}
 		*command = string(data)
 	}
-	machine, err := instance.New(ctx, instance.Options{})
+	options := instance.Options{}
+	if *tools == "dev" {
+		options.Session = resources.Limits{Memory: 4 << 30, Work: 1 << 38}
+		options.Process = resources.Limits{Memory: 2 << 30, Work: 1 << 38}
+	}
+	machine, err := instance.New(ctx, options)
 	if err != nil {
 		return 1, err
 	}
@@ -97,6 +108,11 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	}()
 	if err := nativeshell.Install(ctx, machine.Filesystem()); err != nil {
 		return 1, err
+	}
+	if *tools == "dev" {
+		if err := devroot.Install(ctx, machine.Filesystem()); err != nil {
+			return 1, err
+		}
 	}
 	if mountWorkspace {
 		if err := machine.Mounts().Mount(instance.WorkRoot, filesystem.NewMountFilesystem(workspace)); err != nil {
@@ -119,6 +135,10 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	}
 	if selectedShell == nativeshell.Bash {
 		environmentMap["PS1"] = `sandbox:${PWD}\$ `
+	}
+	if *tools == "dev" {
+		environmentMap["PYTHONHOME"] = "/usr"
+		environmentMap["NODE_ICU_DATA"] = "/usr/share/icu/76.1"
 	}
 	connection, err := machine.Connect(ctx)
 	if err != nil {

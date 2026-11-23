@@ -44,6 +44,14 @@ CLI 默认执行客体中的真实 Bash；`--shell sh` 切换到 BusyBox sh。
 `zsh` 暂不提供 riscv64 客体资产，会返回明确错误；`userland/shell` 的
 内建 mvdan/sh 槽位已标记为废弃，只为旧 SDK/模型契约保留。
 
+默认 `--tools=dev` 同时安装 CPython 3.12、Node.js 22、npm 和 TinyCC：
+
+```sh
+assistant-sandbox -c 'python --version; node --version; cc --version'
+```
+
+只需要 Bash/BusyBox 时使用 `--tools=minimal`。
+
 在终端直接运行 `assistant-sandbox --dir .` 会进入客体 Bash 会话；
 交互会话通过 VM PTY 提供回显、`Ctrl-C`/`Ctrl-D` 与作业控制。Bash
 当前使用 `--noediting`，CLI 在宿主侧提供上下键命令历史和命令级 Tab

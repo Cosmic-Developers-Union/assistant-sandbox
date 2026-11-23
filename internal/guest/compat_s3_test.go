@@ -1,10 +1,12 @@
 package guest_test
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
 
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/guest/devroot"
 	nativeshell "github.com/Cosmic-Developers-Union/assistant-sandbox/guest/native"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/instance"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/resources"
@@ -14,18 +16,13 @@ import (
 // Bash、BusyBox、CPython、Node.js 与客体 C 工具链在同一 VM 中完成
 // 文件处理、子进程、脚本执行、编译和运行。
 func TestCompatibilityS3DevelopmentWorkflow(t *testing.T) {
-	machine, connection := python312GuestWith(t, func(options *instance.Options) {
-		options.Session = resources.Limits{Memory: 4 << 30, Work: 1 << 38}
-		options.Process = resources.Limits{Memory: 2 << 30, Work: 1 << 38}
-	})
+	machine, connection := compatDevelopmentGuest(t)
 	if err := nativeshell.Install(t.Context(), machine.Filesystem()); err != nil {
 		t.Fatal(err)
 	}
-	disablePythonVFork(t, machine)
-	extractNodeRuntime(t, machine, python312Asset(t,
-		"testdata/nodejs/node22-runtime.tar.gz", node22RuntimeDigest))
-	extractGuestTar(t, machine, python312Asset(t,
-		"testdata/tcc-riscv64-toolchain.tar.gz", tccToolchainDigest))
+	if err := devroot.Install(t.Context(), machine.Filesystem()); err != nil {
+		t.Fatal(err)
+	}
 
 	env := map[string]string{
 		"HOME":          "/work",
@@ -56,7 +53,7 @@ subprocess.run(["/bin/sh", "-c", "printf py-sub > /work/dev/out/python-sub.txt"]
 print("python-ok")
 `), 0o644)
 	output, diagnostic, code = runGuestProgram(t, connection,
-		"/usr/bin/python3.12", []string{"/work/dev/tool.py"}, env, 300*time.Second)
+		"/usr/bin/python", []string{"/work/dev/tool.py"}, env, 300*time.Second)
 	if code != 0 || output != "python-ok\n" {
 		t.Fatalf("S3 python exit=%d stdout=%q stderr=%q", code, output, diagnostic)
 	}
@@ -70,7 +67,7 @@ execFileSync("/bin/sh", ["-c", "printf node-sub > /work/dev/out/node-sub.txt"]);
 console.log("node-ok");
 `), 0o644)
 	output, diagnostic, code = runGuestProgram(t, connection,
-		"/usr/bin/node", []string{"--jitless", "/work/dev/tool.mjs"}, env, 300*time.Second)
+		"/bin/bash", []string{"--noprofile", "--norc", "-c", "node /work/dev/tool.mjs"}, env, 300*time.Second)
 	if code != 0 || output != "node-ok\n" {
 		t.Fatalf("S3 node exit=%d stdout=%q stderr=%q", code, output, diagnostic)
 	}
@@ -99,7 +96,7 @@ int main(void) {
 }
 `), 0o644)
 	output, diagnostic, code = runGuestProgram(t, connection,
-		"/usr/bin/tcc", []string{"-static", "-O2", "-o", "/work/dev/tool-c", "/work/dev/tool.c"},
+		"/usr/bin/cc", []string{"-static", "-O2", "-o", "/work/dev/tool-c", "/work/dev/tool.c"},
 		env, 300*time.Second)
 	if code != 0 {
 		t.Fatalf("S3 tcc exit=%d stdout=%q stderr=%q", code, output, diagnostic)
@@ -144,4 +141,23 @@ int main(void) {
 			t.Fatalf("%s 结果=%+v", name, result)
 		}
 	}
+}
+
+func compatDevelopmentGuest(t *testing.T) (*instance.VM, *instance.Connection) {
+	t.Helper()
+	machine, err := instance.New(t.Context(), instance.Options{
+		Deterministic: false,
+		Seed:          1,
+		Session:       resources.Limits{Memory: 4 << 30, Work: 1 << 38},
+		Process:       resources.Limits{Memory: 2 << 30, Work: 1 << 38},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = machine.Close(context.Background()) })
+	connection, err := machine.Connect(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return machine, connection
 }
