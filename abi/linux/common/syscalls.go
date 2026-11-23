@@ -18,6 +18,7 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/inotify"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/locks"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/memory"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/resources"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/signalfd"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/trace"
 )
@@ -195,6 +196,8 @@ type Random interface {
 
 type Syscalls struct {
 	Memory Memory
+
+	Meter resources.Meter
 
 	Descriptors Descriptors
 
@@ -2273,8 +2276,23 @@ func (s Syscalls) sysinfo(ctx context.Context, call Call) Reply {
 		return Reply{Errno: errno.NotImplemented}
 	}
 	var encoded [128]byte
-	// procs at offset 64+8+8? Layout: uptime(8)+loads(24)+totalram(8)+freeram(8)+sharedram(8)+bufferram(8)+totalswap(8)+freeswap(8)=88? Let's place procs at 80? Simpler: zero-filled success.
-	encoded[80] = 1 // procs low byte (approx)
+	if s.Clock != nil {
+		if uptime, err := s.Clock.Monotonic(ctx); err == nil {
+			binary.LittleEndian.PutUint64(encoded[0:], uptime/1_000_000_000)
+		}
+	}
+	if s.Meter != nil && s.Identity != nil {
+		if view, err := s.Meter.View(ctx, s.Identity.PID); err == nil {
+			free := uint64(0)
+			if view.MemoryUsed < view.MemoryLimit {
+				free = view.MemoryLimit - view.MemoryUsed
+			}
+			binary.LittleEndian.PutUint64(encoded[32:], view.MemoryLimit)
+			binary.LittleEndian.PutUint64(encoded[40:], free)
+			binary.LittleEndian.PutUint32(encoded[104:], 1) // mem_unit
+		}
+	}
+	binary.LittleEndian.PutUint16(encoded[80:], 1)
 	if err := s.Memory.Write(ctx, call.Args[0], encoded[:]); err != nil {
 		return Reply{Errno: errno.Fault}
 	}

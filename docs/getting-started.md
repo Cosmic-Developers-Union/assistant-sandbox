@@ -45,7 +45,7 @@ Shutdown。持续会话使用 `--session` 运行一个原生 shell 进程,或用
 原生 Bash 会话(输入 `Ctrl-D` 退出);从管道或文件输入且未指定 `-c`
 时,仍会把 stdin 作为完整脚本读取到 EOF。交互会话经 VM PTY 支持终端
 回显、控制字符与作业控制;Bash 暂以 `--noediting` 运行,CLI 宿主侧
-提供上下键历史,readline 左右编辑/补全尚未接入。CLI 会在
+提供上下键历史和命令级 Tab 补全,readline 左右编辑/参数补全尚未接入。CLI 会在
 `SIGINT`/`SIGTERM`/`SIGHUP`/`SIGQUIT`
 时恢复宿主终端;若终端模拟器崩溃或进程被 `SIGKILL`,先运行
 `stty sane` 或 `reset`。终端兼容问题可用 `--no-pty` 退回管道会话。

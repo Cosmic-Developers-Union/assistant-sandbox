@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"errors"
 	"io"
+	"slices"
+	"strings"
 	"unicode/utf8"
 )
 
@@ -12,8 +14,20 @@ const maxShellHistory = 200
 // bridgeInput 为 --noediting 的 Bash 补上最基本的上/下历史选择。
 // 其余输入原样送进 PTY，行内编辑仍由客体 TTY 处理。
 func bridgeInput(input io.Reader, output io.Writer) error {
+	return bridgeInputWithCompletion(input, output, io.Discard, nil, nil)
+}
+
+func bridgeInputWithCompletion(
+	input io.Reader,
+	output io.Writer,
+	display io.Writer,
+	completer func(string) []string,
+	prompt func() string,
+) error {
 	reader := bufio.NewReader(input)
-	bridge := shellInputBridge{output: output}
+	bridge := shellInputBridge{
+		output: output, display: display, completer: completer, prompt: prompt,
+	}
 	for {
 		value, err := reader.ReadByte()
 		if err != nil {
@@ -58,6 +72,10 @@ func bridgeInput(input io.Reader, output io.Writer) error {
 			if err := bridge.write([]byte{value}); err != nil {
 				return err
 			}
+		case '\t':
+			if err := bridge.complete(); err != nil {
+				return err
+			}
 		default:
 			bridge.line = append(bridge.line, value)
 			if err := bridge.write([]byte{value}); err != nil {
@@ -68,11 +86,14 @@ func bridgeInput(input io.Reader, output io.Writer) error {
 }
 
 type shellInputBridge struct {
-	output  io.Writer
-	line    []byte
-	draft   []byte
-	history []string
-	index   int
+	output    io.Writer
+	display   io.Writer
+	line      []byte
+	draft     []byte
+	history   []string
+	index     int
+	completer func(string) []string
+	prompt    func() string
 }
 
 func (b *shellInputBridge) write(data []byte) error {
@@ -129,6 +150,44 @@ func (b *shellInputBridge) recall(direction int) error {
 		return err
 	}
 	return b.write([]byte(replacement))
+}
+
+func (b *shellInputBridge) complete() error {
+	if b.completer == nil || len(b.line) == 0 || strings.ContainsAny(string(b.line), " \t") {
+		return b.write([]byte{'\t'})
+	}
+	prefix := string(b.line)
+	candidates := b.completer(prefix)
+	if len(candidates) == 0 {
+		return nil
+	}
+	slices.Sort(candidates)
+	candidates = slices.Compact(candidates)
+	if len(candidates) == 1 {
+		suffix := candidates[0][len(prefix):]
+		b.line = append(b.line, suffix...)
+		return b.write([]byte(suffix))
+	}
+	common := candidates[0]
+	for _, candidate := range candidates[1:] {
+		for !strings.HasPrefix(candidate, common) {
+			common = common[:len(common)-1]
+		}
+	}
+	if len(common) > len(prefix) {
+		suffix := common[len(prefix):]
+		b.line = append(b.line, suffix...)
+		return b.write([]byte(suffix))
+	}
+	if b.display == nil {
+		return nil
+	}
+	prompt := ""
+	if b.prompt != nil {
+		prompt = b.prompt()
+	}
+	_, err := io.WriteString(b.display, "\r\n"+strings.Join(candidates, "  ")+"\r\n"+prompt+string(b.line))
+	return err
 }
 
 func readEscapeSequence(reader *bufio.Reader) string {

@@ -90,7 +90,8 @@ func runPTY(
 	}()
 	go func() {
 		if shell == nativeshell.Bash {
-			_ = bridgeInput(stdin, master)
+			completer := newShellCompleter(ctx, machine, process.ID)
+			_ = bridgeInputWithCompletion(stdin, master, stdout, completer.Commands, completer.Prompt)
 			return
 		}
 		_, _ = io.Copy(master, stdin)

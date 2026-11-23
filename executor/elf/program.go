@@ -574,6 +574,9 @@ func syscalls(ctx context.Context, process proc.Proc, space *memory.Table, plan 
 		handler.Clock = source
 		handler.Sleeper = source
 	}
+	if meter, err := process.Resources.Meter(); err == nil {
+		handler.Meter = meter
+	}
 	if credentials, err := process.Resources.Credentials(); err == nil {
 		if current, err := credentials.Lookup(ctx, uint64(process.ID)); err == nil {
 			identity.UID, identity.GID = current.UID, current.GID

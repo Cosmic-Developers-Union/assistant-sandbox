@@ -17,6 +17,7 @@ import (
 	vmfs "github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fs"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/inotify"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/locks"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/resources"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/trace"
 )
 
@@ -1563,6 +1564,44 @@ func TestUnameAndSysinfoUseConfiguredIdentity(t *testing.T) {
 	if info[80] != 1 {
 		t.Fatalf("procs 应为 1: %d", info[80])
 	}
+}
+
+func TestSysinfoReportsMeterMemory(t *testing.T) {
+	memory := newFakeMemory()
+	handler := Syscalls{
+		Memory:   memory,
+		Identity: &Identity{PID: 7},
+		Meter:    fakeMeter{view: resources.View{MemoryLimit: 4096, MemoryUsed: 1024}},
+	}
+	if reply := handler.Handle(t.Context(), Call{Syscall: SysSysinfo, Args: [6]uint64{0x3000}}); reply.Errno != "" {
+		t.Fatalf("sysinfo: %v", reply.Errno)
+	}
+	var info [128]byte
+	if err := memory.Read(t.Context(), 0x3000, info[:]); err != nil {
+		t.Fatal(err)
+	}
+	if got := binary.LittleEndian.Uint64(info[32:]); got != 4096 {
+		t.Fatalf("totalram=%d", got)
+	}
+	if got := binary.LittleEndian.Uint64(info[40:]); got != 3072 {
+		t.Fatalf("freeram=%d", got)
+	}
+	if got := binary.LittleEndian.Uint32(info[104:]); got != 1 {
+		t.Fatalf("mem_unit=%d", got)
+	}
+}
+
+type fakeMeter struct {
+	view resources.View
+}
+
+func (m fakeMeter) View(context.Context, uint64) (resources.View, error) { return m.view, nil }
+func (fakeMeter) Charge(context.Context, uint64, uint64) error           { return nil }
+func (fakeMeter) ChargeKind(context.Context, uint64, resources.Kind, uint64) error {
+	return nil
+}
+func (fakeMeter) ReleaseKind(context.Context, uint64, resources.Kind, uint64) error {
+	return nil
 }
 
 func cstring(raw []byte) string {
