@@ -19,6 +19,10 @@ type Table struct {
 
 	limit uint64
 
+	codePage       uint64
+	codePageBytes  []byte
+	codePageCached bool
+
 	// annotation 允许装载层在同组线程共享的地址空间上挂每地址空间
 	// 状态(brk/mmap 游标等);内核不解释其内容(K02)。
 	annotation any
@@ -157,6 +161,7 @@ func (t *Table) Protect(ctx context.Context, start, end uint64, prot Prot) error
 	if !t.coversLocked(start, end) {
 		return faultError(FaultUnmapped, start, "修改保护位的范围未被完整映射")
 	}
+	t.invalidateCodeLocked(start, end)
 	updated := make([]Region, 0, len(t.regions)+2)
 	for _, region := range t.regions {
 		if region.End <= start || region.Start >= end {
@@ -255,12 +260,125 @@ func (t *Table) Read(ctx context.Context, address uint64, buffer []byte) error {
 	return t.readLocked(address, buffer, ProtRead)
 }
 
+// FetchInstruction 在同一锁内校验执行权限并取回一条 RISC-V 指令的
+// 原始编码和长度。执行核心按 2/4 字节编码直接展开,避免每次取指
+// 都分别走 Read 和 Executable 两次映射查找。
+func (t *Table) FetchInstruction(ctx context.Context, address uint64) (uint32, uint64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, 0, err
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.fetchInstructionLocked(address)
+}
+
+func (t *Table) fetchInstructionLocked(address uint64) (uint32, uint64, error) {
+	if instruction, length, ok := t.cachedInstructionLocked(address); ok {
+		return instruction, length, nil
+	}
+	// 常见路径:整条 32 位指令落在同一个映射区间内。
+	if index := t.findContainingLocked(address); index >= 0 {
+		region := t.regions[index]
+		if end, err := addNoOverflow(address, 4); err == nil &&
+			end <= region.End && address/PageSize == (end-1)/PageSize {
+			if err := requireProt(region.Prot, ProtExec); err != nil {
+				return 0, 0, err
+			}
+			var encoded [4]byte
+			if err := t.readRegionLocked(region, address, encoded[:]); err != nil {
+				return 0, 0, err
+			}
+			instruction := binary.LittleEndian.Uint32(encoded[:])
+			t.cacheInstructionPageLocked(address)
+			if instruction&0x3 != 0x3 {
+				return instruction & 0xFFFF, 2, nil
+			}
+			return instruction, 4, nil
+		}
+	}
+
+	// 边界路径:区间尾部只剩压缩指令的两个字节。
+	if err := t.checkLocked(address, 2, ProtExec); err != nil {
+		return 0, 0, err
+	}
+	var first [2]byte
+	if err := t.readMappedLocked(address, first[:]); err != nil {
+		return 0, 0, err
+	}
+	raw := binary.LittleEndian.Uint16(first[:])
+	if raw&0x3 != 0x3 {
+		return uint32(raw), 2, nil
+	}
+	if err := t.checkLocked(address, 4, ProtExec); err != nil {
+		return 0, 0, err
+	}
+	var encoded [4]byte
+	if err := t.readMappedLocked(address, encoded[:]); err != nil {
+		return 0, 0, err
+	}
+	t.cacheInstructionPageLocked(address)
+	return binary.LittleEndian.Uint32(encoded[:]), 4, nil
+}
+
+func (t *Table) cachedInstructionLocked(address uint64) (uint32, uint64, bool) {
+	page := address / PageSize
+	if !t.codePageCached || t.codePage != page {
+		return 0, 0, false
+	}
+	offset := address % PageSize
+	if offset+4 <= PageSize {
+		instruction := binary.LittleEndian.Uint32(t.codePageBytes[offset : offset+4])
+		if instruction&0x3 != 0x3 {
+			return instruction & 0xFFFF, 2, true
+		}
+		return instruction, 4, true
+	}
+	raw := binary.LittleEndian.Uint16(t.codePageBytes[offset : offset+2])
+	if raw&0x3 == 0x3 {
+		return 0, 0, false
+	}
+	return uint32(raw), 2, true
+}
+
+func (t *Table) cacheInstructionPageLocked(address uint64) {
+	page := address / PageSize
+	base := page * PageSize
+	if err := t.checkLocked(base, PageSize, ProtExec); err != nil {
+		return
+	}
+	if t.codePageBytes == nil {
+		t.codePageBytes = make([]byte, PageSize)
+	}
+	if err := t.readMappedLocked(base, t.codePageBytes); err != nil {
+		t.invalidateCodeLocked(base, base+PageSize)
+		return
+	}
+	t.codePage = page
+	t.codePageCached = true
+}
+
+func (t *Table) invalidateCodeLocked(start, end uint64) {
+	if !t.codePageCached {
+		return
+	}
+	pageStart := t.codePage * PageSize
+	if start < pageStart+PageSize && end > pageStart {
+		t.codePageCached = false
+	}
+}
+
 // readLocked 在已持锁状态下读取;调用方负责长度非零与上下文检查。
 func (t *Table) readLocked(address uint64, buffer []byte, prot Prot) error {
 	length := uint64(len(buffer))
 	if err := t.checkLocked(address, length, prot); err != nil {
 		return err
 	}
+	return t.readMappedLocked(address, buffer)
+}
+
+// readMappedLocked 在已验证映射与权限后复制字节。
+func (t *Table) readMappedLocked(address uint64, buffer []byte) error {
+	length := uint64(len(buffer))
 	clear(buffer)
 	for page := address / PageSize; page <= (address+length-1)/PageSize; page++ {
 		base := page * PageSize
@@ -278,6 +396,19 @@ func (t *Table) readLocked(address uint64, buffer []byte, prot Prot) error {
 			continue
 		}
 		copy(slice, stored[start-base:stop-base])
+	}
+	return nil
+}
+
+func (t *Table) readRegionLocked(region Region, address uint64, buffer []byte) error {
+	if region.Backend != nil {
+		return region.Backend.ReadAt(region.FileBase+(address-region.Start), buffer)
+	}
+	clear(buffer)
+	stored := t.pages[address/PageSize]
+	if stored != nil {
+		base := address / PageSize * PageSize
+		copy(buffer, stored[address-base:uint64(len(buffer))+address-base])
 	}
 	return nil
 }
@@ -304,6 +435,7 @@ func (t *Table) writeLocked(address uint64, buffer []byte) error {
 		t.pages = make(map[uint64][]byte)
 	}
 	end := address + length
+	t.invalidateCodeLocked(address, end)
 	for page := address / PageSize; page <= (end-1)/PageSize; page++ {
 		base := page * PageSize
 		start := max(address, base)
@@ -410,6 +542,7 @@ func (t *Table) Load(ctx context.Context, address uint64, content []byte) error 
 		t.pages = make(map[uint64][]byte)
 	}
 	end := address + length
+	t.invalidateCodeLocked(address, end)
 	for page := address / PageSize; page <= (end-1)/PageSize; page++ {
 		base := page * PageSize
 		start := max(address, base)
@@ -442,6 +575,7 @@ func (t *Table) Sync(ctx context.Context, start, end uint64) error {
 }
 
 func (t *Table) dropPagesLocked(start, end uint64) {
+	t.invalidateCodeLocked(start, end)
 	for page := start / PageSize; page < end/PageSize; page++ {
 		delete(t.pages, page)
 	}
@@ -567,6 +701,7 @@ func (t *Table) checkBudgetLocked(size uint64) error {
 }
 
 func (t *Table) insertLocked(region Region) {
+	t.invalidateCodeLocked(region.Start, region.End)
 	index := sort.Search(len(t.regions), func(i int) bool {
 		return t.regions[i].Start >= region.Start
 	})

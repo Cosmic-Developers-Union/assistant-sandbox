@@ -2,10 +2,13 @@ package filesystem
 
 import (
 	"context"
+	"errors"
+	"io"
 	"io/fs"
 	"path"
 	"strings"
 
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 	vmfs "github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fs"
 )
 
@@ -47,8 +50,118 @@ func (f *Filesystem) Open(ctx context.Context, name string, flags uint32, mode f
 	if err != nil {
 		return nil, err
 	}
-	return f.open(p, int(flags), mode)
+	file, err := f.open(p, int(flags), mode)
+	if err != nil {
+		return nil, err
+	}
+	return wrapRandomFile(file, flags), nil
 }
+
+// randomFile 为原生宿主文件补上 mmap 所需的随机访问与打开模式
+// 查询(os.File 有 ReadAt/WriteAt,但没有模式自省接口)。
+type randomFile struct {
+	vmfs.File
+	readable bool
+	writable bool
+}
+
+func wrapRandomFile(file vmfs.File, flags uint32) vmfs.File {
+	access := flags & 3
+	return &randomFile{
+		File:     file,
+		readable: access != vmfs.WriteOnly,
+		writable: access != vmfs.ReadOnly,
+	}
+}
+
+func (f *randomFile) ReadAt(buffer []byte, offset int64) (int, error) {
+	if !f.readable {
+		return 0, errno.BadHandle
+	}
+	reader, ok := f.File.(io.ReaderAt)
+	if !ok {
+		return 0, errno.Seek
+	}
+	return reader.ReadAt(buffer, offset)
+}
+
+func (f *randomFile) WriteAt(buffer []byte, offset int64) (int, error) {
+	if !f.writable {
+		return 0, errno.BadHandle
+	}
+	writer, ok := f.File.(io.WriterAt)
+	if !ok {
+		return 0, errno.Seek
+	}
+	return writer.WriteAt(buffer, offset)
+}
+
+func (f *randomFile) Truncate(size int64) error {
+	truncater, ok := f.File.(interface{ Truncate(size int64) error })
+	if !ok {
+		return errno.NotSupported
+	}
+	return truncater.Truncate(size)
+}
+
+func (f *randomFile) Sync(bool) error {
+	syncer, ok := f.File.(interface{ Sync() error })
+	if !ok {
+		return errno.NotSupported
+	}
+	return syncer.Sync()
+}
+
+func (f *randomFile) StatusFlags() (uint32, error) {
+	flagger, ok := f.File.(interface{ StatusFlags() (uint32, error) })
+	if !ok {
+		return 0, errno.NotSupported
+	}
+	return flagger.StatusFlags()
+}
+
+func (f *randomFile) SetStatusFlags(flags uint32) error {
+	setter, ok := f.File.(interface{ SetStatusFlags(flags uint32) error })
+	if !ok {
+		return errno.NotSupported
+	}
+	return setter.SetStatusFlags(flags)
+}
+
+func (f *randomFile) Space(ctx context.Context) (vmfs.Space, error) {
+	spacer, ok := f.File.(interface {
+		Space(context.Context) (vmfs.Space, error)
+	})
+	if !ok {
+		return vmfs.Space{}, errno.NotSupported
+	}
+	return spacer.Space(ctx)
+}
+
+func (f *randomFile) Readdir(limit int) ([]fs.DirEntry, error) {
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() {
+		return nil, errno.NotDirectory
+	}
+	reader, ok := f.File.(interface {
+		ReadDir(limit int) ([]fs.DirEntry, error)
+	})
+	if !ok {
+		return nil, errno.NotSupported
+	}
+	entries, err := reader.ReadDir(limit)
+	if errors.Is(err, io.EOF) && len(entries) > 0 {
+		return entries, nil
+	}
+	return entries, err
+}
+
+func (f *randomFile) Readable() bool { return f.readable }
+
+func (f *randomFile) Writable() bool { return f.writable }
 
 func (f *Filesystem) Stat(ctx context.Context, name string) (fs.FileInfo, error) {
 	if err := ctx.Err(); err != nil {
@@ -79,6 +192,9 @@ func (f *Filesystem) Mkdir(ctx context.Context, name string, mode fs.FileMode) e
 	p, err := f.resolve(name)
 	if err != nil {
 		return err
+	}
+	if p == f.base {
+		return &fs.PathError{Op: "mkdir", Path: name, Err: fs.ErrExist}
 	}
 	return f.mkdir(p, mode)
 }

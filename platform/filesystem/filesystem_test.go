@@ -177,6 +177,69 @@ func TestFilesystemLinkSymlinkReadlinkLstat(t *testing.T) {
 	}
 }
 
+// TestFilesystemMountRootAndRandomAccess 验证宿主挂载所需的目录枚举、
+// 共享 mmap 随机访问与挂载根 EEXIST 语义。
+func TestFilesystemMountRootAndRandomAccess(t *testing.T) {
+	dir := t.TempDir()
+	store := NewMountFilesystem(dir)
+	if err := store.Mkdir(t.Context(), "/sub", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Mkdir(t.Context(), "/", 0o755); !errors.Is(err, fs.ErrExist) {
+		t.Fatalf("挂载根重复创建: %v", err)
+	}
+	file, err := store.Open(t.Context(), "/sub/file", vmfs.Create|vmfs.ReadWrite, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write([]byte("value")); err != nil {
+		t.Fatal(err)
+	}
+	random, ok := file.(interface {
+		ReadAt([]byte, int64) (int, error)
+		WriteAt([]byte, int64) (int, error)
+		Truncate(int64) error
+		Sync(bool) error
+		Readable() bool
+		Writable() bool
+	})
+	if !ok || !random.Readable() || !random.Writable() {
+		t.Fatalf("宿主文件缺少随机访问能力: %T", file)
+	}
+	var buffer [1]byte
+	if n, err := random.ReadAt(buffer[:], 0); err != nil || n != 1 || buffer[0] != 'v' {
+		t.Fatalf("ReadAt=%q n=%d err=%v", buffer, n, err)
+	}
+	if _, err := random.WriteAt([]byte("V"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := random.Truncate(4); err != nil {
+		t.Fatal(err)
+	}
+	if err := random.Sync(false); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	directory, err := store.Open(t.Context(), "/sub", vmfs.ReadOnly, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = directory.Close() }()
+	reader, ok := directory.(interface {
+		Readdir(int) ([]fs.DirEntry, error)
+	})
+	if !ok {
+		t.Fatalf("宿主目录缺少 Readdir: %T", directory)
+	}
+	entries, err := reader.Readdir(8)
+	if err != nil || len(entries) != 1 || entries[0].Name() != "file" {
+		t.Fatalf("目录项=%v err=%v", entries, err)
+	}
+}
+
 func TestFilesystemSetTimesAndRemove(t *testing.T) {
 	dir := t.TempDir()
 	store := NewFilesystem(filepath.ToSlash(dir))

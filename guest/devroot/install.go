@@ -60,6 +60,8 @@ func Install(ctx context.Context, system vmfs.System) error {
 		{"node22-runtime.tar.gz", "/", false},
 		{"npm-11.6.4.tar.gz", "/", false},
 		{"tcc-riscv64-toolchain.tar.gz", "/", false},
+		{"git-2.56.1-runtime.tar.gz", "/", false},
+		{"apk-tools-3.0.10-runtime.tar.gz", "/", false},
 	} {
 		data, err := asset(item.name)
 		if err != nil {
@@ -77,6 +79,7 @@ func Install(ctx context.Context, system vmfs.System) error {
 		{"/usr/bin/cc", "tcc"},
 		{"/usr/bin/gcc", "tcc"},
 		{"/usr/bin/env", "/bin/env"},
+		{"/usr/bin/apk", "/sbin/apk"},
 	} {
 		if err := symlink(ctx, system, link[1], link[0]); err != nil {
 			return err
@@ -92,6 +95,21 @@ func Install(ctx context.Context, system vmfs.System) error {
 	}
 	if err := writeFile(ctx, system, "/usr/bin/node",
 		[]byte("#!/bin/sh\ncase \" $* \" in\n  *\" --jitless \"*) exec /usr/bin/node-bin \"$@\" ;;\n  *) exec /usr/bin/node-bin --jitless \"$@\" ;;\nesac\n"), 0o755); err != nil {
+		return err
+	}
+	for name, content := range map[string]string{
+		"/lib/apk/db/installed": "",
+		"/etc/apk/world":        "",
+		"/etc/apk/repositories": "",
+	} {
+		if err := writeFile(ctx, system, name, []byte(content), 0o644); err != nil {
+			return err
+		}
+	}
+	// 后台 auto-maintenance 会在当前执行器里留下 detach 子进程并阻塞
+	// commit；开发工作流显式关闭它，保留前台 gc/fsck 可用。
+	if err := writeFile(ctx, system, "/etc/gitconfig",
+		[]byte("[maintenance]\n\tauto = false\n[gc]\n\tauto = 0\n"), 0o644); err != nil {
 		return err
 	}
 	// 当前 VM 的 vfork 兼容路径会让嵌套构建子进程异常退出；开发工具

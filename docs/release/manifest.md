@@ -14,6 +14,8 @@
 | TinyCC 客体工具链 | 0.9.28rc/0.9.27 git Alpine | `dc16d9d4e2b8f3bd1301cf20519efc35fd44ab3ee7a05db3988c16d3bd73ce04` |
 | GCC C++ 客体工具链 | GCC 14.2.0-r6/Binutils 2.44 | `a9a452dc848090af9661f8af25f9d541683edb7d665cf4cb1a55f958623199d5` |
 | Node 头文件/node-gyp 工具链 | Node 22.23.5/GNU make 4.4.1 | `ff581db506abf7e4a29a8ffccadb44f9d2c46031391cad2084575859a3483e61` |
+| Git 客体运行时 | 2.56.1-r0 Alpine edge riscv64 | `a2d0f28913ca6a290df6492cd4c85a2cbac85da7bfc3e8cde7e46b6e06a3e1c0` |
+| apk-tools 客体运行时 | 3.0.10-r1 Alpine edge riscv64 | `c291067f9dfc560eb3f6d75f7915cd30bddd6b316ea156ab26ff1b6de97f55f8` |
 
 ## 许可证与 SBOM
 

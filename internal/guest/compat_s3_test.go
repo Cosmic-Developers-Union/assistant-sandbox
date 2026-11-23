@@ -36,6 +36,19 @@ mkdir -p /work/dev/src /work/dev/out
 printf 'beta\nalpha\ngamma\n' > /work/dev/src/input.txt
 cat /work/dev/src/input.txt | sort > /work/dev/out/sorted.txt
 grep -q alpha /work/dev/out/sorted.txt
+mkdir -p /work/dev/repo
+cd /work/dev/repo
+git init -q
+git config user.name dev
+git config user.email dev@example.test
+printf 'first\n' > README
+git add README
+git commit -qm initial
+test -n "$(git rev-parse HEAD)"
+apk --version >/dev/null
+test -r /sys/kernel/osrelease
+test -r /proc/self/status
+cd /work
 printf 'bash-ok\n'`
 	output, diagnostic, code := runGuestProgram(t, connection,
 		"/bin/bash", []string{"--noprofile", "--norc", "-c", bashScript}, env, 120*time.Second)

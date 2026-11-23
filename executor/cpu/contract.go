@@ -120,6 +120,13 @@ type Memory interface {
 	Write(ctx context.Context, address uint64, buffer []byte) error
 }
 
+// InstructionFetcher 是可选的高速取指能力:在同一个地址空间快照内
+// 完成执行权限校验与取指,并返回指令原始编码与 2/4 字节长度。
+// 未提供时执行核心退回通用 Read 加 Executable 检查。
+type InstructionFetcher interface {
+	FetchInstruction(ctx context.Context, address uint64) (uint32, uint64, error)
+}
+
 // AtomicMemory 是可选的内存原子读改写能力(K02/K03):AMO 与由
 // LR/SC 实现的比较交换必须在同一内存锁内完成读改写,否则多个
 // hart 的原子操作会相互覆盖。width 为 4 或 8,operation 返回新值。

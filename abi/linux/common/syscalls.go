@@ -1033,6 +1033,16 @@ func errnoOf(err error) errno.Code {
 			return code
 		}
 	}
+	switch {
+	case errors.Is(err, stdfs.ErrNotExist):
+		return errno.NotFound
+	case errors.Is(err, stdfs.ErrExist):
+		return errno.Exist
+	case errors.Is(err, stdfs.ErrPermission):
+		return errno.Permission
+	case errors.Is(err, stdfs.ErrInvalid):
+		return errno.Invalid
+	}
 	return errno.IO
 }
 

@@ -496,7 +496,7 @@ func (k *Kernel) Begin(parent proc.PID, name string, args []string, dir string, 
 	k.signals.Spawn(uint64(p.ID))
 	p.State = proc.Running
 	p.Resources = capability.Scope(uint64(p.ID), k.services.Set, k.meters)
-	p.Control = procControl{k: k, self: p.ID}
+	p.Control = k.processControl(p.ID)
 	if k.meters != nil {
 		// T03:标准输出/错误按字节计入 Output 预算;超限由 write
 		// 如实返回 EAGAIN,指标与配额扣减同源。
@@ -609,7 +609,7 @@ func (k *Kernel) Fork(parent proc.PID) (proc.Proc, *memory.Table, error) {
 	k.spaces[child.ID] = cloned
 	child.State = proc.Running
 	child.Resources = capability.Scope(uint64(child.ID), k.services.Set, k.meters)
-	child.Control = procControl{k: k, self: child.ID}
+	child.Control = k.processControl(child.ID)
 	k.emitLocked(scheduler.KindSpawn, child.ID, scheduler.SpawnDetail(source.Program))
 	return child, cloned.Inner(), nil
 }
@@ -688,7 +688,7 @@ func (k *Kernel) Vfork(parent proc.PID) (proc.Proc, *memory.Table, error) {
 	k.spaces[child.ID] = bound
 	child.State = proc.Running
 	child.Resources = capability.Scope(uint64(child.ID), k.services.Set, k.meters)
-	child.Control = procControl{k: k, self: child.ID}
+	child.Control = k.processControl(child.ID)
 	k.emitLocked(scheduler.KindSpawn, child.ID, scheduler.SpawnDetail(source.Program))
 	return child, bound.(*memory.Guard).Inner(), nil
 }
@@ -837,7 +837,7 @@ func (k *Kernel) CloneThread(parent proc.PID, clearTID uint64) (proc.Proc, *memo
 	}
 	child.State = proc.Running
 	child.Resources = capability.Scope(uint64(child.ID), k.services.Set, k.meters)
-	child.Control = procControl{k: k, self: child.ID}
+	child.Control = k.processControl(child.ID)
 	k.emitLocked(scheduler.KindSpawn, child.ID, scheduler.SpawnDetail(source.Program))
 	return child, guard.Inner(), nil
 }
@@ -1810,7 +1810,7 @@ func (k *Kernel) RunRegistered(ctx context.Context, p proc.Proc) (ExitStatus, er
 	}
 
 	actual.Resources = capability.Scope(uint64(actual.ID), k.services.Set, k.meters)
-	actual.Control = procControl{k: k, self: actual.ID}
+	actual.Control = k.processControl(actual.ID)
 	runCtx, cancel := context.WithCancelCause(ctx)
 
 	instance, err := executable.NewBuiltin().Start(proc.WithContext(runCtx, actual), resolved.Program, actual)
@@ -2448,8 +2448,13 @@ func clampNice(value int) int {
 }
 
 type procControl struct {
-	k    *Kernel
-	self proc.PID
+	k           *Kernel
+	self        proc.PID
+	signalState *signal.State
+}
+
+func (k *Kernel) processControl(pid proc.PID) procControl {
+	return procControl{k: k, self: pid, signalState: k.signals.State(uint64(pid))}
 }
 
 func (c procControl) Begin(parent proc.PID, name string, args []string, dir string, env map[string]string, streams fd.Streams) (proc.Proc, error) {
@@ -2907,6 +2912,9 @@ func (c procControl) ResetForExec(path string, args []string, env map[string]str
 func (c procControl) PendingDeliverable() (signal.Number, signal.ActionConfig, bool) {
 	if c.self == 0 {
 		return 0, signal.ActionConfig{}, false
+	}
+	if c.signalState != nil {
+		return c.signalState.DeliverableHandler()
 	}
 	return c.k.signals.DeliverableHandler(uint64(c.self))
 }

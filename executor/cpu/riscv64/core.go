@@ -14,6 +14,7 @@ type Core struct {
 	memory  cpu.Memory
 	atomics cpu.AtomicMemory
 	exec    cpu.ExecutableChecker
+	fetcher cpu.InstructionFetcher
 	meter   cpu.Meter
 	cancel  cpu.Canceller
 	lr      reservation
@@ -59,6 +60,9 @@ func New(config cpu.Config) (*Core, error) {
 	if atomics, ok := config.Memory.(cpu.AtomicMemory); ok {
 		core.atomics = atomics
 	}
+	if fetcher, ok := config.Memory.(cpu.InstructionFetcher); ok {
+		core.fetcher = fetcher
+	}
 
 	core.machine = cpu.Machine{PC: config.Entry, Registers: make([]uint64, numRegs), Floats: make([]uint64, numFPRegs)}
 	return core, nil
@@ -73,8 +77,12 @@ func (c *Core) WordSize() cpu.WordSize {
 func (c *Core) Attach(memory cpu.Memory) {
 	c.memory = memory
 	c.exec = nil
+	c.fetcher = nil
 	if checker, ok := memory.(cpu.ExecutableChecker); ok {
 		c.exec = checker
+	}
+	if fetcher, ok := memory.(cpu.InstructionFetcher); ok {
+		c.fetcher = fetcher
 	}
 }
 
@@ -135,6 +143,17 @@ func (c *Core) Step(ctx context.Context) (cpu.Outcome, error) {
 	}
 	pc := c.machine.PC
 
+	if c.fetcher != nil {
+		instruction, length, err := c.fetcher.FetchInstruction(ctx, pc)
+		if err != nil {
+			return cpu.Trapped, cpu.Trap{Kind: cpu.TrapMemoryFault, Address: pc, Cause: err}
+		}
+		if length == 2 {
+			return c.stepCompressed(ctx, pc, uint16(instruction))
+		}
+		return c.stepStandard(ctx, pc, instruction)
+	}
+
 	var first [2]byte
 	if err := c.memory.Read(ctx, pc, first[:]); err != nil {
 		return cpu.Trapped, cpu.Trap{Kind: cpu.TrapMemoryFault, Address: pc, Cause: err}
@@ -142,39 +161,10 @@ func (c *Core) Step(ctx context.Context) (cpu.Outcome, error) {
 	if first[0]&0x3 != 0x3 {
 		// RV64C:取 16 位编码并展开为等价的 32 位指令执行。
 		raw := binary.LittleEndian.Uint16(first[:])
-		c.machine.PC = pc + 2
-		if err := c.checkExecutable(ctx, pc, 2, uint32(raw)); err != nil {
-			return cpu.Trapped, *err
+		if trap := c.checkExecutable(ctx, pc, 2, uint32(raw)); trap != nil {
+			return cpu.Trapped, *trap
 		}
-		expanded, status := expandCompressed(raw)
-		switch status {
-		case compressedOK:
-			// C.JALR 的链接寄存器记录 2 字节指令的下一地址 pc+2,
-			// 而展开后的 32 位 JALR 语义写 pc+4:真实 libc 的每次
-			// 间接调用都会返回到指令中间。这里自行完成"目标取旧
-			// rs1、链接写 pc+2"的 JALR 语义,不以 32 位形式执行。
-			if expanded&0x7F == 0x67 && expanded>>12&0x7 == 0 && expanded>>7&0x1F == regRA {
-				target := (c.read(int(expanded >> 15 & 0x1F))) &^ 1
-				c.write(regRA, pc+2)
-				c.machine.PC = target
-				c.retired++
-				return cpu.Continued, nil
-			}
-			outcome, trap, err := c.execute(ctx, pc, expanded)
-			if err != nil {
-				return 0, err
-			}
-			if trap != nil {
-				trap.Instruction = uint32(raw)
-				return cpu.Trapped, *trap
-			}
-			c.retired++
-			return outcome, nil
-		default:
-			return cpu.Trapped, cpu.Trap{
-				Kind: cpu.TrapIllegalInstruction, Address: pc, Instruction: uint32(raw),
-			}
-		}
+		return c.stepCompressed(ctx, pc, raw)
 	}
 
 	var encoded [4]byte
@@ -183,10 +173,47 @@ func (c *Core) Step(ctx context.Context) (cpu.Outcome, error) {
 	}
 	instruction := binary.LittleEndian.Uint32(encoded[:])
 
-	c.machine.PC = pc + 4
-	if err := c.checkExecutable(ctx, pc, 4, instruction); err != nil {
-		return cpu.Trapped, *err
+	if trap := c.checkExecutable(ctx, pc, 4, instruction); trap != nil {
+		return cpu.Trapped, *trap
 	}
+	return c.stepStandard(ctx, pc, instruction)
+}
+
+func (c *Core) stepCompressed(ctx context.Context, pc uint64, raw uint16) (cpu.Outcome, error) {
+	c.machine.PC = pc + 2
+	expanded, status := expandCompressed(raw)
+	switch status {
+	case compressedOK:
+		// C.JALR 的链接寄存器记录 2 字节指令的下一地址 pc+2,
+		// 而展开后的 32 位 JALR 语义写 pc+4:真实 libc 的每次
+		// 间接调用都会返回到指令中间。这里自行完成"目标取旧
+		// rs1、链接写 pc+2"的 JALR 语义,不以 32 位形式执行。
+		if expanded&0x7F == 0x67 && expanded>>12&0x7 == 0 && expanded>>7&0x1F == regRA {
+			target := (c.read(int(expanded >> 15 & 0x1F))) &^ 1
+			c.write(regRA, pc+2)
+			c.machine.PC = target
+			c.retired++
+			return cpu.Continued, nil
+		}
+		outcome, trap, err := c.execute(ctx, pc, expanded)
+		if err != nil {
+			return 0, err
+		}
+		if trap != nil {
+			trap.Instruction = uint32(raw)
+			return cpu.Trapped, *trap
+		}
+		c.retired++
+		return outcome, nil
+	default:
+		return cpu.Trapped, cpu.Trap{
+			Kind: cpu.TrapIllegalInstruction, Address: pc, Instruction: uint32(raw),
+		}
+	}
+}
+
+func (c *Core) stepStandard(ctx context.Context, pc uint64, instruction uint32) (cpu.Outcome, error) {
+	c.machine.PC = pc + 4
 	outcome, trap, err := c.execute(ctx, pc, instruction)
 	if err != nil {
 		return 0, err

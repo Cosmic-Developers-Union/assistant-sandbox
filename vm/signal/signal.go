@@ -185,8 +185,8 @@ func (s *State) Mask() uint64 {
 // 返回 false 表示当前没有需要经信号帧投递的信号。
 func (s *State) DeliverableHandler() (Number, ActionConfig, bool) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	number, ok := s.deliverable()
+	number, ok := s.deliverableLocked()
+	s.mu.Unlock()
 	if !ok {
 		return 0, ActionConfig{}, false
 	}
@@ -275,6 +275,13 @@ func (s *State) dispositionsLocked() (uint64, [Max + 1]ActionConfig) {
 	return s.disp.ignored, s.disp.actions
 }
 
+// ignoredLocked 返回忽略位图;指令边界的高频查询不应复制整个处置数组。
+func (s *State) ignoredLocked() uint64 {
+	s.disp.mu.Lock()
+	defer s.disp.mu.Unlock()
+	return s.disp.ignored
+}
+
 // SetAction 登记 rt_sigaction 处置;KILL/STOP 不可改,EINVAL。
 func (s *State) SetAction(n Number, config ActionConfig) error {
 	if !n.Valid() {
@@ -361,7 +368,16 @@ func (s *State) SetIgnored(n Number, ignored bool) error {
 }
 
 func (s *State) deliverable() (Number, bool) {
-	ignored, actions := s.dispositionsLocked()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.deliverableLocked()
+}
+
+func (s *State) deliverableLocked() (Number, bool) {
+	if s.pending == 0 {
+		return 0, false
+	}
+	ignored := s.ignoredLocked()
 	for n := Number(1); n <= Max; n++ {
 		if s.pending&mask(n) == 0 {
 			continue
@@ -374,7 +390,6 @@ func (s *State) deliverable() (Number, bool) {
 		if s.blocked&mask(n) != 0 {
 			continue
 		}
-		_ = actions
 		return n, true
 	}
 	return 0, false
@@ -591,7 +606,7 @@ func (t *Table) Ignored(pid uint64, n Number) bool {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	ignored, _ := s.dispositionsLocked()
+	ignored := s.ignoredLocked()
 	return ignored&mask(n) != 0
 }
 
@@ -599,6 +614,11 @@ func (t *Table) state(pid uint64) *State {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.states[pid]
+}
+
+// State 返回进程的信号状态句柄;进程生命周期内句柄稳定,可缓存。
+func (t *Table) State(pid uint64) *State {
+	return t.state(pid)
 }
 
 func (t *Table) Raise(pid uint64, n Number) error {

@@ -53,6 +53,13 @@ CLI 的 `--tools=dev` 还内嵌以下固定资产,位于 `guest/devroot/assets`:
   的摘要锁定。
 - TinyCC 0.9.27_git20250106-r0,LGPL-2.1-or-later;来源与许可见上文 N10/Q28
   资产条目及 [LGPL-2.1.txt](licenses/LGPL-2.1.txt)。
+- Git 2.56.1-r0(Alpine edge riscv64 官方包),GPL-2.0-only;随附
+  libcurl(curl 许可)、libexpat(MIT)、pcre2(BSD-3-Clause)、libidn2
+  (GPL-2.0-or-later OR LGPL-3.0-or-later)、libpsl(MIT)、libunistring
+  (GPL-2.0-or-later OR LGPL-3.0-or-later)与 ca-certificates-bundle
+  (MPL-2.0 AND MIT)。完整 GPL/LGPL/BSD/MIT 文本见 `licenses/`。
+- apk-tools 3.0.10-r1 与 libapk(Alpine edge riscv64 官方包),
+  GPL-2.0-only。完整许可见 [GPL-2.0.txt](licenses/GPL-2.0.txt)。
 
 Q28 客体原生编译链验收资产(Alpine 3.22 riscv64 官方包;归档摘要由
 internal/guest/q28_toolchain_test.go 锁定):

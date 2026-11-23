@@ -44,10 +44,11 @@ CLI 默认执行客体中的真实 Bash；`--shell sh` 切换到 BusyBox sh。
 `zsh` 暂不提供 riscv64 客体资产，会返回明确错误；`userland/shell` 的
 内建 mvdan/sh 槽位已标记为废弃，只为旧 SDK/模型契约保留。
 
-默认 `--tools=dev` 同时安装 CPython 3.12、Node.js 22、npm 和 TinyCC：
+默认 `--tools=dev` 同时安装 CPython 3.12、Node.js 22、npm、Git、
+apk-tools 和 TinyCC：
 
 ```sh
-assistant-sandbox -c 'python --version; node --version; cc --version'
+assistant-sandbox -c 'python --version; node --version; git --version; apk --version; cc --version'
 ```
 
 只需要 Bash/BusyBox 时使用 `--tools=minimal`。

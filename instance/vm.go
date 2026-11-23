@@ -310,6 +310,15 @@ func newVM(ctx context.Context, opts Options, root *memfs.FS, source clock.Sourc
 		_ = kernel.Close(ctx)
 		return nil, err
 	}
+	sysView, err := buildSysfs(ctx, machine)
+	if err != nil {
+		_ = kernel.Close(ctx)
+		return nil, err
+	}
+	if err := mounts.Mount("/sys", sysView); err != nil {
+		_ = kernel.Close(ctx)
+		return nil, err
+	}
 	if err := opts.faults.afterKernel(); err != nil {
 		_ = kernel.Close(ctx)
 		return nil, err

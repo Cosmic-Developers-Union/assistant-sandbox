@@ -106,6 +106,20 @@ func TestCLIDevelopmentTools(t *testing.T) {
 	script := `set -eu
 python -c 'print("python-ok")'
 node -e 'process.stdout.write("node-ok\n")'
+git --version >/dev/null
+mkdir -p /work/repo
+cd /work/repo
+git init -q
+git config user.name dev
+git config user.email dev@example.test
+printf 'hello\n' > README
+git add README
+git commit -qm initial
+test -n "$$(git rev-parse HEAD)"
+apk --version >/dev/null
+test -r /sys/kernel/osrelease
+test -r /proc/self/status
+cd /work
 printf 'int main(void){return 0;}\n' > /work/dev.c
 cc -o /work/dev /work/dev.c
 /work/dev

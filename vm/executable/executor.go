@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"runtime/debug"
 	"sync"
+	"sync/atomic"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/proc"
@@ -113,10 +114,12 @@ func NewBuiltin() *Builtin { return &Builtin{} }
 // 解释器在指令边界的 ctx.Err() 检查处暂停推进;恢复或父上下文
 // 结束(如关闭强制终止)后放行。无需程序主动配合。
 type pauseGate struct {
-	mu     sync.Mutex
-	cond   *sync.Cond
-	parent context.Context
-	parked bool
+	mu        sync.Mutex
+	cond      *sync.Cond
+	parent    context.Context
+	parked    atomic.Bool
+	parentErr atomic.Pointer[error]
+	cancelled chan struct{}
 
 	// observer 观察驻停状态变化(H02):进入驻停前与恢复后各回调
 	// 一次,供内核归还/重新排队执行权;回调在锁外执行。
@@ -124,12 +127,18 @@ type pauseGate struct {
 }
 
 func newPauseGate(parent context.Context, done <-chan struct{}) *pauseGate {
-	gate := &pauseGate{parent: parent}
+	gate := &pauseGate{
+		parent:    parent,
+		cancelled: make(chan struct{}),
+	}
 	gate.cond = sync.NewCond(&gate.mu)
 	// 父上下文取消(关闭/强制终止)或实例结束时唤醒所有驻停的 Err() 调用。
 	go func() {
 		select {
 		case <-parent.Done():
+			err := parent.Err()
+			gate.parentErr.Store(&err)
+			close(gate.cancelled)
 		case <-done:
 		}
 		gate.cond.Broadcast()
@@ -139,19 +148,25 @@ func newPauseGate(parent context.Context, done <-chan struct{}) *pauseGate {
 
 func (g *pauseGate) park() {
 	g.mu.Lock()
-	g.parked = true
-	g.mu.Unlock()
+	g.parked.Store(true)
 	g.cond.Broadcast()
+	g.mu.Unlock()
 }
 
 func (g *pauseGate) resume() {
 	g.mu.Lock()
-	g.parked = false
-	g.mu.Unlock()
+	g.parked.Store(false)
 	g.cond.Broadcast()
+	g.mu.Unlock()
 }
 
 func (g *pauseGate) Err() error {
+	if err := g.parentErr.Load(); err != nil {
+		return *err
+	}
+	if !g.parked.Load() {
+		return nil
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	observed := false
@@ -171,7 +186,7 @@ func (g *pauseGate) Err() error {
 			notify(false)
 		}
 	}()
-	for g.parked {
+	for g.parked.Load() {
 		// 父上下文取消(KILL/关闭等强制终止)优先于驻停:
 		// 唤醒等待者放行,程序经 ctx.Err() 观察取消。
 		if err := g.parent.Err(); err != nil {
@@ -207,6 +222,8 @@ type gateContext struct {
 }
 
 func (c gateContext) Err() error { return c.gate.Err() }
+
+func (c gateContext) Done() <-chan struct{} { return c.gate.cancelled }
 
 var _ context.Context = gateContext{}
 

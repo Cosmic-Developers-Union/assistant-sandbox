@@ -20,7 +20,7 @@ func TestInstallProvidesDevelopmentTools(t *testing.T) {
 	t.Logf("install took %s", time.Since(start))
 	for _, name := range []string{
 		"/usr/bin/python", "/usr/bin/python3.12", "/usr/bin/node-bin",
-		"/usr/bin/npm", "/usr/bin/cc",
+		"/usr/bin/npm", "/usr/bin/cc", "/usr/bin/git", "/sbin/apk",
 	} {
 		if _, err := system.Stat(t.Context(), name); err != nil {
 			t.Fatalf("缺少 %s: %v", name, err)
