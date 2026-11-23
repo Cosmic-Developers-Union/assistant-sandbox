@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"time"
 
 	nativeshell "github.com/Cosmic-Developers-Union/assistant-sandbox/guest/native"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/instance"
@@ -29,6 +30,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	module := flags.String("module", "", "已弃用：兼容旧 WASI CLI 参数，原生 VM 忽略")
 	command := flags.StringP("command", "c", "", "shell 脚本（默认 Bash）；未指定时读取标准输入")
 	shellName := flags.String("shell", "bash", "原生客体 shell: bash 或 sh（zsh 暂不支持）")
+	noPTY := flags.Bool("no-pty", false, "禁用宿主 PTY，仅用于排查终端兼容问题")
 	readOnly := flags.Bool("read-only", false, "工作区只读（当前原生 VM 明确拒绝）")
 	session := flags.Bool("session", false, "从 stdin 运行 shell 并保持同一 VM 会话")
 	dryRun := flags.Bool("dry-run", false, "显示执行配置")
@@ -88,7 +90,11 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	if err != nil {
 		return 1, err
 	}
-	defer func() { _ = machine.Close(context.Background()) }()
+	defer func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = machine.Close(closeCtx)
+	}()
 	if err := nativeshell.Install(ctx, machine.Filesystem()); err != nil {
 		return 1, err
 	}
@@ -97,7 +103,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 			return 1, err
 		}
 	}
-	interactive := *session && terminalPair(stdin, stdout)
+	interactive := *session && !*noPTY && terminalPair(stdin, stdout)
 	terminalName := "dumb"
 	if interactive {
 		terminalName = os.Getenv("TERM")
@@ -166,7 +172,7 @@ func stdinIsTerminal(r io.Reader) bool {
 }
 
 func main() {
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, cancel := signal.NotifyContext(context.Background(), interruptSignals()...)
 	code, err := run(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
 	cancel()
 	if err != nil {

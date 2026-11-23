@@ -2,13 +2,17 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
+	"sync"
+	"time"
 
 	nativeshell "github.com/Cosmic-Developers-Union/assistant-sandbox/guest/native"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/instance"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fd"
 	vmfs "github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fs"
+	vmsignal "github.com/Cosmic-Developers-Union/assistant-sandbox/vm/signal"
 	"golang.org/x/term"
 )
 
@@ -53,12 +57,6 @@ func runPTY(
 			_ = terminal.SetState(state)
 		}
 	}
-	hostState, err := term.MakeRaw(int(stdin.Fd()))
-	if err != nil {
-		return 1, err
-	}
-	defer func() { _ = term.Restore(int(stdin.Fd()), hostState) }()
-
 	args := []string{"-i"}
 	if shell == nativeshell.Bash {
 		args = []string{"--noprofile", "--norc", "--noediting", "-i"}
@@ -73,6 +71,17 @@ func runPTY(
 	if err != nil {
 		return 1, err
 	}
+	hostState, err := term.MakeRaw(int(stdin.Fd()))
+	if err != nil {
+		return 1, err
+	}
+	var restoreOnce sync.Once
+	restore := func() {
+		restoreOnce.Do(func() { _ = term.Restore(int(stdin.Fd()), hostState) })
+	}
+	defer restore()
+	stopRestore := context.AfterFunc(ctx, restore)
+	defer stopRestore()
 
 	outputDone := make(chan struct{})
 	go func() {
@@ -82,9 +91,24 @@ func runPTY(
 	go func() { _, _ = io.Copy(master, stdin) }()
 
 	state, err := connection.Wait(ctx, process.ID)
-	_ = master.Close()
-	<-outputDone
 	if err != nil {
+		// 宿主收到终止信号时取消 Wait；客体进程仍可能活着，先杀掉
+		// 前台进程组，避免 VM.Close 无限等待。
+		_ = machine.Kernel().SignalGroup(process.PGID, vmsignal.KILL)
+		killCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_, _ = connection.Wait(killCtx, process.ID)
+		cancel()
+	}
+	_ = master.Close()
+	select {
+	case <-outputDone:
+	case <-time.After(time.Second):
+		// PTY master 已关闭；若客体输出线程仍未退出，不让终端会话无限卡死。
+	}
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return 1, nil
+		}
 		return 1, err
 	}
 	return int(state.ExitCode), nil

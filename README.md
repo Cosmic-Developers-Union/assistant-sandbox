@@ -46,6 +46,9 @@ CLI 默认执行客体中的真实 Bash；`--shell sh` 切换到 BusyBox sh。
 交互会话通过 VM PTY 提供回显、`Ctrl-C`/`Ctrl-D` 与作业控制。Bash
 当前使用 `--noediting`，因此方向键历史与 readline 补全暂不可用；
 脚本和 CI 建议使用 `-c` 或从管道传入完整脚本。
+CLI 会捕获 `SIGINT`/`SIGTERM`/`SIGHUP`/`SIGQUIT` 并恢复宿主终端；
+若终端模拟器自身崩溃或 CLI 被 `SIGKILL` 强制终止，可先执行
+`stty sane` 或 `reset`。终端兼容问题可用 `--no-pty` 退回普通管道会话。
 默认不挂载宿主目录：只有显式传入 `--dir` 才把该目录映射到客体
 `/work`；不传时使用临时内存工作区。
 
