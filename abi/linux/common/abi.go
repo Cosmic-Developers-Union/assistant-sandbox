@@ -666,7 +666,7 @@ func NewRunner(config Config) (*Runner, error) {
 	return runner, nil
 }
 
-const batchStepLimit = 64
+const batchStepLimit = 1024
 
 func (r *Runner) Run(ctx context.Context) (uint64, error) {
 	for {

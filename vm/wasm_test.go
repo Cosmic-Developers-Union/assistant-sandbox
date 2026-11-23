@@ -81,6 +81,12 @@ func TestVMProductionCodeHasNoAmbientHostImports(t *testing.T) {
 		// 标准流的 fstat 视图;time 仅用于 FileInfo.ModTime 的零值。
 		"vm/fd/table.go": {"time": true},
 
+		// 原生批量执行把持锁期间的页/译码切片地址传给同进程 C++ 解释器;
+		// 仅内存寻址,不访问宿主文件、网络、时钟或进程能力。
+		"executor/cpu/riscv64/batch.go":   {"unsafe": true},
+		"executor/cpu/riscv64/hot_cgo.go": {"unsafe": true},
+		"vm/memory/table.go":              {"unsafe": true},
+
 		"filesystem/packagefs/packagefs.go": {"time": true},
 
 		"userland/toolcompat/goawk/interp/interp.go":   {"os": true, "math/rand": true},

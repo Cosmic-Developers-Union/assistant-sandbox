@@ -5,7 +5,6 @@ package devroot
 import (
 	"archive/tar"
 	"bytes"
-	"compress/gzip"
 	"context"
 	"embed"
 	"errors"
@@ -13,10 +12,13 @@ import (
 	"io"
 	stdfs "io/fs"
 	"path"
+	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 	vmfs "github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fs"
+	"github.com/klauspost/compress/zstd"
 )
 
 const maxArchiveFileBytes = 128 << 20
@@ -42,36 +44,56 @@ func Install(ctx context.Context, system vmfs.System) error {
 			return err
 		}
 	}
-	pythonAPK, err := asset("python3-3.12.16-r0.apk")
+	pythonAPK, err := asset("python3-3.12.16-r0.tar.zst")
 	if err != nil {
 		return err
 	}
 	if err := extract(ctx, system, pythonAPK, "/", pythonAPKEntry); err != nil {
 		return fmt.Errorf("安装 CPython: %w", err)
 	}
-	for _, item := range []struct {
+	items := []struct {
 		name      string
 		dest      string
 		onlyFiles bool
 	}{
-		{"python312-libs.tar.gz", "/", false},
-		{"python312-pyc.tar.gz", "/usr/lib/python3.12", true},
-		{"python312-dev-headers.tar.gz", "/", false},
-		{"node22-runtime.tar.gz", "/", false},
-		{"npm-11.6.4.tar.gz", "/", false},
-		{"tcc-riscv64-toolchain.tar.gz", "/", false},
-		{"git-2.56.1-runtime.tar.gz", "/", false},
-		{"apk-tools-3.0.10-runtime.tar.gz", "/", false},
-	} {
-		data, err := asset(item.name)
-		if err != nil {
-			return err
-		}
-		if err := extract(ctx, system, data, item.dest, func(name string) bool {
-			return !item.onlyFiles || !strings.HasSuffix(name, "/")
-		}); err != nil {
-			return fmt.Errorf("安装 %s: %w", item.name, err)
-		}
+		{"python312-libs.tar.zst", "/", false},
+		{"python312-pyc.tar.zst", "/usr/lib/python3.12", true},
+		{"python312-dev-headers.tar.zst", "/", false},
+		{"node22-runtime.tar.zst", "/", false},
+		{"npm-11.6.4.tar.zst", "/", false},
+		{"tcc-riscv64-toolchain.tar.zst", "/", false},
+		{"git-2.56.1-runtime.tar.zst", "/", false},
+		{"apk-tools-3.0.10-runtime.tar.zst", "/", false},
+	}
+	workers := min(runtime.GOMAXPROCS(0), len(items))
+	semaphore := make(chan struct{}, workers)
+	var (
+		wait     sync.WaitGroup
+		errorMu  sync.Mutex
+		firstErr error
+	)
+	for _, item := range items {
+		wait.Go(func() {
+			semaphore <- struct{}{}
+			defer func() { <-semaphore }()
+			data, err := asset(item.name)
+			if err == nil {
+				err = extract(ctx, system, data, item.dest, func(name string) bool {
+					return !item.onlyFiles || !strings.HasSuffix(name, "/")
+				})
+			}
+			if err != nil {
+				errorMu.Lock()
+				if firstErr == nil {
+					firstErr = fmt.Errorf("安装 %s: %w", item.name, err)
+				}
+				errorMu.Unlock()
+			}
+		})
+	}
+	wait.Wait()
+	if firstErr != nil {
+		return firstErr
 	}
 	for _, link := range [][2]string{
 		{"/usr/bin/python", "python3.12"},
@@ -135,11 +157,11 @@ func extract(
 	destination string,
 	include func(string) bool,
 ) error {
-	reader, err := gzip.NewReader(bytes.NewReader(archive))
+	reader, err := zstd.NewReader(bytes.NewReader(archive))
 	if err != nil {
 		return err
 	}
-	defer func() { _ = reader.Close() }()
+	defer reader.Close()
 	files := tar.NewReader(reader)
 	for {
 		if err := ctx.Err(); err != nil {

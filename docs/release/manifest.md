@@ -9,13 +9,13 @@
 | --- | --- | --- |
 | Go SDK/CLI | `assistant-sandbox` HEAD | 由 `make release` 写入 `dist/SHA256SUMS` |
 | WASI Bash 客体 | 构建器生成 `assistant-bash.wasm.gz` | 由 `dist/SHA256SUMS` 固定 |
-| CPython 客体 | 3.12.16 Alpine 3.22 riscv64 | `f8831c8c9716c74cac6e2d950ccac7585d64e5f3dfbebad76677bd68eba32486` |
-| Node.js 客体 | 22.23.5-r0 Alpine 3.22 riscv64 | `49c1cca5b16b0ada706083d8e50b003a3e79723d9d2e760cf3400e24442210df` |
+| CPython 客体 | 3.12.16 Alpine 3.22 riscv64（zstd tar） | `be182df1d7aa55ebe0f63ee6967a142f63ab0bb7291b6fcb2e5156a3af0b46b1` |
+| Node.js 客体 | 22.23.5-r0 Alpine 3.22 riscv64（zstd tar） | `23f6695490aee03ed372669896e37640e13b71a6b66cc2a5298d7fa69779294b` |
 | TinyCC 客体工具链 | 0.9.28rc/0.9.27 git Alpine | `dc16d9d4e2b8f3bd1301cf20519efc35fd44ab3ee7a05db3988c16d3bd73ce04` |
 | GCC C++ 客体工具链 | GCC 14.2.0-r6/Binutils 2.44 | `a9a452dc848090af9661f8af25f9d541683edb7d665cf4cb1a55f958623199d5` |
 | Node 头文件/node-gyp 工具链 | Node 22.23.5/GNU make 4.4.1 | `ff581db506abf7e4a29a8ffccadb44f9d2c46031391cad2084575859a3483e61` |
-| Git 客体运行时 | 2.56.1-r0 Alpine edge riscv64 | `a2d0f28913ca6a290df6492cd4c85a2cbac85da7bfc3e8cde7e46b6e06a3e1c0` |
-| apk-tools 客体运行时 | 3.0.10-r1 Alpine edge riscv64 | `c291067f9dfc560eb3f6d75f7915cd30bddd6b316ea156ab26ff1b6de97f55f8` |
+| Git 客体运行时 | 2.56.1-r0 Alpine edge riscv64（zstd tar） | `133cec2d195ff3814ace2d023e115a5880ccab3b0851e1c2952973099e9fb1b1` |
+| apk-tools 客体运行时 | 3.0.10-r1 Alpine edge riscv64（zstd tar） | `fa9e89010241f9d9ee9531a23af45b4414f584d0b84988a2538bb94c3da68818` |
 
 ## 许可证与 SBOM
 

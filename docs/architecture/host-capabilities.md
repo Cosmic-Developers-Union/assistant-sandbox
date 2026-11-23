@@ -19,6 +19,7 @@
 | 宿主进程 | `internal/build`、`internal/diff`、`test/posix` | 仅构建、差分参考执行与 POSIX 测试；客体执行路径不可达 |
 | CLI 终端 | `cmd/assistant-sandbox/pty.go`、`signals_*.go` | 仅把宿主 stdin/stdout 桥接到 VM PTY；使用 `term` 切换 raw 模式，并捕获终止信号恢复终端，不读取宿主文件 |
 | 扩展模块 | `vm/bridge.Bridge`、`capability.Set.Bridge` | 扩展调用必须经能力端口，不能取得宿主引用 |
+| 原生批量执行（受控 unsafe） | `executor/cpu/riscv64/batch.go`、`hot_cgo.go`、`vm/memory/table.go` | 仅把持锁期间的页数据/译码指令切片地址传给同进程批量解释器；调用期间锁覆盖生命周期，不读取宿主文件、网络、时钟或进程能力，WASM 构建不编译 cgo 路径 |
 | WASI 部署（已退役） | `internal/legacy/wasm.go`、`platform/modules` | 旧 Runtime/Session 只由 `test/posix` 显式调用；公开 VM 入口为 `instance`/`model`（R06 收敛） |
 
 ## 已审计的显式例外

@@ -4,6 +4,8 @@ import (
 	"cmp"
 	"context"
 	"encoding/binary"
+	"errors"
+	"io"
 	"reflect"
 	"slices"
 	"sync"
@@ -94,7 +96,7 @@ func (b fileBackend) ReadAt(offset uint64, buffer []byte) error {
 		return nil
 	}
 	n, err := b.file.ReadAt(buffer, int64(offset))
-	if err != nil && n == 0 {
+	if err != nil && !errors.Is(err, io.EOF) && n == 0 {
 		return err
 	}
 	// 短读(越过文件尾):剩余部分保持零(mmap 零页语义)。

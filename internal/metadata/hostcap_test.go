@@ -45,7 +45,12 @@ var hostImportAllowlist = map[string]map[string]bool{
 	"crypto/rand": {
 		"platform/entropy/entropy_native.go": true, "platform/entropy/entropy_wasi.go": true,
 	},
-	"unsafe": {"platform/modules/modules_wasi.go": true},
+	"unsafe": {
+		"platform/modules/modules_wasi.go": true,
+		// 原生批量执行:只传递持锁页/译码切片地址,不是宿主资源入口。
+		"executor/cpu/riscv64/batch.go": true, "executor/cpu/riscv64/hot_cgo.go": true,
+		"vm/memory/table.go": true,
+	},
 	"net": {
 		"platform/network/network.go": true,
 	},

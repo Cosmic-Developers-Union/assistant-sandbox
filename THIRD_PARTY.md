@@ -8,9 +8,11 @@
 - github.com/mattn/go-runewidth v0.0.23，MIT。来源：https://github.com/mattn/go-runewidth/tree/v0.0.23 ，完整许可见 [go-runewidth-LICENSE](licenses/go-runewidth-LICENSE)。
 - github.com/spf13/pflag v1.0.10，BSD-3-Clause。来源：https://github.com/spf13/pflag/tree/v1.0.10 ，完整许可见 [spf13-pflag-LICENSE](licenses/spf13-pflag-LICENSE)。
 - golang.org/x/crypto v0.56.0，BSD-3-Clause(Go 许可)。来源：https://cs.opensource.google/go/x/crypto/+/v0.56.0 ，完整许可见 [x-crypto-LICENSE](licenses/x-crypto-LICENSE)。
+- github.com/klauspost/compress v1.20.5，BSD-3-Clause（`zstd` 等包；`gzhttp` 子包为 Apache-2.0）。来源：https://github.com/klauspost/compress/tree/v1.20.5 ，完整许可见 [klauspost-compress-LICENSE](licenses/klauspost-compress-LICENSE)。
 - github.com/clipperhouse/uax29/v2 v2.7.0(间接)，MIT。来源：https://github.com/clipperhouse/uax29/tree/v2.7.0 ，完整许可见 [uax29-LICENSE](licenses/uax29-LICENSE)。
 - golang.org/x/sys v0.48.0(间接)，BSD-3-Clause(Go 许可)。完整许可见 [x-sys-LICENSE](licenses/x-sys-LICENSE)。
 - golang.org/x/term v0.46.0，BSD-3-Clause(Go 许可)。完整许可见 [x-term-LICENSE](licenses/x-term-LICENSE)。
+- github.com/klauspost/compress v1.20.5，BSD-3-Clause。来源：https://github.com/klauspost/compress/tree/v1.20.5 ，完整许可见 [klauspost-compress-LICENSE](licenses/klauspost-compress-LICENSE)。
 
 内嵌与适配代码:
 
@@ -46,9 +48,10 @@ N10 真实 Bash 与基础工具验收资产(Alpine 3.22 riscv64 官方包;
 CLI 的 `--tools=dev` 还内嵌以下固定资产,位于 `guest/devroot/assets`:
 
 - CPython 3.12.16(Alpine 3.22 riscv64),PSF-2.0;来源包
-  `python3-3.12.16-r0.apk`。
+  `python3-3.12.16-r0.apk`，内嵌为 zstd tar `python3-3.12.16-r0.tar.zst`。
 - Node.js 22.23.5 与 ICU 数据,MIT;来源归档由
-  `internal/guest/node_helpers_test.go` 的摘要锁定。
+  `internal/guest/node_helpers_test.go` 的摘要锁定；开发根使用
+  `node22-runtime.tar.zst`。
 - npm 11.6.4,Artistic-2.0;来源归档由 `internal/guest/node_helpers_test.go`
   的摘要锁定。
 - TinyCC 0.9.27_git20250106-r0,LGPL-2.1-or-later;来源与许可见上文 N10/Q28
