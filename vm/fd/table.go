@@ -18,6 +18,7 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/eventfd"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/inotify"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/pipe"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/poll"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/signalfd"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/timerfd"
 )
@@ -817,6 +818,13 @@ func (s *stream) Read(p []byte) (int, error) {
 	if s.reader == nil {
 		return 0, io.EOF
 	}
+	if s.nonblock.Load() {
+		if terminal, ok := s.reader.(interface {
+			Ready() poll.Readiness
+		}); ok && terminal.Ready()&poll.Readable == 0 {
+			return 0, errno.WouldBlock
+		}
+	}
 	return s.reader.Read(p)
 }
 func (s *stream) Write(p []byte) (int, error) {
@@ -938,6 +946,28 @@ func (s *stream) ForegroundSupported() bool {
 	}
 	foreground, ok := terminal.(ForegroundTerminal)
 	return ok && foreground.ForegroundSupported()
+}
+
+func (s *stream) pollSource() (poll.Source, bool) {
+	if source, ok := s.reader.(poll.Source); ok {
+		return source, true
+	}
+	source, ok := s.writer.(poll.Source)
+	return source, ok
+}
+
+func (s *stream) Ready() poll.Readiness {
+	if source, ok := s.pollSource(); ok {
+		return source.Ready()
+	}
+	return poll.Readable | poll.Writable
+}
+
+func (s *stream) OnChange(fn func()) func() {
+	if source, ok := s.pollSource(); ok {
+		return source.OnChange(fn)
+	}
+	return func() {}
 }
 
 func (t *Table) SetTabStops(stops []uint16) error {

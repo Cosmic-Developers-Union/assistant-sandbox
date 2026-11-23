@@ -29,6 +29,7 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/memory"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/net"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/pipe"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/poll"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/proc"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/replay"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/resources"
@@ -2158,6 +2159,25 @@ func (m meteredStream) ForegroundSupported() bool {
 	}
 	foreground, ok := terminal.(fd.ForegroundTerminal)
 	return ok && foreground.ForegroundSupported()
+}
+
+func (m meteredStream) pollSource() (poll.Source, bool) {
+	source, ok := m.inner.(poll.Source)
+	return source, ok
+}
+
+func (m meteredStream) Ready() poll.Readiness {
+	if source, ok := m.pollSource(); ok {
+		return source.Ready()
+	}
+	return poll.Readable | poll.Writable
+}
+
+func (m meteredStream) OnChange(fn func()) func() {
+	if source, ok := m.pollSource(); ok {
+		return source.OnChange(fn)
+	}
+	return func() {}
 }
 
 // Failed 报告内核是否因客体故障进入失败状态(T01/T02)。

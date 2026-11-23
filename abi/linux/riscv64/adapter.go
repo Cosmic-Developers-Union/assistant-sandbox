@@ -82,8 +82,8 @@ const (
 	numberFtruncate        = 46
 	numberFcntl            = 25
 	numberPipe2            = 59
-	numberPoll             = 73
-	numberPpoll            = 293
+	numberPoll             = 7
+	numberPpoll            = 73
 	numberDup3             = 24
 	numberGetdents64       = 61
 	numberNewfstatat       = 79

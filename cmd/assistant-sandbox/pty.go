@@ -52,8 +52,8 @@ func runPTY(
 			SetState(fd.TerminalState) error
 		}); ok {
 			state := terminal.State()
-			state.Rows = terminalDimension(rows)
-			state.Columns = terminalDimension(columns)
+			state.Rows = terminalDimension(rows, 24)
+			state.Columns = terminalDimension(columns, 80)
 			_ = terminal.SetState(state)
 		}
 	}
@@ -120,9 +120,12 @@ func runPTY(
 	return int(state.ExitCode), nil
 }
 
-func terminalDimension(value int) uint16 {
+func terminalDimension(value, fallback int) uint16 {
 	if value < 1 {
-		return 1
+		value = fallback
+	}
+	if value < 1 {
+		value = 1
 	}
 	if value > int(^uint16(0)) {
 		return ^uint16(0)

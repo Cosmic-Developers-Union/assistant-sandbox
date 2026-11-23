@@ -15,6 +15,7 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fd"
 	vmfs "github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fs"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/poll"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/proc"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/tty"
 )
@@ -142,6 +143,10 @@ func (s *Slave) SetForeground(pgid uint64) error {
 
 func (s *Slave) ForegroundSupported() bool { return true }
 
+func (s *Slave) Ready() poll.Readiness { return s.pair.terminal.Ready() }
+
+func (s *Slave) OnChange(fn func()) func() { return s.pair.terminal.OnChange(fn) }
+
 type slaveFile struct {
 	slave *Slave
 }
@@ -159,6 +164,8 @@ func (f *slaveFile) SetState(state fd.TerminalState) error { return f.slave.SetS
 func (f *slaveFile) Foreground() uint64                    { return f.slave.Foreground() }
 func (f *slaveFile) SetForeground(pgid uint64) error       { return f.slave.SetForeground(pgid) }
 func (f *slaveFile) ForegroundSupported() bool             { return true }
+func (f *slaveFile) Ready() poll.Readiness                 { return f.slave.Ready() }
+func (f *slaveFile) OnChange(fn func()) func()             { return f.slave.OnChange(fn) }
 
 type slaveFS struct{ manager *Manager }
 
