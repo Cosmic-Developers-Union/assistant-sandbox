@@ -35,6 +35,9 @@ make install
 assistant-sandbox --dir . -c 'printf hello'
 ```
 
+在终端直接运行 `assistant-sandbox --dir .` 会进入逐行交互会话；
+一次性脚本请用 `-c`，或把脚本从管道传入。
+
 `make install` 将 CLI 安装到 `$(PREFIX)/bin`，客体安装到
 `$(PREFIX)/share/assistant-sandbox`，默认前缀为 `$HOME/.local`。
 仅安装 Go CLI 时需要通过 `--module` 指定客体文件。`--help` 和 `--dry-run`

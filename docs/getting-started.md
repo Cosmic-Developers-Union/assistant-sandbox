@@ -32,6 +32,10 @@ make build
 `--dir` 只挂载授权工作区;单次命令执行结束后 CLI 负责 Shutdown。
 持续会话使用 `--session` 逐行执行,或用下方 Go API。
 
+在交互终端直接运行 `./assistant-sandbox --dir "$PWD"` 会自动进入同一
+逐行会话(输入 `Ctrl-D` 退出);从管道或文件输入且未指定 `-c` 时,
+仍会把 stdin 作为完整脚本读取到 EOF。
+
 ## 3. 运行真实 CPython 与 Node.js
 
 固定版本运行时资产随 `internal/guest/testdata` 提供;以下测试在

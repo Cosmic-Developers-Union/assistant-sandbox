@@ -15,6 +15,7 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/userland/shell"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fd"
 	"github.com/spf13/pflag"
+	"golang.org/x/term"
 )
 
 // run 只调用公开 VM API(instance/shell):单次执行在同一个 VM 内核
@@ -59,6 +60,13 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	}
 	if *dryRun {
 		return 0, nil
+	}
+	// 终端里的裸 `assistant-sandbox` 不能把 stdin 读到 EOF:用户会
+	// 输入命令但永远没有 EOF,表现为卡住。交互终端自动进入逐行会话;
+	// 管道/文件输入仍保留“无 -c 时读取完整脚本”的语义。
+	if !*session && *command == "" && stdinIsTerminal(stdin) {
+		*session = true
+		_, _ = fmt.Fprintln(stderr, "进入交互会话；输入命令后回车，Ctrl-D 退出")
 	}
 	if *command == "" && !*session {
 		data, err := io.ReadAll(io.LimitReader(stdin, (64<<10)+1))
@@ -125,6 +133,11 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return 1, err
 	}
 	return output.Status, nil
+}
+
+func stdinIsTerminal(r io.Reader) bool {
+	file, ok := r.(*os.File)
+	return ok && term.IsTerminal(int(file.Fd()))
 }
 
 func main() {
