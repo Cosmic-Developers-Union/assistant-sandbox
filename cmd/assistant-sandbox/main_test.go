@@ -51,3 +51,25 @@ func TestCLIDryRunIsSideEffectFree(t *testing.T) {
 		t.Fatalf("dry-run 产生副作用: %v", err)
 	}
 }
+
+// TestCLIDefaultDoesNotMountWorkingDirectory 验证安全默认:未显式指定
+// --dir 时,宿主当前目录不会成为客体 /work;写入只留在临时 VM 内。
+func TestCLIDefaultDoesNotMountWorkingDirectory(t *testing.T) {
+	dir := t.TempDir()
+	original, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(original) })
+	output, diagnostic := &bytes.Buffer{}, &bytes.Buffer{}
+	code, err := run(t.Context(), []string{"-c", "printf data > /work/private"}, strings.NewReader(""), output, diagnostic)
+	if err != nil || code != 0 {
+		t.Fatalf("code=%d err=%v stdout=%q stderr=%q", code, err, output.String(), diagnostic.String())
+	}
+	if _, err := os.Stat(filepath.Join(dir, "private")); !os.IsNotExist(err) {
+		t.Fatalf("默认行为把当前目录挂载到了 /work: %v", err)
+	}
+}

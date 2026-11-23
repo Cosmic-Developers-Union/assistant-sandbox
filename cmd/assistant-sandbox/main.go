@@ -26,8 +26,8 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	}
 	flags := pflag.NewFlagSet("assistant-sandbox", pflag.ContinueOnError)
 	flags.SetOutput(stderr)
-	dir := flags.String("dir", ".", "工作区目录")
-	module := flags.String("module", "", "兼容旧参数；原生 VM 不使用 WASI 模块")
+	dir := flags.String("dir", "", "要挂载到 /work 的宿主目录；为空时使用临时内存 /work")
+	module := flags.String("module", "", "已弃用：兼容旧 WASI CLI 参数，原生 VM 忽略")
 	command := flags.StringP("command", "c", "", "Bash 脚本；未指定时读取标准输入")
 	readOnly := flags.Bool("read-only", false, "工作区只读（当前原生 VM 明确拒绝）")
 	session := flags.Bool("session", false, "从 stdin 逐行执行并保持同一 VM/Bash 会话")
@@ -48,9 +48,14 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	if *readOnly {
 		return 1, errors.New("原生 VM 尚未接入只读工作区")
 	}
-	workspace, err := filepath.Abs(*dir)
-	if err != nil {
-		return 1, err
+	workspace := "未挂载（临时内存 /work）"
+	mountWorkspace := *dir != ""
+	if mountWorkspace {
+		absolute, err := filepath.Abs(*dir)
+		if err != nil {
+			return 1, err
+		}
+		workspace = absolute
 	}
 	if *module != "" && (*verbose || *debug) {
 		_, _ = fmt.Fprintf(stderr, "忽略 --module=%s（原生 Linux ABI VM）\n", *module)
@@ -80,8 +85,10 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return 1, err
 	}
 	defer func() { _ = machine.Close(context.Background()) }()
-	if err := machine.Mounts().Mount(instance.WorkRoot, filesystem.NewMountFilesystem(workspace)); err != nil {
-		return 1, err
+	if mountWorkspace {
+		if err := machine.Mounts().Mount(instance.WorkRoot, filesystem.NewMountFilesystem(workspace)); err != nil {
+			return 1, err
+		}
 	}
 	environment := []string{
 		"HOME=" + instance.WorkRoot,

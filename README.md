@@ -37,6 +37,8 @@ assistant-sandbox --dir . -c 'printf hello'
 
 在终端直接运行 `assistant-sandbox --dir .` 会进入逐行交互会话；
 一次性脚本请用 `-c`，或把脚本从管道传入。
+默认不挂载宿主目录：只有显式传入 `--dir` 才把该目录映射到客体
+`/work`；不传时使用临时内存工作区。
 
 `make install` 将 CLI 安装到 `$(PREFIX)/bin`，客体安装到
 `$(PREFIX)/share/assistant-sandbox`，默认前缀为 `$HOME/.local`。

@@ -29,8 +29,9 @@ make build
 ./assistant-sandbox --dir "$PWD" -c 'printf bash-ok'
 ```
 
-`--dir` 只挂载授权工作区;单次命令执行结束后 CLI 负责 Shutdown。
-持续会话使用 `--session` 逐行执行,或用下方 Go API。
+`--dir` 只挂载显式授权的宿主工作区;省略 `--dir` 时 `/work` 是临时
+内存目录,不会把当前目录映射进 VM。单次命令执行结束后 CLI 负责
+Shutdown。持续会话使用 `--session` 逐行执行,或用下方 Go API。
 
 在交互终端直接运行 `./assistant-sandbox --dir "$PWD"` 会自动进入同一
 逐行会话(输入 `Ctrl-D` 退出);从管道或文件输入且未指定 `-c` 时,
