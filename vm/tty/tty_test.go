@@ -60,6 +60,31 @@ func TestCanonicalLineDiscipline(t *testing.T) {
 	}
 }
 
+func TestCanonicalEraseAndKill(t *testing.T) {
+	term, err := New(Flags{Canonical: true, Echo: true}, Size{}, 256, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := term.Input([]byte("abc\x7f\x7fd\n")); err != nil {
+		t.Fatal(err)
+	}
+	buffer := make([]byte, 16)
+	n, err := term.Read(buffer)
+	if err != nil || string(buffer[:n]) != "ad\n" {
+		t.Fatalf("read=%q err=%v", buffer[:n], err)
+	}
+	if echo := string(term.Drain()); echo != "abc\b \b\b \bd\n" {
+		t.Fatalf("echo=%q", echo)
+	}
+	if _, err := term.Input([]byte("junk\x15ok\n")); err != nil {
+		t.Fatal(err)
+	}
+	n, err = term.Read(buffer)
+	if err != nil || string(buffer[:n]) != "ok\n" {
+		t.Fatalf("kill read=%q err=%v", buffer[:n], err)
+	}
+}
+
 func TestISIGRaisesSignalsToForeground(t *testing.T) {
 	signals, raise := recorder()
 	term, err := New(Flags{Canonical: true, ISIG: true}, Size{}, 256, raise)

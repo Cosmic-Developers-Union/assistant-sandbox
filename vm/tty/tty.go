@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fd"
@@ -20,6 +21,9 @@ const (
 	charQUIT = 0x1C
 	charCR   = 0x0D
 	charNL   = 0x0A
+	charKILL = 0x15
+	charDEL  = 0x7F
+	charBS   = 0x08
 )
 
 type Flags struct {
@@ -164,6 +168,24 @@ func (t *Terminal) Input(p []byte) (int, error) {
 				copy(line, t.pending)
 				t.lines = append(t.lines, line)
 				t.pending = t.pending[:0]
+				continue
+			case charDEL, charBS:
+				if len(t.pending) > 0 {
+					_, size := utf8.DecodeLastRune(t.pending)
+					t.pending = t.pending[:len(t.pending)-size]
+					if t.flags.Echo {
+						echo = append(echo, '\b', ' ', '\b')
+					}
+				}
+				continue
+			case charKILL:
+				for len(t.pending) > 0 {
+					_, size := utf8.DecodeLastRune(t.pending)
+					t.pending = t.pending[:len(t.pending)-size]
+					if t.flags.Echo {
+						echo = append(echo, '\b', ' ', '\b')
+					}
+				}
 				continue
 			}
 			t.pending = append(t.pending, b)
