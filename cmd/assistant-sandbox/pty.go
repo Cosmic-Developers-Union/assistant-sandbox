@@ -88,7 +88,13 @@ func runPTY(
 		defer close(outputDone)
 		_, _ = io.Copy(&crlfWriter{writer: stdout}, master)
 	}()
-	go func() { _, _ = io.Copy(master, stdin) }()
+	go func() {
+		if shell == nativeshell.Bash {
+			_ = bridgeInput(stdin, master)
+			return
+		}
+		_, _ = io.Copy(master, stdin)
+	}()
 
 	state, err := connection.Wait(ctx, process.ID)
 	if err != nil {

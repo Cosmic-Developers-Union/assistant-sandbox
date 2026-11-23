@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/filesystem/procfs"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm"
@@ -26,8 +25,18 @@ func (p kernelProcfs) SystemFiles(ctx context.Context) (map[string][]byte, error
 		return nil, err
 	}
 	memoryKB := p.machine.memoryBytes / 1024
+	var usedMemory uint64
+	if p.machine.meters != nil {
+		if view, err := p.machine.meters.SessionView(ctx); err == nil {
+			usedMemory = view.MemoryUsed / 1024
+		}
+	}
+	var freeMemoryKB uint64
+	if usedMemory < memoryKB {
+		freeMemoryKB = memoryKB - usedMemory
+	}
 	meminfo := fmt.Sprintf("MemTotal:       %d kB\nMemFree:        %d kB\nMemAvailable:   %d kB\nBuffers:        0 kB\nCached:         0 kB\n",
-		memoryKB, memoryKB, memoryKB)
+		memoryKB, freeMemoryKB, freeMemoryKB)
 	var cpu strings.Builder
 	for index := 0; index < p.machine.cpus; index++ {
 		fmt.Fprintf(&cpu, "processor\t: %d\nmodel name\t: Assistant Sandbox RV64GC\nisa\t\t: rv64imafdc\nmmu\t\t: none\n\n", index)
@@ -47,8 +56,9 @@ func (p kernelProcfs) SystemFiles(ctx context.Context) (map[string][]byte, error
 	if err != nil {
 		return nil, err
 	}
-	uptime := float64(monotonic) / float64(time.Second)
-	bootTime := (wall - int64(monotonic)) / int64(time.Second) //nolint:gosec // 纳秒读数在 int64 范围内
+	const nanosecondsPerSecond = 1_000_000_000
+	uptime := float64(monotonic) / nanosecondsPerSecond
+	bootTime := (wall - int64(monotonic)) / nanosecondsPerSecond //nolint:gosec // 纳秒读数在 int64 范围内
 	processes := p.kernel.Processes()
 	running := 0
 	var lastPID proc.PID
@@ -61,9 +71,10 @@ func (p kernelProcfs) SystemFiles(ctx context.Context) (map[string][]byte, error
 		}
 	}
 	var stat strings.Builder
-	fmt.Fprintf(&stat, "cpu 0 0 0 0 0 0 0 0 0 0\n")
+	cpuTicks := monotonic / 10_000_000
+	fmt.Fprintf(&stat, "cpu 0 0 0 %d 0 0 0 0 0 0\n", cpuTicks)
 	for index := 0; index < p.machine.cpus; index++ {
-		fmt.Fprintf(&stat, "cpu%d 0 0 0 0 0 0 0 0 0 0\n", index)
+		fmt.Fprintf(&stat, "cpu%d 0 0 0 %d 0 0 0 0 0 0\n", index, cpuTicks)
 	}
 	fmt.Fprintf(&stat, "intr 0\nctxt 0\nbtime %d\nprocesses %d\nprocs_running %d\nprocs_blocked 0\n",
 		bootTime, len(processes), running)
