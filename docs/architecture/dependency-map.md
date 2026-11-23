@@ -47,7 +47,7 @@ test/posix ────────────┼──> (internal/legacy: wasm
 | 包 | 职责 | 关键源码 | 直接内部依赖 |
 | --- | --- | --- | --- |
 | `internal/legacy` | 已退役 WASI Runtime/Session,仅 POSIX gate 显式调用;公开 VM 入口为 `instance`/`model` | [wasm.go](../../internal/legacy/wasm.go)、[session.go](../../internal/legacy/session.go)、[executor.go](../../internal/legacy/executor.go)、[fs.go](../../internal/legacy/fs.go)、[modules.go](../../internal/legacy/modules.go)、[messages.go](../../internal/legacy/messages.go)、[stream.go](../../internal/legacy/stream.go) | `internal/protocol` |
-| `cmd/assistant-sandbox` | CLI(单次执行/持续会话),调用根包 SDK | [main.go](../../cmd/assistant-sandbox/main.go) | 根包 |
+| `cmd/assistant-sandbox` | 原生 VM CLI(单次执行/持续会话);默认运行内嵌客体 Bash,`--shell sh` 使用 BusyBox sh | [main.go](../../cmd/assistant-sandbox/main.go) | `guest/native`、`instance`、`platform/filesystem` |
 | `cmd/assistant-sandbox-build` | 客体构建入口(生成 WASI bash 客体) | [main.go](../../cmd/assistant-sandbox-build/main.go) | `internal/build` |
 | `internal/build` | 客体构建器:Go 工具链交叉编译 wasip1 + gzip;可重复构建 | [build.go](../../internal/build/build.go)、[interpreter.go](../../internal/build/interpreter.go) | 无(独立) |
 | `internal/protocol` | SDK 与 WASI 客体间的私有线协议 | [types.go](../../internal/protocol/types.go) | 无 |
@@ -128,7 +128,8 @@ test/posix ────────────┼──> (internal/legacy: wasm
 | `platform/filesystem` | 授权目录导入(os.Root 边界、能力、配额) | [filesystem.go](../../platform/filesystem/filesystem.go) | `vm/fs` |
 | `platform/entropy`、`platform/modules` | 宿主熵源(native/wasi 双构建)、扩展模块宿主 | [entropy_native.go](../../platform/entropy/entropy_native.go)、[modules.go](../../platform/modules/modules.go) | `vm/errno` |
 | `guest`、`guest/cmd` | WASI 客体(bash 替身 + boot),由 internal/build 构建 | [boot.go](../../guest/boot.go)、[main.go](../../guest/cmd/main.go) | `executor/elf`、`platform/*`、`userland/shell`、`vm/*` |
-| `userland/shell` | mvdan.sh 解释器装配为客体/注册表程序(旧后端用户态) | [shell.go](../../userland/shell/shell.go)、[loop.go](../../userland/shell/loop.go) | `internal/protocol`、`userland/commandio`、`userland/commands`、`vm/*` |
+| `guest/native` | CLI 内嵌的 riscv64 Bash/BusyBox sh、musl 与终端库资产安装 | [shell.go](../../guest/native/shell.go) | `vm/fs`、`vm/errno` |
+| `userland/shell` | 已废弃的 mvdan.sh 解释器槽位;仅为旧 SDK/模型契约保留 | [shell.go](../../userland/shell/shell.go)、[slot.go](../../userland/shell/slot.go) | `internal/protocol`、`userland/commandio`、`userland/commands`、`vm/*` |
 | `userland/commands/*`(~140 包) | POSIX 工具的 Go 内建实现(cat/ls/grep/awk/…),仅旧 WASI 后端使用 | [registry.go](../../userland/commands/registry.go) | `userland/commandio` 等 |
 | `userland/toolcompat/*` | 上述工具的 libc 行为兼容层(locale/clock/vfs/goawk/bre) | [tool.go](../../userland/toolcompat/tool.go)、[flags.go](../../userland/toolcompat/flags.go) | `vm/{errno}` 等 |
 | `userland/commandio` | 命令 I/O 约定(路径、流、退出码) | [io.go](../../userland/commandio/io.go) | `vm/{errno,fs,proc}` |
@@ -152,7 +153,7 @@ test/posix ────────────┼──> (internal/legacy: wasm
 | 1 | 两代执行后端 | `executor/wasm`(wazero/WASI)与 `executor/elf`(RISC-V 解释器) | A02 定位主后端;R02/R06 收敛公开入口 |
 | 2 | 两代公开契约 | `contract`(Session:Exec/Wait/Close)与新模型 VM(Console/Connect,见 A06) | C 组/R 组统一所有权;A06/A07 迁入并工厂化 |
 | 3 | 两代部署装配 | `deployment/wasm` 与 `deployment/native` | C10 拆分镜像/VM/连接;R06 迁移或删除旧入口 |
-| 4 | Shell 双实现 | `userland/shell`(mvdan.sh,旧后端+native 注册表)与未来真实客体 bash | N10 打包真实 Bash 后由差分替代 |
+| 4 | Shell 双实现 | `guest/native`(CLI 的真实客体 Bash/BusyBox sh)与已废弃的 `userland/shell`(mvdan.sh,旧契约兼容) | CLI 已切到真实客体 shell;旧槽位待旧 SDK/模型契约迁移后删除 |
 | 5 | POSIX 工具双实现 | `userland/commands/*`(Go 内建)与真实 ELF coreutils | N10 落地后 Go 内建仅为旧后端兼容层 |
 | 6 | 文件系统两套入口 | `vm/fs`(客体契约)与 `platform/filesystem`(宿主授权导入) | 语义不同非重复;I01 统一客体路径解析后边界固定 |
 | 7 | 熵/时钟双路径 | `vm/{clock,entropy}`(注入)与 `platform/entropy`(宿主源) | C04 统一为 VM 拥有的设备注册表 |

@@ -70,12 +70,15 @@ type Slot struct {
 	closed bool
 }
 
+// Deprecated: 内建 mvdan/sh 槽位保留给旧 SDK/模型兼容;CLI 的新默认路径
+// 是 guest/native 的真实 Bash/BusyBox sh 客体 ELF。
 func NewSlot(kernel *vm.Kernel, parent proc.Proc, dir string, environment []string) (*Slot, error) {
 	return NewSlotWithOutput(kernel, parent, dir, environment, nil)
 }
 
 // NewSlotWithOutput 建立槽位并把持续输出(命令返回后仍在写入的后台
 // 进程输出)同时送往 output;output 为 nil 时只保留逐步骤的捕获。
+// Deprecated: 新 CLI 使用 guest/native 的原生 shell,此函数仅保留兼容。
 func NewSlotWithOutput(kernel *vm.Kernel, parent proc.Proc, dir string, environment []string, output io.Writer) (*Slot, error) {
 	if kernel == nil {
 		return nil, errno.Wrap(errno.Invalid, "缺少内核")

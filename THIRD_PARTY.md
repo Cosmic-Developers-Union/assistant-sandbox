@@ -10,7 +10,7 @@
 - golang.org/x/crypto v0.56.0，BSD-3-Clause(Go 许可)。来源：https://cs.opensource.google/go/x/crypto/+/v0.56.0 ，完整许可见 [x-crypto-LICENSE](licenses/x-crypto-LICENSE)。
 - github.com/clipperhouse/uax29/v2 v2.7.0(间接)，MIT。来源：https://github.com/clipperhouse/uax29/tree/v2.7.0 ，完整许可见 [uax29-LICENSE](licenses/uax29-LICENSE)。
 - golang.org/x/sys v0.48.0(间接)，BSD-3-Clause(Go 许可)。完整许可见 [x-sys-LICENSE](licenses/x-sys-LICENSE)。
-- golang.org/x/term v0.46.0(间接)，BSD-3-Clause(Go 许可)。完整许可见 [x-term-LICENSE](licenses/x-term-LICENSE)。
+- golang.org/x/term v0.46.0，BSD-3-Clause(Go 许可)。完整许可见 [x-term-LICENSE](licenses/x-term-LICENSE)。
 
 内嵌与适配代码:
 
@@ -38,6 +38,10 @@ N10 真实 Bash 与基础工具验收资产(Alpine 3.22 riscv64 官方包;
 - GNU Readline 8.2.13-r1,GPL-3.0-or-later。包:https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/readline-8.2.13-r1.apk (sha256=4b6c7e5f…05fa);库 sha256=e8cce022…cca2。完整许可 [GPL-3.0.txt](licenses/GPL-3.0.txt)。
 - NCurses 6.5_p20250503-r0,X11。包:https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/libncursesw-6.5_p20250503-r0.apk (sha256=7d88384b…9607);库 sha256=28e544f2…c3e4。完整许可 [ncurses-X11.txt](licenses/ncurses-X11.txt)。
 - musl 1.2.6 动态加载器沿用 A04 固定版本(testdata/lib/ld-musl-riscv64.so.1 sha256=4fdd77ec…4123),MIT。
+
+上述 N10 资产中的 Bash、BusyBox、musl 加载器、GNU Readline 与 NCurses
+同时作为 CLI 的 `go:embed` 输入位于 `guest/native/assets`,版本、摘要与
+许可以上一段为准。
 
 Q28 客体原生编译链验收资产(Alpine 3.22 riscv64 官方包;归档摘要由
 internal/guest/q28_toolchain_test.go 锁定):

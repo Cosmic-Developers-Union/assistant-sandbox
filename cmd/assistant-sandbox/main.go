@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -10,16 +9,16 @@ import (
 	"os/signal"
 	"path/filepath"
 
+	nativeshell "github.com/Cosmic-Developers-Union/assistant-sandbox/guest/native"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/instance"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/platform/filesystem"
-	"github.com/Cosmic-Developers-Union/assistant-sandbox/userland/shell"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fd"
 	"github.com/spf13/pflag"
 	"golang.org/x/term"
 )
 
-// run 只调用公开 VM API(instance/shell):单次执行在同一个 VM 内核
-// 上运行 Bash 槽位,不再创建第二套运行时。
+// run 只调用公开 VM API(instance/guest native):单次执行在同一
+// VM 内核中运行真实客体 shell,不再创建第二套运行时。
 func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
 	if len(args) > 0 && args[0] == "bash" {
 		args = args[1:]
@@ -28,9 +27,10 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	flags.SetOutput(stderr)
 	dir := flags.String("dir", "", "要挂载到 /work 的宿主目录；为空时使用临时内存 /work")
 	module := flags.String("module", "", "已弃用：兼容旧 WASI CLI 参数，原生 VM 忽略")
-	command := flags.StringP("command", "c", "", "Bash 脚本；未指定时读取标准输入")
+	command := flags.StringP("command", "c", "", "shell 脚本（默认 Bash）；未指定时读取标准输入")
+	shellName := flags.String("shell", "bash", "原生客体 shell: bash 或 sh（zsh 暂不支持）")
 	readOnly := flags.Bool("read-only", false, "工作区只读（当前原生 VM 明确拒绝）")
-	session := flags.Bool("session", false, "从 stdin 逐行执行并保持同一 VM/Bash 会话")
+	session := flags.Bool("session", false, "从 stdin 运行 shell 并保持同一 VM 会话")
 	dryRun := flags.Bool("dry-run", false, "显示执行配置")
 	debug := flags.Bool("debug", false, "输出调试信息")
 	verbose := flags.Bool("verbose", false, "显示执行信息")
@@ -48,6 +48,10 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	if *readOnly {
 		return 1, errors.New("原生 VM 尚未接入只读工作区")
 	}
+	selectedShell, err := nativeshell.Parse(*shellName)
+	if err != nil {
+		return 1, err
+	}
 	workspace := "未挂载（临时内存 /work）"
 	mountWorkspace := *dir != ""
 	if mountWorkspace {
@@ -61,7 +65,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		_, _ = fmt.Fprintf(stderr, "忽略 --module=%s（原生 Linux ABI VM）\n", *module)
 	}
 	if *verbose || *debug || *dryRun {
-		_, _ = fmt.Fprintf(stderr, "工作区=%s 客体=原生VM 只读=%t\n", workspace, *readOnly)
+		_, _ = fmt.Fprintf(stderr, "工作区=%s shell=%s 客体=原生VM 只读=%t\n", workspace, selectedShell, *readOnly)
 	}
 	if *dryRun {
 		return 0, nil
@@ -85,61 +89,67 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return 1, err
 	}
 	defer func() { _ = machine.Close(context.Background()) }()
+	if err := nativeshell.Install(ctx, machine.Filesystem()); err != nil {
+		return 1, err
+	}
 	if mountWorkspace {
 		if err := machine.Mounts().Mount(instance.WorkRoot, filesystem.NewMountFilesystem(workspace)); err != nil {
 			return 1, err
 		}
 	}
-	environment := []string{
-		"HOME=" + instance.WorkRoot,
-		"PATH=/usr/local/bin:/usr/bin:/bin",
-		"LANG=C.UTF-8",
-		"LC_ALL=C.UTF-8",
-		"USER=sandbox",
-		"LOGNAME=sandbox",
-		"TMPDIR=/tmp",
-	}
 	environmentMap := map[string]string{
 		"HOME": instance.WorkRoot, "PATH": "/usr/local/bin:/usr/bin:/bin",
 		"LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "USER": "sandbox",
-		"LOGNAME": "sandbox", "TMPDIR": "/tmp",
+		"LOGNAME": "sandbox", "TMPDIR": "/tmp", "SHELL": selectedShell.Program(),
+		"TERM": "dumb",
 	}
-	parent, err := machine.Kernel().Begin(0, "bash", nil, instance.WorkRoot, environmentMap, fd.Streams{})
+	connection, err := machine.Connect(ctx)
 	if err != nil {
 		return 1, err
 	}
-	slot, err := shell.NewSlot(machine.Kernel(), parent, instance.WorkRoot, environment)
-	if err != nil {
-		return 1, err
-	}
-	defer func() { _ = slot.Close(context.Background()) }()
 	if *session {
-		scanner := bufio.NewScanner(stdin)
-		scanner.Buffer(make([]byte, 0, 4096), 64<<10)
-		status := 0
-		for scanner.Scan() {
-			output, stepErr := slot.Step(ctx, scanner.Bytes())
-			if stepErr != nil {
-				return 1, stepErr
-			}
-			if _, writeErr := stdout.Write(output.Data); writeErr != nil {
-				return 1, writeErr
-			}
-			status = output.Status
+		args := []string{"-s"}
+		if stdinIsTerminal(stdin) {
+			args = []string{"-i"}
 		}
-		if err := scanner.Err(); err != nil {
+		if selectedShell == nativeshell.Bash {
+			args = append([]string{"--noprofile", "--norc"}, args...)
+		}
+		process, err := connection.Exec(ctx, instance.ExecSpec{
+			Program: selectedShell.Program(),
+			Args:    args,
+			Dir:     instance.WorkRoot,
+			Env:     environmentMap,
+			Streams: fd.Streams{Input: stdin, Output: stdout, Error: stderr},
+		})
+		if err != nil {
 			return 1, err
 		}
-		return status, nil
+		state, err := connection.Wait(ctx, process.ID)
+		if err != nil {
+			return 1, err
+		}
+		return int(state.ExitCode), nil
 	}
-	output, err := slot.Step(ctx, []byte(*command))
+	shellArgs := []string{"-c", *command}
+	if selectedShell == nativeshell.Bash {
+		shellArgs = []string{"--noprofile", "--norc", "-c", *command}
+	}
+	process, err := connection.Exec(ctx, instance.ExecSpec{
+		Program: selectedShell.Program(),
+		Args:    shellArgs,
+		Dir:     instance.WorkRoot,
+		Env:     environmentMap,
+		Streams: fd.Streams{Output: stdout, Error: stderr},
+	})
 	if err != nil {
 		return 1, err
 	}
-	if _, err := stdout.Write(output.Data); err != nil {
+	state, err := connection.Wait(ctx, process.ID)
+	if err != nil {
 		return 1, err
 	}
-	return output.Status, nil
+	return int(state.ExitCode), nil
 }
 
 func stdinIsTerminal(r io.Reader) bool {

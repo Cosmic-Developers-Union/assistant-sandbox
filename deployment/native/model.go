@@ -85,6 +85,7 @@ func (m *ModelVM) Connect(ctx context.Context) (model.Terminal, error) {
 	if err != nil {
 		return nil, err
 	}
+	//nolint:staticcheck // 旧 model 契约仍按 mvdan/sh 槽位提供 SDK 兼容
 	session, err := shell.NewSlot(m.runtime.Kernel, parent, workRoot, nil)
 	if err != nil {
 		return nil, err
@@ -144,6 +145,7 @@ func newModelConsole(runtime *Runtime) (*modelConsole, error) {
 	}
 	// 控制台复用 VM 常驻的 Bash 父进程:它属于整机,随整机结束。
 	parent := runtime.Parent
+	//nolint:staticcheck // 旧控制台契约仍按 mvdan/sh 槽位提供 SDK 兼容
 	slot, err := shell.NewSlotWithOutput(runtime.Kernel, parent, workRoot, nil, screen)
 	if err != nil {
 		return nil, err

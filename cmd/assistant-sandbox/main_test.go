@@ -9,7 +9,7 @@ import (
 )
 
 // TestCLISingleExecutionUsesVMAndHostMount 验证 R02:单次执行经同一
-// 原生 VM + Bash 槽位,并把授权工作区挂载为 /work。
+// 原生 VM + 客体 Bash,并把授权工作区挂载为 /work。
 func TestCLISingleExecutionUsesVMAndHostMount(t *testing.T) {
 	dir := t.TempDir()
 	output, diagnostic := &bytes.Buffer{}, &bytes.Buffer{}
@@ -23,8 +23,8 @@ func TestCLISingleExecutionUsesVMAndHostMount(t *testing.T) {
 	}
 }
 
-// TestCLISessionKeepsSameVM 验证 R02:持续会话逐行执行仍共享同一
-// VM/Bash 状态,不另造内核。
+// TestCLISessionKeepsSameVM 验证 R02:持续会话仍共享同一 VM 与
+// shell 进程状态,不另造内核。
 func TestCLISessionKeepsSameVM(t *testing.T) {
 	dir := t.TempDir()
 	output, diagnostic := &bytes.Buffer{}, &bytes.Buffer{}
@@ -44,7 +44,9 @@ func TestCLIDryRunIsSideEffectFree(t *testing.T) {
 	dir := t.TempDir()
 	output, diagnostic := &bytes.Buffer{}, &bytes.Buffer{}
 	code, err := run(t.Context(), []string{"--dir", dir, "--dry-run", "--debug", "-c", "printf never > /work/file"}, strings.NewReader(""), output, diagnostic)
-	if err != nil || code != 0 || output.Len() != 0 || !strings.Contains(diagnostic.String(), "工作区=") {
+	if err != nil || code != 0 || output.Len() != 0 ||
+		!strings.Contains(diagnostic.String(), "工作区=") ||
+		!strings.Contains(diagnostic.String(), "shell=bash") {
 		t.Fatalf("code=%d err=%v out=%q stderr=%q", code, err, output.String(), diagnostic.String())
 	}
 	if _, err := os.Stat(filepath.Join(dir, "file")); !os.IsNotExist(err) {
@@ -71,5 +73,26 @@ func TestCLIDefaultDoesNotMountWorkingDirectory(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "private")); !os.IsNotExist(err) {
 		t.Fatalf("默认行为把当前目录挂载到了 /work: %v", err)
+	}
+}
+
+func TestCLINativeShellSelection(t *testing.T) {
+	dir := t.TempDir()
+	output, diagnostic := &bytes.Buffer{}, &bytes.Buffer{}
+	code, err := run(t.Context(), []string{"--dir", dir, "-c", `printf '%s\n' "$BASH_VERSION"; ls /work`}, strings.NewReader(""), output, diagnostic)
+	if err != nil || code != 0 || !strings.HasPrefix(output.String(), "5.2.") {
+		t.Fatalf("bash: code=%d err=%v stdout=%q stderr=%q", code, err, output.String(), diagnostic.String())
+	}
+	output.Reset()
+	diagnostic.Reset()
+	code, err = run(t.Context(), []string{"--dir", dir, "--shell", "sh", "-c", `printf '%s' "$0"`}, strings.NewReader(""), output, diagnostic)
+	if err != nil || code != 0 || output.String() != "/bin/sh" {
+		t.Fatalf("sh: code=%d err=%v stdout=%q stderr=%q", code, err, output.String(), diagnostic.String())
+	}
+	output.Reset()
+	diagnostic.Reset()
+	code, err = run(t.Context(), []string{"--dir", dir, "--shell", "zsh", "-c", "true"}, strings.NewReader(""), output, diagnostic)
+	if err == nil || code == 0 || !strings.Contains(err.Error(), "zsh 暂不支持") {
+		t.Fatalf("zsh 应明确拒绝: code=%d err=%v", code, err)
 	}
 }
