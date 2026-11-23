@@ -1,0 +1,10 @@
+source=Alpine 3.22 riscv64 packages
+node_package=nodejs-22.23.5-r0
+node_version=22.23.5
+target_abi=riscv64gc-lp64d-linux-musl
+v8_config=--v8-jitless
+npm_included=false
+icu_data=usr/share/icu/76.1/icudt76l.dat
+runtime_archive_sha256=49c1cca5b16b0ada706083d8e50b003a3e79723d9d2e760cf3400e24442210df
+build_tool=qemu-riscv64 + Alpine 3.22 apk
+artifact=node22-runtime.tar.gz
