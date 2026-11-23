@@ -80,6 +80,9 @@ type WaitControl interface {
 	// nohang 时不阻塞,found=false 表示尚无可回收子进程。
 	WaitChild(ctx context.Context, target PID, nohang bool) (ChildState, bool, error)
 
+	// WaitChildGroup 等待指定进程组中的子进程(wait4 负 pid)。
+	WaitChildGroup(ctx context.Context, pgid PID, nohang bool) (ChildState, bool, error)
+
 	// HasChildren 报告调用进程是否还有子进程(ECHILD 判定)。
 	HasChildren() bool
 }

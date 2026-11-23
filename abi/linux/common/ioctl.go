@@ -16,6 +16,8 @@ const (
 	tcsetsf    = 0x5404
 	tiocgwinsz = 0x5413
 	tiocswinsz = 0x5414
+	tiocgpgrp  = 0x540f
+	tiocspgrp  = 0x5410
 	tiocgptn   = 0x80045430
 	tiocsptlck = 0x40045431
 	fionbio    = 0x5421
@@ -77,6 +79,41 @@ func (s Syscalls) ioctl(ctx context.Context, call Call) Reply {
 		state.Rows = binary.LittleEndian.Uint16(raw[0:])
 		state.Columns = binary.LittleEndian.Uint16(raw[2:])
 		return s.setTerminalState(ctx, call, state)
+	case tiocgpgrp:
+		handle, err := s.Descriptors.Get(ctx, call.Args[0])
+		if err != nil {
+			return Reply{Errno: errnoOf(err)}
+		}
+		foreground, ok := handle.(fd.ForegroundTerminal)
+		if !ok || !foreground.ForegroundSupported() {
+			return Reply{Errno: errno.NotATerminal}
+		}
+		var raw [4]byte
+		binary.LittleEndian.PutUint32(raw[:], uint32(foreground.Foreground()))
+		if err := s.Memory.Write(ctx, arg, raw[:]); err != nil {
+			return Reply{Errno: errno.Fault}
+		}
+		return Reply{}
+	case tiocspgrp:
+		if arg == 0 {
+			return Reply{Errno: errno.Fault}
+		}
+		handle, err := s.Descriptors.Get(ctx, call.Args[0])
+		if err != nil {
+			return Reply{Errno: errnoOf(err)}
+		}
+		foreground, ok := handle.(fd.ForegroundTerminal)
+		if !ok || !foreground.ForegroundSupported() {
+			return Reply{Errno: errno.NotATerminal}
+		}
+		var raw [4]byte
+		if err := s.Memory.Read(ctx, arg, raw[:]); err != nil {
+			return Reply{Errno: errno.Fault}
+		}
+		if err := foreground.SetForeground(uint64(binary.LittleEndian.Uint32(raw[:]))); err != nil {
+			return Reply{Errno: errnoOf(err)}
+		}
+		return Reply{}
 	case tiocgptn:
 		handle, err := s.Descriptors.Get(ctx, call.Args[0])
 		if err != nil {

@@ -97,21 +97,29 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 			return 1, err
 		}
 	}
+	interactive := *session && terminalPair(stdin, stdout)
+	terminalName := "dumb"
+	if interactive {
+		terminalName = os.Getenv("TERM")
+		if terminalName == "" {
+			terminalName = "xterm-256color"
+		}
+	}
 	environmentMap := map[string]string{
 		"HOME": instance.WorkRoot, "PATH": "/usr/local/bin:/usr/bin:/bin",
 		"LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "USER": "sandbox",
 		"LOGNAME": "sandbox", "TMPDIR": "/tmp", "SHELL": selectedShell.Program(),
-		"TERM": "dumb",
+		"TERM": terminalName,
 	}
 	connection, err := machine.Connect(ctx)
 	if err != nil {
 		return 1, err
 	}
 	if *session {
-		args := []string{"-s"}
-		if stdinIsTerminal(stdin) {
-			args = []string{"-i"}
+		if interactive {
+			return runPTY(ctx, machine, connection, selectedShell, environmentMap, stdin.(*os.File), stdout.(*os.File))
 		}
+		args := []string{"-s"}
 		if selectedShell == nativeshell.Bash {
 			args = append([]string{"--noprofile", "--norc"}, args...)
 		}

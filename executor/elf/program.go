@@ -784,6 +784,18 @@ func (w processWaiter) WaitChild(ctx context.Context, target uint64, nohang bool
 	}, true, nil
 }
 
+func (w processWaiter) WaitChildGroup(ctx context.Context, pgid uint64, nohang bool) (common.ChildState, bool, error) {
+	state, found, err := w.control.WaitChildGroup(ctx, proc.PID(pgid), nohang)
+	if err != nil || !found {
+		return common.ChildState{}, found, err
+	}
+	return common.ChildState{
+		PID:        uint64(state.PID),
+		ExitCode:   state.ExitCode,
+		ExitSignal: uint32(state.ExitSignal),
+	}, true, nil
+}
+
 func (w processWaiter) HasChildren() bool {
 	return w.control.HasChildren()
 }

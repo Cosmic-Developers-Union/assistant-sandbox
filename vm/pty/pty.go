@@ -15,6 +15,7 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fd"
 	vmfs "github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fs"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/proc"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/tty"
 )
 
@@ -30,17 +31,28 @@ func (p *pair) closeTerminal() {
 
 // Manager 分配 PTY 对。当前兼容配置提供一个从端(/dev/pts/0)。
 type Manager struct {
-	mu   sync.Mutex
-	pair *pair
+	mu    sync.Mutex
+	pair  *pair
+	raise tty.Raise
 }
 
 func NewManager() *Manager { return &Manager{} }
+
+// SetRaise 为当前及后续分配的 PTY 装配信号投递端口。
+func (m *Manager) SetRaise(raise tty.Raise) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.raise = raise
+	if m.pair != nil {
+		m.pair.terminal.SetRaise(raise)
+	}
+}
 
 func (m *Manager) ensure() *pair {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.pair == nil {
-		terminal, _ := tty.New(tty.Flags{Canonical: true, Echo: true, ISIG: true}, tty.Size{Rows: 24, Cols: 80}, 1<<20, nil)
+		terminal, _ := tty.New(tty.Flags{Canonical: true, Echo: true, ISIG: true}, tty.Size{Rows: 24, Cols: 80}, 1<<20, m.raise)
 		m.pair = &pair{terminal: terminal}
 	}
 	return m.pair
@@ -122,6 +134,14 @@ func (s *Slave) State() fd.TerminalState { return s.pair.terminal.State() }
 
 func (s *Slave) SetState(state fd.TerminalState) error { return s.pair.terminal.SetState(state) }
 
+func (s *Slave) Foreground() uint64 { return uint64(s.pair.terminal.Foreground()) }
+
+func (s *Slave) SetForeground(pgid uint64) error {
+	return s.pair.terminal.SetForeground(proc.PID(pgid))
+}
+
+func (s *Slave) ForegroundSupported() bool { return true }
+
 type slaveFile struct {
 	slave *Slave
 }
@@ -136,6 +156,9 @@ func (f *slaveFile) Stat() (stdfs.FileInfo, error)         { return fileInfo{nam
 func (f *slaveFile) Dimensions() (uint16, uint16)          { return f.slave.Dimensions() }
 func (f *slaveFile) State() fd.TerminalState               { return f.slave.State() }
 func (f *slaveFile) SetState(state fd.TerminalState) error { return f.slave.SetState(state) }
+func (f *slaveFile) Foreground() uint64                    { return f.slave.Foreground() }
+func (f *slaveFile) SetForeground(pgid uint64) error       { return f.slave.SetForeground(pgid) }
+func (f *slaveFile) ForegroundSupported() bool             { return true }
 
 type slaveFS struct{ manager *Manager }
 

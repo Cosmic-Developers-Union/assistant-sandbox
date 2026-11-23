@@ -43,8 +43,9 @@ Shutdown。持续会话使用 `--session` 运行一个原生 shell 进程,或用
 
 在交互终端直接运行 `./assistant-sandbox --dir "$PWD"` 会自动进入同一
 原生 Bash 会话(输入 `Ctrl-D` 退出);从管道或文件输入且未指定 `-c`
-时,仍会把 stdin 作为完整脚本读取到 EOF。当前 CLI 会话尚未桥接宿主
-PTY,作业控制与行编辑能力有限;可重复的脚本路径应使用 `-c`。
+时,仍会把 stdin 作为完整脚本读取到 EOF。交互会话经 VM PTY 支持终端
+回显、控制字符与作业控制;Bash 暂以 `--noediting` 运行,readline
+历史/补全尚未接入。可重复的脚本路径应使用 `-c`。
 
 ## 3. 运行真实 CPython 与 Node.js
 

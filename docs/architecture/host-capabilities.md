@@ -17,6 +17,7 @@
 | 宿主随机 | `platform/entropy`（`crypto/rand`） | 生产熵源；确定性模式用 `vm/entropy.Seeded`，无环境旁路 |
 | 宿主网络 | `vm/net.Network`、`platform/network`，默认 `Denied` | M09 出口策略在 vm/net 逐地址/端口/协议裁决；未配置时非回环目标 ENETUNREACH；guest socket 回环仍在 VM 命名空间内 |
 | 宿主进程 | `internal/build`、`internal/diff`、`test/posix` | 仅构建、差分参考执行与 POSIX 测试；客体执行路径不可达 |
+| CLI 终端 | `cmd/assistant-sandbox/pty.go` | 仅把宿主 stdin/stdout 桥接到 VM PTY；使用 `term` 切换 raw 模式，不读取宿主文件 |
 | 扩展模块 | `vm/bridge.Bridge`、`capability.Set.Bridge` | 扩展调用必须经能力端口，不能取得宿主引用 |
 | WASI 部署（已退役） | `internal/legacy/wasm.go`、`platform/modules` | 旧 Runtime/Session 只由 `test/posix` 显式调用；公开 VM 入口为 `instance`/`model`（R06 收敛） |
 

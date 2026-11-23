@@ -123,6 +123,13 @@ func (t *Terminal) SetMesg(allowed bool) error {
 	return nil
 }
 
+// SetRaise 装配控制字符与窗口变化向客体进程组投递信号的端口。
+func (t *Terminal) SetRaise(raise Raise) {
+	t.mu.Lock()
+	t.raise = raise
+	t.mu.Unlock()
+}
+
 func (t *Terminal) Input(p []byte) (int, error) {
 	t.mu.Lock()
 	if t.closed {

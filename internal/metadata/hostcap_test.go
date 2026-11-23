@@ -17,6 +17,7 @@ var hostImportAllowlist = map[string]map[string]bool{
 	"os": {
 		"internal/legacy/cache.go": true, "internal/legacy/fs.go": true, "internal/legacy/stream.go": true, "internal/legacy/wasm.go": true,
 		"cmd/assistant-sandbox-build/main.go": true, "cmd/assistant-sandbox/main.go": true,
+		"cmd/assistant-sandbox/pty.go":   true,
 		"filesystem/persistent/store.go": true,
 		"guest/cmd/main.go":              true,
 		"internal/build/build.go":        true, "internal/build/interpreter.go": true,

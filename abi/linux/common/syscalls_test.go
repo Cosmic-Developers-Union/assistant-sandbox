@@ -2721,6 +2721,7 @@ type fakeWaiter struct {
 	found   bool
 	err     error
 	targets []uint64
+	groups  []uint64
 	nohangs []bool
 	hasKids bool
 }
@@ -2734,7 +2735,38 @@ func (w *fakeWaiter) WaitChild(_ context.Context, target uint64, nohang bool) (C
 	return w.state, w.found, nil
 }
 
+func (w *fakeWaiter) WaitChildGroup(_ context.Context, pgid uint64, nohang bool) (ChildState, bool, error) {
+	w.groups = append(w.groups, pgid)
+	w.nohangs = append(w.nohangs, nohang)
+	if w.err != nil {
+		return ChildState{}, false, w.err
+	}
+	return w.state, w.found, nil
+}
+
 func (w *fakeWaiter) HasChildren() bool { return w.hasKids }
+
+func TestWait4AcceptsContinuedAndWaitsOnProcessGroup(t *testing.T) {
+	ctx := context.Background()
+	space := newFakeMemory()
+	waiter := &fakeWaiter{found: true, state: ChildState{PID: 42, ExitCode: 7}}
+	syscalls := Syscalls{Memory: space, Waiter: waiter}
+
+	reply := syscalls.Handle(ctx, Call{Syscall: SysWait4, Args: [6]uint64{^uint64(6), 0x1000, 10}})
+	if reply.Errno != "" || reply.Value != 42 {
+		t.Fatalf("wait4 进程组: %+v", reply)
+	}
+	if len(waiter.groups) != 1 || waiter.groups[0] != 7 || waiter.nohangs[0] {
+		t.Fatalf("进程组参数=%v nohang=%v", waiter.groups, waiter.nohangs)
+	}
+	var status [4]byte
+	if err := space.Read(ctx, 0x1000, status[:]); err != nil {
+		t.Fatal(err)
+	}
+	if got := binary.LittleEndian.Uint32(status[:]); got != 7<<8 {
+		t.Fatalf("wait4 status=%#x", got)
+	}
+}
 
 func TestWaitidEncodesSigchldAndHonoursNoHang(t *testing.T) {
 	ctx := context.Background()

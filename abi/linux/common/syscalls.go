@@ -395,6 +395,9 @@ type Waiter interface {
 	// nohang 时不阻塞,found=false 表示尚无可回收子进程。
 	WaitChild(ctx context.Context, target uint64, nohang bool) (ChildState, bool, error)
 
+	// WaitChildGroup 等待指定进程组中的子进程(wait4 负 pid)。
+	WaitChildGroup(ctx context.Context, pgid uint64, nohang bool) (ChildState, bool, error)
+
 	// HasChildren 报告调用进程是否还有子进程(ECHILD 判定)。
 	HasChildren() bool
 }
@@ -3559,28 +3562,37 @@ func (s Syscalls) kill(ctx context.Context, call Call) Reply {
 
 // wait4(pid, &status, options, &rusage)(K10):阻塞等待子进程并把
 // 终态编码为 wait4 状态格式(退出码<<8 / 信号)。pid>0 定向;0 与
-// -1 按任意子进程等待;PGID 等待与 rusage 计数明确 ENOTSUP(T03 接
-// 资源指标后复核)。
+// -1 按任意子进程等待;pid<-1 按进程组等待。rusage 计数保持 ENOTSUP。
 func (s Syscalls) wait4(ctx context.Context, call Call) Reply {
 	if s.Memory == nil || s.Waiter == nil {
 		return Reply{Errno: errno.NotImplemented}
 	}
 	pid := int64(call.Args[0])
 	options := call.Args[2]
-	if options&^(wait4WNoHang|wait4WUntraced) != 0 {
-		// WSTOPPED/WCONTINUED 等不在兼容配置。
+	if options&^(wait4WNoHang|wait4WUntraced|wait4WContinued) != 0 {
+		// 其余选项不在兼容配置。
 		return Reply{Errno: errno.NotSupported}
 	}
 	var target uint64
+	var pgid uint64
 	switch {
 	case pid > 0:
 		target = uint64(pid)
 	case pid == 0 || pid == -1:
 		target = 0
+	case pid < -1:
+		pgid = uint64(-pid)
 	default:
-		return Reply{Errno: errno.NotSupported}
+		return Reply{Errno: errno.Invalid}
 	}
-	state, found, err := s.Waiter.WaitChild(ctx, target, options&wait4WNoHang != 0)
+	var state ChildState
+	var found bool
+	var err error
+	if pgid != 0 {
+		state, found, err = s.Waiter.WaitChildGroup(ctx, pgid, options&wait4WNoHang != 0)
+	} else {
+		state, found, err = s.Waiter.WaitChild(ctx, target, options&wait4WNoHang != 0)
+	}
 
 	if err != nil {
 		return Reply{Errno: errnoOf(err)}
@@ -3607,8 +3619,9 @@ func (s Syscalls) wait4(ctx context.Context, call Call) Reply {
 }
 
 const (
-	wait4WNoHang   = 1
-	wait4WUntraced = 2
+	wait4WNoHang    = 1
+	wait4WUntraced  = 2
+	wait4WContinued = 8
 )
 
 // set_robust_list(head, len)(K07):登记 robust futex 链表;线程

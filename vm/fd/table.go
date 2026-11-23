@@ -872,6 +872,74 @@ func (s *stream) ReadContext(ctx context.Context, p []byte) (int, error) {
 	return s.Read(p)
 }
 
+// Terminal capability forwarding: standard streams wrap the host-provided
+// reader/writer, so a PTY slave installed as fd 0/1/2 must remain visible as
+// a terminal to isatty/tcgetattr/tcsetpgrp.
+func (s *stream) terminalSource() (terminalStream, bool) {
+	if terminal, ok := s.reader.(terminalStream); ok {
+		return terminal, true
+	}
+	terminal, ok := s.writer.(terminalStream)
+	return terminal, ok
+}
+
+func (s *stream) IsTerminal() bool {
+	_, ok := s.terminalSource()
+	return ok
+}
+
+func (s *stream) Dimensions() (uint16, uint16) {
+	if terminal, ok := s.terminalSource(); ok {
+		return terminal.Dimensions()
+	}
+	return 0, 0
+}
+
+func (s *stream) State() TerminalState {
+	if terminal, ok := s.terminalSource(); ok {
+		if stateful, ok := terminal.(StatefulTerminal); ok {
+			return stateful.State()
+		}
+	}
+	return TerminalState{}
+}
+
+func (s *stream) SetState(state TerminalState) error {
+	if terminal, ok := s.terminalSource(); ok {
+		if stateful, ok := terminal.(StatefulTerminal); ok {
+			return stateful.SetState(state)
+		}
+	}
+	return errno.NotATerminal
+}
+
+func (s *stream) Foreground() uint64 {
+	if terminal, ok := s.terminalSource(); ok {
+		if foreground, ok := terminal.(ForegroundTerminal); ok {
+			return foreground.Foreground()
+		}
+	}
+	return 0
+}
+
+func (s *stream) SetForeground(pgid uint64) error {
+	if terminal, ok := s.terminalSource(); ok {
+		if foreground, ok := terminal.(ForegroundTerminal); ok {
+			return foreground.SetForeground(pgid)
+		}
+	}
+	return errno.NotATerminal
+}
+
+func (s *stream) ForegroundSupported() bool {
+	terminal, ok := s.terminalSource()
+	if !ok {
+		return false
+	}
+	foreground, ok := terminal.(ForegroundTerminal)
+	return ok && foreground.ForegroundSupported()
+}
+
 func (t *Table) SetTabStops(stops []uint16) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()

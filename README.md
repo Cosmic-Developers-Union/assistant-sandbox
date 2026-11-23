@@ -43,8 +43,9 @@ CLI 默认执行客体中的真实 Bash；`--shell sh` 切换到 BusyBox sh。
 内建 mvdan/sh 槽位已标记为废弃，只为旧 SDK/模型契约保留。
 
 在终端直接运行 `assistant-sandbox --dir .` 会进入客体 Bash 会话；
-当前 CLI 尚未桥接宿主 PTY，因此作业控制与行编辑能力有限，脚本和 CI
-建议使用 `-c` 或从管道传入完整脚本。
+交互会话通过 VM PTY 提供回显、`Ctrl-C`/`Ctrl-D` 与作业控制。Bash
+当前使用 `--noediting`，因此方向键历史与 readline 补全暂不可用；
+脚本和 CI 建议使用 `-c` 或从管道传入完整脚本。
 默认不挂载宿主目录：只有显式传入 `--dir` 才把该目录映射到客体
 `/work`；不传时使用临时内存工作区。
 

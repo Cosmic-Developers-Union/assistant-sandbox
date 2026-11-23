@@ -593,6 +593,25 @@ func (f *chargeFile) PTYNumber() uint32 {
 	return 0
 }
 
+func (f *chargeFile) Foreground() uint64 {
+	if terminal, ok := f.base.(fd.ForegroundTerminal); ok {
+		return terminal.Foreground()
+	}
+	return 0
+}
+
+func (f *chargeFile) SetForeground(pgid uint64) error {
+	if terminal, ok := f.base.(fd.ForegroundTerminal); ok {
+		return terminal.SetForeground(pgid)
+	}
+	return errno.NotATerminal
+}
+
+func (f *chargeFile) ForegroundSupported() bool {
+	terminal, ok := f.base.(fd.ForegroundTerminal)
+	return ok && terminal.ForegroundSupported()
+}
+
 // GuestPath 转发客体路径查询(I20):inotify 的 fd 侧事件按路径
 // 匹配监视;底层句柄无该能力时 ok=false(无事件,尽力而为)。
 func (f *chargeFile) GuestPath() (string, bool) {

@@ -75,6 +75,13 @@ type StatefulTerminal interface {
 	SetState(TerminalState) error
 }
 
+// ForegroundTerminal 是终端的前台进程组端口(tcgetpgrp/tcsetpgrp)。
+type ForegroundTerminal interface {
+	Foreground() uint64
+	SetForeground(uint64) error
+	ForegroundSupported() bool
+}
+
 type TabStopSetter interface {
 	TabStops() []uint16
 	SetTabStops(stops []uint16) error

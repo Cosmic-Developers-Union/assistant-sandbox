@@ -1034,6 +1034,10 @@ func (s *sigControlStub) WaitChild(ctx context.Context, target proc.PID, nohang 
 	}
 }
 
+func (s *sigControlStub) WaitChildGroup(ctx context.Context, _ proc.PID, nohang bool) (proc.ChildState, bool, error) {
+	return s.WaitChild(ctx, 0, nohang)
+}
+
 func (s *sigControlStub) HasChildren() bool { return true }
 func (s *sigControlStub) Run(context.Context, proc.RunSpec) (proc.Proc, error) {
 	return proc.Proc{}, errno.Invalid

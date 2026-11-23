@@ -472,9 +472,29 @@ func (t *Table) WaitAny(parent PID) (Proc, bool) {
 	return Proc{}, false
 }
 
+// WaitAnyGroup 等待或探测指定进程组中已结束的子进程。
+func (t *Table) WaitAnyGroup(parent, pgid PID) (Proc, bool) {
+	for _, id := range slices.Sorted(maps.Keys(t.entries)) {
+		if p := t.entries[id]; p.Parent == parent && p.PGID == pgid && t.groupFinished(p) {
+			return clone(p), true
+		}
+	}
+	return Proc{}, false
+}
+
 func (t *Table) HasChildren(parent PID) bool {
 	for _, p := range t.entries {
 		if p.Parent == parent {
+			return true
+		}
+	}
+	return false
+}
+
+// HasChildrenGroup 报告指定进程组中是否仍有调用方的子进程。
+func (t *Table) HasChildrenGroup(parent, pgid PID) bool {
+	for _, p := range t.entries {
+		if p.Parent == parent && p.PGID == pgid {
 			return true
 		}
 	}

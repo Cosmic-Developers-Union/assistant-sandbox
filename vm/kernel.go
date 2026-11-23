@@ -1053,6 +1053,15 @@ func (k *Kernel) Finish(parent, id proc.PID, status ExitStatus) (err error) {
 }
 
 func (k *Kernel) Wait(ctx context.Context, parent, target proc.PID) (proc.Proc, error) {
+	return k.wait(ctx, parent, target, 0)
+}
+
+// WaitGroup 等待或探测指定进程组中已结束的子进程(wait4 的负 pid)。
+func (k *Kernel) WaitGroup(ctx context.Context, parent, pgid proc.PID) (proc.Proc, error) {
+	return k.wait(ctx, parent, 0, pgid)
+}
+
+func (k *Kernel) wait(ctx context.Context, parent, target, pgid proc.PID) (proc.Proc, error) {
 	if parent == 0 {
 		parent = k.init
 	}
@@ -1062,7 +1071,23 @@ func (k *Kernel) Wait(ctx context.Context, parent, target proc.PID) (proc.Proc, 
 			k.mu.Unlock()
 			return proc.Proc{}, errno.Cancelled
 		}
-		if target != 0 {
+		if pgid != 0 {
+			if p, ok := k.table.WaitAnyGroup(parent, pgid); ok {
+				reaped, err := k.table.Reap(parent, p.ID)
+				if err != nil {
+					k.mu.Unlock()
+					return proc.Proc{}, err
+				}
+				closeErr := k.afterReapLocked(reaped)
+				k.mu.Unlock()
+				k.children.WakeAll(wait.Data)
+				return reaped, closeErr
+			}
+			if !k.table.HasChildrenGroup(parent, pgid) {
+				k.mu.Unlock()
+				return proc.Proc{}, errno.NoChild
+			}
+		} else if target != 0 {
 			p, err := k.table.Get(target)
 			if err != nil {
 				k.mu.Unlock()
@@ -1119,6 +1144,10 @@ func (k *Kernel) Wait(ctx context.Context, parent, target proc.PID) (proc.Proc, 
 			if _, _, ok := k.signals.DeliverableHandler(uint64(parent)); ok {
 				return false, wait.Signal, errno.Interrupted
 			}
+			if pgid != 0 {
+				_, ok := k.table.WaitAnyGroup(parent, pgid)
+				return ok, wait.Data, nil
+			}
 			if target != 0 {
 				p, err := k.table.Get(target)
 				if err != nil {
@@ -1168,6 +1197,15 @@ func (k *Kernel) setRunnable(id proc.PID) {
 // target=0 表示任意子进程;nohang 时不阻塞,found=false 表示尚无
 // 可回收的子进程。返回的状态携带退出码与终止信号。
 func (k *Kernel) WaitChild(ctx context.Context, parent, target proc.PID, nohang bool) (proc.ChildState, bool, error) {
+	return k.waitChild(ctx, parent, target, 0, nohang)
+}
+
+// WaitChildGroup 按负 pid 的 wait4 语义等待指定进程组中的子进程。
+func (k *Kernel) WaitChildGroup(ctx context.Context, parent, pgid proc.PID, nohang bool) (proc.ChildState, bool, error) {
+	return k.waitChild(ctx, parent, 0, pgid, nohang)
+}
+
+func (k *Kernel) waitChild(ctx context.Context, parent, target, pgid proc.PID, nohang bool) (proc.ChildState, bool, error) {
 	if parent == 0 {
 		parent = k.init
 	}
@@ -1178,7 +1216,18 @@ func (k *Kernel) WaitChild(ctx context.Context, parent, target proc.PID, nohang 
 			return proc.ChildState{}, false, errno.Cancelled
 		}
 		var found proc.PID
-		if target != 0 {
+		if pgid != 0 {
+			p, ok := k.table.WaitAnyGroup(parent, pgid)
+			if !ok {
+				if !k.table.HasChildrenGroup(parent, pgid) {
+					k.mu.Unlock()
+					return proc.ChildState{}, false, errno.NoChild
+				}
+				k.mu.Unlock()
+				return proc.ChildState{}, false, nil
+			}
+			found = p.ID
+		} else if target != 0 {
 			p, err := k.table.Get(target)
 			if err != nil || p.Parent != parent {
 				k.mu.Unlock()
@@ -1213,7 +1262,7 @@ func (k *Kernel) WaitChild(ctx context.Context, parent, target proc.PID, nohang 
 		state := proc.ChildState{PID: reaped.ID, ExitCode: reaped.ExitCode, ExitSignal: reaped.ExitSignal}
 		return state, true, closeErr
 	}
-	reaped, err := k.Wait(ctx, parent, target)
+	reaped, err := k.wait(ctx, parent, target, pgid)
 	if err != nil {
 		return proc.ChildState{}, true, err
 	}
@@ -2043,6 +2092,74 @@ func (m meteredStream) Write(p []byte) (int, error) {
 	return m.inner.Write(p)
 }
 
+type meteredTerminal interface {
+	Dimensions() (uint16, uint16)
+}
+
+func (m meteredStream) terminalSource() (meteredTerminal, bool) {
+	if terminal, ok := m.inner.(meteredTerminal); ok {
+		return terminal, true
+	}
+	return nil, false
+}
+
+func (m meteredStream) IsTerminal() bool {
+	_, ok := m.terminalSource()
+	return ok
+}
+
+func (m meteredStream) Dimensions() (uint16, uint16) {
+	if terminal, ok := m.terminalSource(); ok {
+		return terminal.Dimensions()
+	}
+	return 0, 0
+}
+
+func (m meteredStream) State() fd.TerminalState {
+	if terminal, ok := m.terminalSource(); ok {
+		if stateful, ok := terminal.(fd.StatefulTerminal); ok {
+			return stateful.State()
+		}
+	}
+	return fd.TerminalState{}
+}
+
+func (m meteredStream) SetState(state fd.TerminalState) error {
+	if terminal, ok := m.terminalSource(); ok {
+		if stateful, ok := terminal.(fd.StatefulTerminal); ok {
+			return stateful.SetState(state)
+		}
+	}
+	return errno.NotATerminal
+}
+
+func (m meteredStream) Foreground() uint64 {
+	if terminal, ok := m.terminalSource(); ok {
+		if foreground, ok := terminal.(fd.ForegroundTerminal); ok {
+			return foreground.Foreground()
+		}
+	}
+	return 0
+}
+
+func (m meteredStream) SetForeground(pgid uint64) error {
+	if terminal, ok := m.terminalSource(); ok {
+		if foreground, ok := terminal.(fd.ForegroundTerminal); ok {
+			return foreground.SetForeground(pgid)
+		}
+	}
+	return errno.NotATerminal
+}
+
+func (m meteredStream) ForegroundSupported() bool {
+	terminal, ok := m.terminalSource()
+	if !ok {
+		return false
+	}
+	foreground, ok := terminal.(fd.ForegroundTerminal)
+	return ok && foreground.ForegroundSupported()
+}
+
 // Failed 报告内核是否因客体故障进入失败状态(T01/T02)。
 func (k *Kernel) Failed() bool {
 	k.mu.Lock()
@@ -2816,6 +2933,13 @@ func (c procControl) WaitChild(ctx context.Context, target proc.PID, nohang bool
 		return proc.ChildState{}, false, errno.NoProcess
 	}
 	return c.k.WaitChild(ctx, c.self, target, nohang)
+}
+
+func (c procControl) WaitChildGroup(ctx context.Context, pgid proc.PID, nohang bool) (proc.ChildState, bool, error) {
+	if c.self == 0 {
+		return proc.ChildState{}, false, errno.NoProcess
+	}
+	return c.k.WaitChildGroup(ctx, c.self, pgid, nohang)
 }
 
 func (c procControl) HasChildren() bool {

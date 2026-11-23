@@ -26,6 +26,41 @@ type wrappedStream struct {
 
 func (s *wrappedStream) IsTerminal() bool { return s.terminal }
 
+type foregroundStream struct {
+	sizedStream
+	foreground uint64
+}
+
+func (s *foregroundStream) Foreground() uint64 { return s.foreground }
+func (s *foregroundStream) SetForeground(pgid uint64) error {
+	s.foreground = pgid
+	return nil
+}
+func (s *foregroundStream) ForegroundSupported() bool { return true }
+
+func TestStandardStreamForwardsTerminalCapabilities(t *testing.T) {
+	ctx := context.Background()
+	table := New()
+	terminal := &foregroundStream{sizedStream: sizedStream{rows: 30, columns: 90}, foreground: 7}
+	table.Attach(1, Streams{Input: terminal, Output: terminal, Error: terminal})
+
+	info, err := table.Terminal(ctx, 1, 0)
+	if err != nil || !info.TTY || info.Rows != 30 || info.Columns != 90 {
+		t.Fatalf("标准流终端信息 = %+v err=%v", info, err)
+	}
+	handle, err := table.Get(ctx, 1, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreground, ok := handle.(ForegroundTerminal)
+	if !ok || !foreground.ForegroundSupported() || foreground.Foreground() != 7 {
+		t.Fatalf("前台进程组转发 = %+v", handle)
+	}
+	if err := foreground.SetForeground(9); err != nil || terminal.foreground != 9 {
+		t.Fatalf("设置前台进程组: %v foreground=%d", err, terminal.foreground)
+	}
+}
+
 func TestTerminalQueryReportsOnlyRealTerminals(t *testing.T) {
 	ctx := context.Background()
 	table := New()

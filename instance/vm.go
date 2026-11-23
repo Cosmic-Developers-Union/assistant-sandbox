@@ -30,6 +30,7 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/proc"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/pty"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/resources"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/signal"
 	"mvdan.cc/sh/v3/interp"
 )
 
@@ -288,6 +289,11 @@ func newVM(ctx context.Context, opts Options, root *memfs.FS, source clock.Sourc
 		return nil, err
 	}
 	machine.kernel = kernel
+	terminals.SetRaise(func(pgid proc.PID, number signal.Number) {
+		// 设备关闭可能发生在内核持锁清理 fd 的路径中；异步投递避免
+		// Kernel.mu 与 PTY 回调之间形成锁序反转。
+		go func() { _ = kernel.SignalGroup(pgid, number) }()
+	})
 	if opts.faults.observe != nil {
 		opts.faults.observe(kernel)
 	}
