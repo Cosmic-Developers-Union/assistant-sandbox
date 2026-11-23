@@ -30,7 +30,7 @@ Go 版本见 [go.mod](go.mod)。在项目根目录构建和运行：
 
 ```sh
 make build
-./assistant-sandbox --module ./assistant-bash.wasm.gz --dir . -c 'printf hello'
+./assistant-sandbox --dir . -c 'printf hello'
 make install
 assistant-sandbox --dir . -c 'printf hello'
 ```
@@ -42,9 +42,10 @@ assistant-sandbox --dir . -c 'printf hello'
 
 `make install` 将 CLI 安装到 `$(PREFIX)/bin`，客体安装到
 `$(PREFIX)/share/assistant-sandbox`，默认前缀为 `$HOME/.local`。
-仅安装 Go CLI 时需要通过 `--module` 指定客体文件。`--help` 和 `--dry-run`
-无需加载客体。单次 CLI 执行支持 `-c` 或从标准输入读取脚本；持续会话使用 SDK 的
-`Runtime.Bind` 和 `Session.Execute`。
+`--module` 是旧 WASI CLI 的兼容参数，新原生 VM CLI 会接受但忽略它；
+`assistant-bash.wasm.gz` 仍作为 SDK/旧入口产物保留，不由新 CLI 加载。
+`--help` 和 `--dry-run` 无需加载客体。单次 CLI 执行支持 `-c` 或从标准输入读取脚本；
+持续会话使用 SDK 的 `Runtime.Bind` 和 `Session.Execute`。
 
 [测试工作流](.github/workflows/test.yml)在 GitHub 标准托管 runner 上执行客体构建、
 golangci-lint、Go 测试和 POSIX 开发检查；[发布工作流](.github/workflows/release.yml)

@@ -20,8 +20,9 @@ make build
 ```
 
 产物为 `assistant-sandbox` 与 `assistant-bash.wasm.gz`。CLI 的单次
-执行使用 Rust/Bash 兼容入口之外的新 VM 内核;`--module` 仍被接受但
-不再读取 WASI 模块。
+执行使用新的 Linux ABI VM 内核;`--module` 只作为旧 WASI CLI 的兼容
+参数被接受,新 CLI 不会读取 WASI 模块。`assistant-bash.wasm.gz` 保留
+给 SDK/旧入口使用。
 
 ## 2. 创建 VM 并运行 Bash
 
