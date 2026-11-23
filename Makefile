@@ -1,4 +1,19 @@
 PREFIX ?= $(HOME)/.local
+HOST_GOOS := $(shell go env GOOS)
+
+ifeq ($(HOST_GOOS),linux)
+CGO_ENABLED ?= 1
+else
+CGO_ENABLED ?= 0
+endif
+
+BUILD_FLAGS :=
+ifeq ($(CGO_ENABLED),1)
+BUILD_FLAGS += -tags netgo,osusergo
+ifeq ($(HOST_GOOS),linux)
+BUILD_FLAGS += -ldflags "-linkmode external -extldflags -static"
+endif
+endif
 
 # 工具链声明:Go 版本以 go.mod 的 go 指令为唯一事实来源(CI 经 setup-go
 # 的 go-version-file 安装同一版本,docker-test 使用对应补丁版本的镜像);
@@ -29,7 +44,7 @@ guest:
 	go run ./cmd/assistant-sandbox-build
 
 build: guest
-	CGO_ENABLED=0 go build -trimpath -o assistant-sandbox ./cmd/assistant-sandbox
+	CGO_ENABLED=$(CGO_ENABLED) go build -trimpath $(BUILD_FLAGS) -o assistant-sandbox ./cmd/assistant-sandbox
 
 # U12:生成可上传的 CLI/客体与摘要、模块 SBOM 清单。
 release: build

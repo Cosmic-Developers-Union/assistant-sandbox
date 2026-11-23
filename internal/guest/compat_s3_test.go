@@ -48,6 +48,7 @@ test -n "$(git rev-parse HEAD)"
 apk --version >/dev/null
 test -r /sys/kernel/osrelease
 test -r /proc/self/status
+test -x /sbin/init
 cd /work
 printf 'bash-ok\n'`
 	output, diagnostic, code := runGuestProgram(t, connection,

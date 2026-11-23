@@ -644,6 +644,7 @@ type Switcher interface {
 
 type Runner struct {
 	core       cpu.Port
+	batch      cpu.BatchStepper
 	dispatcher Dispatcher
 	boundary   func(context.Context) error
 	switcher   Switcher
@@ -653,8 +654,19 @@ func NewRunner(config Config) (*Runner, error) {
 	if config.Core == nil || config.Dispatcher == nil {
 		return nil, errno.Wrap(errno.Invalid, "Runner 需要执行端口与 trap 分发器")
 	}
-	return &Runner{core: config.Core, dispatcher: config.Dispatcher, boundary: config.Boundary, switcher: config.Switcher}, nil
+	runner := &Runner{
+		core:       config.Core,
+		dispatcher: config.Dispatcher,
+		boundary:   config.Boundary,
+		switcher:   config.Switcher,
+	}
+	if batch, ok := config.Core.(cpu.BatchStepper); ok && batch.BatchEnabled() {
+		runner.batch = batch
+	}
+	return runner, nil
 }
+
+const batchStepLimit = 64
 
 func (r *Runner) Run(ctx context.Context) (uint64, error) {
 	for {
@@ -666,7 +678,14 @@ func (r *Runner) Run(ctx context.Context) (uint64, error) {
 				return 0, err
 			}
 		}
-		outcome, stepErr := r.core.Step(ctx)
+		steps := uint64(1)
+		var outcome cpu.Outcome
+		var stepErr error
+		if r.batch != nil {
+			steps, outcome, stepErr = r.batch.StepBatch(ctx, batchStepLimit)
+		} else {
+			outcome, stepErr = r.core.Step(ctx)
+		}
 		if stepErr != nil {
 			var trap cpu.Trap
 			if !errors.As(stepErr, &trap) {
@@ -681,7 +700,7 @@ func (r *Runner) Run(ctx context.Context) (uint64, error) {
 			}
 			continue
 		}
-		if r.switcher != nil && r.switcher.Tick() {
+		if r.switcher != nil && r.advanceSwitcher(steps) {
 			switched, err := r.switcher.Switch(ctx)
 			if err != nil {
 				return 0, err
@@ -702,4 +721,17 @@ func (r *Runner) Run(ctx context.Context) (uint64, error) {
 			return 0, errno.Wrap(errno.Invalid, fmt.Sprintf("未知执行结果 %v", outcome))
 		}
 	}
+}
+
+func (r *Runner) advanceSwitcher(steps uint64) bool {
+	if advance, ok := r.switcher.(interface{ Advance(uint64) bool }); ok {
+		return advance.Advance(steps)
+	}
+	expired := false
+	for range steps {
+		if r.switcher.Tick() {
+			expired = true
+		}
+	}
+	return expired
 }

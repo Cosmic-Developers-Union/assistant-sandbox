@@ -7,6 +7,7 @@ import (
 	"slices"
 	"sort"
 	"sync"
+	"unsafe"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 )
@@ -19,13 +20,36 @@ type Table struct {
 
 	limit uint64
 
-	codePage       uint64
-	codePageBytes  []byte
-	codePageCached bool
+	instructionPages [256]instructionPage
+	codeGeneration   uint64
+
+	memoryViewValid     bool
+	memoryViewRegions   []uint64
+	memoryViewPages     []uint64
+	memoryViewAddresses []uintptr
 
 	// annotation 允许装载层在同组线程共享的地址空间上挂每地址空间
 	// 状态(brk/mmap 游标等);内核不解释其内容(K02)。
 	annotation any
+}
+
+type instructionPage struct {
+	page    uint64
+	data    []byte
+	version uint64
+	valid   bool
+}
+
+func instructionPageSlot(page uint64) uint64 {
+	return (page ^ (page >> 7)) & 255
+}
+
+func (t *Table) instructionPageLocked(page uint64) *instructionPage {
+	entry := &t.instructionPages[instructionPageSlot(page)]
+	if entry.valid && entry.page == page {
+		return entry
+	}
+	return nil
 }
 
 func New(limitBytes uint64) *Table { return &Table{limit: limitBytes} }
@@ -162,6 +186,7 @@ func (t *Table) Protect(ctx context.Context, start, end uint64, prot Prot) error
 		return faultError(FaultUnmapped, start, "修改保护位的范围未被完整映射")
 	}
 	t.invalidateCodeLocked(start, end)
+	t.invalidateMemoryViewLocked()
 	updated := make([]Region, 0, len(t.regions)+2)
 	for _, region := range t.regions {
 		if region.End <= start || region.Start >= end {
@@ -272,6 +297,82 @@ func (t *Table) FetchInstruction(ctx context.Context, address uint64) (uint32, u
 	return t.fetchInstructionLocked(address)
 }
 
+// FetchInstructionPage 返回包含 address 的不可变指令页快照。
+// 仅当整页都具有执行权限时命中；否则调用方应退回单步取指。
+func (t *Table) FetchInstructionPage(ctx context.Context, address uint64) (uint64, []byte, uint64, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, nil, 0, false, err
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	page := address / PageSize
+	entry := t.instructionPageLocked(page)
+	if entry == nil {
+		t.cacheInstructionPageLocked(address)
+		entry = t.instructionPageLocked(page)
+	}
+	if entry == nil {
+		return 0, nil, 0, false, nil
+	}
+	return page * PageSize, entry.data, entry.version, true, nil
+}
+
+// AcquireMemoryView 锁定地址空间并返回批量执行所需的只读区域表与
+// 私有页指针。调用方必须在同一 goroutine 中调用 ReleaseMemoryView。
+// 锁覆盖整个原生批量执行，防止映射或页表在直接访问期间变化。
+// 区域按 [start,end,flags] 三元组展开；flags 低 8 位为保护位，
+// bit 8 表示文件共享后备区间（必须回退 Go 访问）。
+func (t *Table) AcquireMemoryView(ctx context.Context) ([]uint64, []uint64, []uintptr, uint64, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, nil, 0, false, err
+	}
+	t.mu.Lock()
+	if !t.memoryViewValid {
+		type pageRef struct {
+			number  uint64
+			address uintptr
+		}
+		refs := make([]pageRef, 0, len(t.pages))
+		for number, data := range t.pages {
+			// #nosec G103 -- 页切片由 Table 持有，原生调用期间持锁且不越过生命周期。
+			refs = append(refs, pageRef{
+				number: number, address: uintptr(unsafe.Pointer(unsafe.SliceData(data))),
+			})
+		}
+		slices.SortFunc(refs, func(left, right pageRef) int {
+			return cmp.Compare(left.number, right.number)
+		})
+		regions := make([]uint64, 0, len(t.regions)*3)
+		for _, region := range t.regions {
+			flags := uint64(region.Prot)
+			if region.Backend != nil {
+				flags |= 1 << 8
+			}
+			regions = append(regions, region.Start, region.End, flags)
+		}
+		pages := make([]uint64, len(refs))
+		addresses := make([]uintptr, len(refs))
+		for index, ref := range refs {
+			pages[index] = ref.number
+			addresses[index] = ref.address
+		}
+		t.memoryViewRegions = regions
+		t.memoryViewPages = pages
+		t.memoryViewAddresses = addresses
+		t.memoryViewValid = true
+	}
+	return t.memoryViewRegions, t.memoryViewPages, t.memoryViewAddresses, PageSize, true, nil
+}
+
+// ReleaseMemoryView 释放 AcquireMemoryView 持有的地址空间锁。
+func (t *Table) ReleaseMemoryView() {
+	t.mu.Unlock()
+}
+
+func (t *Table) invalidateMemoryViewLocked() {
+	t.memoryViewValid = false
+}
+
 func (t *Table) fetchInstructionLocked(address uint64) (uint32, uint64, error) {
 	if instruction, length, ok := t.cachedInstructionLocked(address); ok {
 		return instruction, length, nil
@@ -322,18 +423,19 @@ func (t *Table) fetchInstructionLocked(address uint64) (uint32, uint64, error) {
 
 func (t *Table) cachedInstructionLocked(address uint64) (uint32, uint64, bool) {
 	page := address / PageSize
-	if !t.codePageCached || t.codePage != page {
+	entry := t.instructionPageLocked(page)
+	if entry == nil {
 		return 0, 0, false
 	}
 	offset := address % PageSize
 	if offset+4 <= PageSize {
-		instruction := binary.LittleEndian.Uint32(t.codePageBytes[offset : offset+4])
+		instruction := binary.LittleEndian.Uint32(entry.data[offset : offset+4])
 		if instruction&0x3 != 0x3 {
 			return instruction & 0xFFFF, 2, true
 		}
 		return instruction, 4, true
 	}
-	raw := binary.LittleEndian.Uint16(t.codePageBytes[offset : offset+2])
+	raw := binary.LittleEndian.Uint16(entry.data[offset : offset+2])
 	if raw&0x3 == 0x3 {
 		return 0, 0, false
 	}
@@ -342,28 +444,38 @@ func (t *Table) cachedInstructionLocked(address uint64) (uint32, uint64, bool) {
 
 func (t *Table) cacheInstructionPageLocked(address uint64) {
 	page := address / PageSize
+	if t.instructionPageLocked(page) != nil {
+		return
+	}
 	base := page * PageSize
 	if err := t.checkLocked(base, PageSize, ProtExec); err != nil {
 		return
 	}
-	if t.codePageBytes == nil {
-		t.codePageBytes = make([]byte, PageSize)
-	}
-	if err := t.readMappedLocked(base, t.codePageBytes); err != nil {
+	data := make([]byte, PageSize)
+	if err := t.readMappedLocked(base, data); err != nil {
 		t.invalidateCodeLocked(base, base+PageSize)
 		return
 	}
-	t.codePage = page
-	t.codePageCached = true
+	t.instructionPages[instructionPageSlot(page)] = instructionPage{
+		page: page, data: data, version: t.codeGeneration, valid: true,
+	}
 }
 
 func (t *Table) invalidateCodeLocked(start, end uint64) {
-	if !t.codePageCached {
+	if start >= end {
 		return
 	}
-	pageStart := t.codePage * PageSize
-	if start < pageStart+PageSize && end > pageStart {
-		t.codePageCached = false
+	invalidated := false
+	for page := start / PageSize; page <= (end-1)/PageSize; page++ {
+		entry := &t.instructionPages[instructionPageSlot(page)]
+		if entry.valid && entry.page == page {
+			invalidated = true
+			break
+		}
+	}
+	if invalidated {
+		clear(t.instructionPages[:])
+		t.codeGeneration++
 	}
 }
 
@@ -451,6 +563,7 @@ func (t *Table) writeLocked(address uint64, buffer []byte) error {
 		if stored == nil {
 			stored = make([]byte, PageSize)
 			t.pages[page] = stored
+			t.invalidateMemoryViewLocked()
 		}
 		copy(stored[start-base:stop-base], slice)
 	}
@@ -551,6 +664,7 @@ func (t *Table) Load(ctx context.Context, address uint64, content []byte) error 
 		if stored == nil {
 			stored = make([]byte, PageSize)
 			t.pages[page] = stored
+			t.invalidateMemoryViewLocked()
 		}
 		copy(stored[start-base:stop-base], content[start-address:stop-address])
 	}
@@ -576,6 +690,7 @@ func (t *Table) Sync(ctx context.Context, start, end uint64) error {
 
 func (t *Table) dropPagesLocked(start, end uint64) {
 	t.invalidateCodeLocked(start, end)
+	t.invalidateMemoryViewLocked()
 	for page := start / PageSize; page < end/PageSize; page++ {
 		delete(t.pages, page)
 	}
@@ -702,6 +817,7 @@ func (t *Table) checkBudgetLocked(size uint64) error {
 
 func (t *Table) insertLocked(region Region) {
 	t.invalidateCodeLocked(region.Start, region.End)
+	t.invalidateMemoryViewLocked()
 	index := sort.Search(len(t.regions), func(i int) bool {
 		return t.regions[i].Start >= region.Start
 	})
@@ -758,6 +874,7 @@ func (t *Table) Resize(ctx context.Context, oldStart, oldEnd, newEnd uint64) err
 		return err
 	}
 	t.regions = kept
+	t.invalidateMemoryViewLocked()
 	return nil
 }
 

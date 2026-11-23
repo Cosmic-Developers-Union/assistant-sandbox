@@ -35,13 +35,21 @@ CPU 拓扑、transparent hugepage 与 clocksource）；`/proc` 继续由内核
 
 已知问题：
 
-- Python 启动已从分钟级降到秒级：`python --version` 约 1.5 秒，
-  `python -S -c 'print(1)'` 约 4.8 秒（同机实测，包含约 1 秒开发根安装）。
-- Node.js 使用 `--jitless`，`node -e 'console.log(1)'` 仍约 20 秒。
+- Python 启动已从分钟级降到秒级。同一机器上，C++ 快速路径
+  `python --version` 约 1.0 秒、`python -S -c 'print(1)'` 约 2.1 秒
+  （均包含约 0.9 秒开发根安装）；纯 Go 回退分别约 1.6 秒和 4.7 秒。
+  同一客体二进制在 QEMU user-mode TCG 下 `-S -c 'print(1)'` 约
+  0.20 秒，因此扣除安装后的 VM 指令层仍约有 5.9 倍损失；计入根文件
+  安装时整条 CLI 约为 10.3 倍。
+- Node.js 使用 `--jitless`，C++ 快速路径下
+  `node -e 'console.log(1)'` 约 12 秒，纯 Go 回退约 20 秒。
 - npm 已打包，但 `npm --version` 在当前解释器中需要数分钟，仍需优化。
 - pip 暂不打包；完整 pip CLI 导入超过 180 秒，不能作为可用开发工具发布。
 - 当前 `apk` 是真实 apk-tools 二进制，但包索引/仓库未预置；离线安装
   与仓库刷新尚未达到发行版可用状态。
+- C++ 快速路径只覆盖整数 ALU、乘除、访存与分支；浮点、原子、CSR 和
+  系统调用仍回退单步。Linux 默认 `make build` 启用它，其他平台或
+  `CGO_ENABLED=0` 使用纯 Go 解释器。
 
 ## 外部 LTP
 
@@ -72,9 +80,9 @@ S4 门禁检查：
 - `/sys`
 
 默认 CLI 已提供 S4 合同中的 `git`、`apk`、`cc`、Python、Node、
-`/proc/self/status` 与 `/sys/kernel` 基础视图，但发行版 init、完整
-sysfs/设备枚举、namespace/cgroup 与可用包仓库仍未达到。不能仅凭
-CLI 工具存在性声明 S4 完成。
+`/proc/self/status`、`/sys/kernel` 基础视图与 BusyBox `/sbin/init`
+applet，但发行版 init 启动流程、完整 sysfs/设备枚举、namespace/cgroup
+与可用包仓库仍未达到。不能仅凭 CLI 工具存在性声明 S4 完成。
 
 ## 参考与差分
 

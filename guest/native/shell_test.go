@@ -19,7 +19,7 @@ func TestInstallProvidesNativeBashAndSh(t *testing.T) {
 	if err := nativeshell.Install(t.Context(), system); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"/bin/bash", "/bin/busybox", "/lib/ld-musl-riscv64.so.1", "/usr/lib/libreadline.so.8"} {
+	for _, name := range []string{"/bin/bash", "/bin/busybox", "/sbin/init", "/lib/ld-musl-riscv64.so.1", "/usr/lib/libreadline.so.8"} {
 		if _, err := system.Stat(t.Context(), name); err != nil {
 			t.Fatalf("缺少 %s: %v", name, err)
 		}

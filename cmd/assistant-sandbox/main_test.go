@@ -119,6 +119,7 @@ test -n "$$(git rev-parse HEAD)"
 apk --version >/dev/null
 test -r /sys/kernel/osrelease
 test -r /proc/self/status
+test -x /sbin/init
 cd /work
 printf 'int main(void){return 0;}\n' > /work/dev.c
 cc -o /work/dev /work/dev.c

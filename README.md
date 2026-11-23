@@ -40,6 +40,10 @@ make install
 assistant-sandbox --dir . -c 'printf hello'
 ```
 
+Linux 上 `make build` 默认启用 C++ 批量整数执行核心，并要求宿主提供
+C++17 编译器；产物仍为静态链接。需要纯 Go 可移植构建时使用
+`CGO_ENABLED=0 make build`，此时功能保持一致，但 Python/Node 启动更慢。
+
 CLI 默认执行客体中的真实 Bash；`--shell sh` 切换到 BusyBox sh。
 `zsh` 暂不提供 riscv64 客体资产，会返回明确错误；`userland/shell` 的
 内建 mvdan/sh 槽位已标记为废弃，只为旧 SDK/模型契约保留。

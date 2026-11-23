@@ -7,7 +7,9 @@
 ## 1. 安装工具链
 
 需要 Go 版本与 [go.mod](../go.mod) 的 `go` 指令一致;CI 经
-`setup-go` 的 `go-version-file` 安装。检查:
+`setup-go` 的 `go-version-file` 安装。Linux 默认构建还要求 C++17
+编译器(`g++`)以启用批量整数执行核心;无 C++ 编译器时可用
+`CGO_ENABLED=0 make build` 退回纯 Go。检查:
 
 ```sh
 make toolchain
@@ -24,6 +26,9 @@ make build
 参数被接受,新 CLI 不会读取 WASI 模块。`assistant-bash.wasm.gz` 保留
 给 SDK/旧入口使用。CLI 自身内嵌真实 riscv64 GNU Bash 5.2.37 与
 BusyBox 1.37.0 sh,不依赖宿主 shell。
+
+`make build` 在 Linux 上生成静态链接的 C++ 加速 CLI;`CGO_ENABLED=0`
+构建不带 C++ 快速路径,适合无可移植 C++ 工具链的环境。
 
 ## 2. 创建 VM 并运行 Bash
 

@@ -598,6 +598,20 @@ func (m meter) Charge(instructions uint64) error {
 	return m.meters.Charge(m.ctx, m.pid, instructions)
 }
 
+// BatchAllowed 只在大额工作预算下允许批量计费，避免小预算测试
+// 因一次执行多条指令而越过配额检查点。
+func (m meter) BatchAllowed() bool {
+	if m.meters == nil {
+		return true
+	}
+	view, err := m.meters.View(m.ctx, m.pid)
+	if err != nil {
+		return false
+	}
+	const batchReserve = 1 << 16
+	return view.WorkLimit == 0 || view.WorkLimit-view.WorkUsed >= batchReserve
+}
+
 func metersOf(process proc.Proc) resources.Meter {
 	if process.Resources == nil {
 		return nil
@@ -1870,6 +1884,15 @@ type sliceSwitcher struct {
 func (s *sliceSwitcher) Tick() bool {
 	s.remaining--
 	return s.remaining == 0
+}
+
+func (s *sliceSwitcher) Advance(steps uint64) bool {
+	if steps >= s.remaining {
+		s.remaining = 0
+		return true
+	}
+	s.remaining -= steps
+	return false
 }
 
 func (s *sliceSwitcher) Switch(ctx context.Context) (bool, error) {

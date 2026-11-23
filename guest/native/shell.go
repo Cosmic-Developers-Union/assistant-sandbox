@@ -65,7 +65,7 @@ func Install(ctx context.Context, system vmfs.System) error {
 	if system == nil {
 		return errno.Invalid
 	}
-	for _, dir := range []string{"/bin", "/lib", "/usr/lib"} {
+	for _, dir := range []string{"/bin", "/lib", "/sbin", "/usr/lib"} {
 		if err := mkdirAll(ctx, system, dir); err != nil {
 			return fmt.Errorf("建立 %s: %w", dir, err)
 		}
@@ -91,6 +91,7 @@ func Install(ctx context.Context, system vmfs.System) error {
 		{"/usr/lib/libreadline.so.8", "libreadline.so.8.2"},
 		{"/usr/lib/libncursesw.so.6", "libncursesw.so.6.5"},
 		{"/bin/sh", "busybox"},
+		{"/sbin/init", "/bin/busybox"},
 	}
 	for _, applet := range busyboxApplets {
 		links = append(links, [2]string{"/bin/" + applet, "busybox"})

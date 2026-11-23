@@ -10,18 +10,28 @@ import (
 )
 
 type Core struct {
-	machine cpu.Machine
-	memory  cpu.Memory
-	atomics cpu.AtomicMemory
-	exec    cpu.ExecutableChecker
-	fetcher cpu.InstructionFetcher
-	meter   cpu.Meter
-	cancel  cpu.Canceller
-	lr      reservation
-	lrValue uint64
+	machine     cpu.Machine
+	memory      cpu.Memory
+	atomics     cpu.AtomicMemory
+	exec        cpu.ExecutableChecker
+	fetcher     cpu.InstructionFetcher
+	pageFetcher cpu.InstructionPageFetcher
+	meter       cpu.Meter
+	cancel      cpu.Canceller
+	lr          reservation
+	lrValue     uint64
 
 	// retired 是已成功退休的指令数,作为 cycle/instret 计数器的值源。
 	retired uint64
+
+	batchBase    uint64
+	batchVersion uint64
+	batchValid   bool
+	batchAllowed bool
+	batchPages   [256]decodedInstructionPage
+	batchBases   [256]uint64
+	batchWordsAt [256]uintptr
+	batchBytesAt [256]uintptr
 }
 
 // numFPRegs 是 RISC-V 浮点寄存器堆规模。
@@ -63,8 +73,15 @@ func New(config cpu.Config) (*Core, error) {
 	if fetcher, ok := config.Memory.(cpu.InstructionFetcher); ok {
 		core.fetcher = fetcher
 	}
+	if fetcher, ok := config.Memory.(cpu.InstructionPageFetcher); ok {
+		core.pageFetcher = fetcher
+	}
 
 	core.machine = cpu.Machine{PC: config.Entry, Registers: make([]uint64, numRegs), Floats: make([]uint64, numFPRegs)}
+	core.batchAllowed = core.meter == nil
+	if batchMeter, ok := core.meter.(cpu.BatchMeter); ok {
+		core.batchAllowed = batchMeter.BatchAllowed()
+	}
 	return core, nil
 }
 
@@ -78,11 +95,20 @@ func (c *Core) Attach(memory cpu.Memory) {
 	c.memory = memory
 	c.exec = nil
 	c.fetcher = nil
+	c.pageFetcher = nil
+	c.batchValid = false
+	clear(c.batchPages[:])
+	clear(c.batchBases[:])
+	clear(c.batchWordsAt[:])
+	clear(c.batchBytesAt[:])
 	if checker, ok := memory.(cpu.ExecutableChecker); ok {
 		c.exec = checker
 	}
 	if fetcher, ok := memory.(cpu.InstructionFetcher); ok {
 		c.fetcher = fetcher
+	}
+	if fetcher, ok := memory.(cpu.InstructionPageFetcher); ok {
+		c.pageFetcher = fetcher
 	}
 }
 

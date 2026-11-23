@@ -127,6 +127,25 @@ type InstructionFetcher interface {
 	FetchInstruction(ctx context.Context, address uint64) (uint32, uint64, error)
 }
 
+// InstructionPageFetcher 是批量执行所需的整页取指能力。返回的 Data
+// 在本次 VM 生命周期内保持不可变；失效由 version 变化表达。
+type InstructionPageFetcher interface {
+	FetchInstructionPage(ctx context.Context, address uint64) (base uint64, data []byte, version uint64, ok bool, err error)
+}
+
+// BatchStepper 是可选的批量指令执行能力。实现必须在无法继续批量
+// 执行时尽量少执行并于下一条指令前返回，由调用方回退到单步执行。
+type BatchStepper interface {
+	BatchEnabled() bool
+
+	StepBatch(ctx context.Context, limit uint64) (uint64, Outcome, error)
+}
+
+// BatchMeter 报告当前余量是否适合批量计费；未实现时批量执行禁用。
+type BatchMeter interface {
+	BatchAllowed() bool
+}
+
 // AtomicMemory 是可选的内存原子读改写能力(K02/K03):AMO 与由
 // LR/SC 实现的比较交换必须在同一内存锁内完成读改写,否则多个
 // hart 的原子操作会相互覆盖。width 为 4 或 8,operation 返回新值。
