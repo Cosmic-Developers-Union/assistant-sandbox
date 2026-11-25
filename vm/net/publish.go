@@ -4,8 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
-	stdnet "net"
-	"os"
+	"strings"
 	"sync"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
@@ -102,7 +101,8 @@ func (p *Publication) Revoke() error {
 
 func closeIgnoreClosed(closer io.Closer) error {
 	err := closer.Close()
-	if err == nil || errors.Is(err, stdnet.ErrClosed) || errors.Is(err, os.ErrClosed) {
+	if err == nil || strings.Contains(err.Error(), "use of closed network connection") ||
+		strings.Contains(err.Error(), "file already closed") {
 		return nil
 	}
 	return err
