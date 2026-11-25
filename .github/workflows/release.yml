@@ -25,7 +25,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           sha=$(git rev-parse HEAD)
-          deadline=$(( $(date +%s) + 1800 ))
+          deadline=$(( $(date +%s) + 10800 ))
           while :; do
             runs=$(gh api "repos/$GH_REPO/actions/workflows/test.yml/runs?head_sha=$sha" --jq '[.workflow_runs[] | select(.event != "pull_request")]')
             conclusions=$(printf '%s' "$runs" | jq -r '[.[].conclusion] | join(",")')
@@ -39,7 +39,7 @@ jobs:
               exit 1
             fi
             if [ "$(date +%s)" -gt "$deadline" ]; then
-              echo "等待 Test 工作流超时(30 分钟),拒绝发布" >&2
+              echo "等待 Test 工作流超时(3 小时),拒绝发布" >&2
               exit 1
             fi
             echo "等待 Test 工作流完成(当前: ${statuses:-尚未注册})…"

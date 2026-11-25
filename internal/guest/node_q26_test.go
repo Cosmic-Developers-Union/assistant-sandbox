@@ -81,6 +81,9 @@ func TestNode22NpmControlledRegistry(t *testing.T) {
 	machine, connection := node22GuestWith(t, func(options *instance.Options) {
 		guestEgress(policy)(options)
 		options.TraceLimit = 100000
+		// Q26 exercises npm/network plumbing, not the jitless backend.
+		// Standard V8 keeps the install within the CI budget.
+		options.AllowGuestRWX = true
 	})
 	installGuestShell(t, machine)
 	installNpm(t, machine)
@@ -119,7 +122,7 @@ socket.on("error", (error) => { console.log("Q26-TLS-ERR", error.code, error.mes
 		t.Fatalf("客体 TLS 探针 exit=%d stdout=%q stderr=%q", tlsCode, tlsOut, tlsErr)
 	}
 	goodOut, goodErr, code := runNodeInDir(t, connection, "/work/q26good",
-		[]string{"--jitless", "--no-network-family-autoselection", "--dns-result-order=ipv4first",
+		[]string{"--no-network-family-autoselection", "--dns-result-order=ipv4first",
 			"/usr/lib/node_modules/npm/bin/npm-cli.js", "install", "--no-audit", "--no-fund", "q26-pure"},
 		1800*time.Second, env)
 	if code != 0 {
@@ -142,7 +145,7 @@ socket.on("error", (error) => { console.log("Q26-TLS-ERR", error.code, error.mes
 		t.Fatalf("registry 包加载 exit=%d stdout=%q stderr=%q", code, output, diagnostic)
 	}
 	badOut, badErr, badCode := runNodeInDir(t, connection, "/work/q26bad",
-		[]string{"--jitless", "--no-network-family-autoselection", "--dns-result-order=ipv4first",
+		[]string{"--no-network-family-autoselection", "--dns-result-order=ipv4first",
 			"/usr/lib/node_modules/npm/bin/npm-cli.js", "install", "--no-audit", "--no-fund", "q26-bad"},
 		1800*time.Second, env)
 	if badCode == 0 {
