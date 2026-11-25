@@ -17,7 +17,7 @@ jobs:
         with:
           go-version-file: go.mod
       # B09:发布门禁——标签提交必须先通过 Test 工作流的全部任务
-      # (light/integration/differential/posix/runtime);等待其完成,
+      # (light/integration/differential/runtime);等待其完成,
       # 结论非 success 即拒绝发布。
       - name: Require Test workflow success for this tag
         env:
@@ -45,12 +45,10 @@ jobs:
             echo "等待 Test 工作流完成(当前: ${statuses:-尚未注册})…"
             sleep 60
           done
-      - name: Build guest and CLI
+      - name: Build release CLIs
         shell: bash
         run: |
-          make guest
           mkdir -p dist
-          cp assistant-bash.wasm.gz dist/
           version="${GITHUB_REF_NAME}"
           for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
             output="dist/assistant-sandbox-${target%/*}-${target#*/}"

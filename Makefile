@@ -23,11 +23,10 @@ endif
 
 # 工具链声明:Go 版本以 go.mod 的 go 指令为唯一事实来源(CI 经 setup-go
 # 的 go-version-file 安装同一版本,docker-test 使用对应补丁版本的镜像);
-# golangci-lint 版本固定在 .github/workflows/test.yml 的 action 参数中;
-# 客体工具链 = 同一 Go 工具链(GOOS=wasip1 GOARCH=wasm)+ gzip,无外部交叉编译器。
+# golangci-lint 版本固定在 .github/workflows/test.yml 的 action 参数中。
 GOLANGCI_LINT_VERSION := v2.14.0
 
-.PHONY: guest build release install clean lint test bench test-multicore docker-test toolchain isolated-check offline-check getting-started compat-s3 compat-ltp compat-s4 compat-python perf-languages
+.PHONY: build release install clean lint test bench test-multicore docker-test toolchain isolated-check offline-check getting-started compat-s3 compat-ltp compat-s4 compat-python perf-languages
 
 # B01:全新克隆仅依赖模块缓存即可构建(无 replace/无宿主绝对路径,
 # 由 internal/metadata TestModuleResolvesWithoutLocalReplacements 锁定)。
@@ -40,32 +39,27 @@ isolated-check:
 # B05:依赖与镜像预置后关闭下载通道,启动 VM、执行程序并关闭。
 offline-check: build
 	GOPROXY=off ./assistant-sandbox \
-		--module assistant-bash.wasm.gz -c 'printf sandbox-ok' | grep -q sandbox-ok \
+		-c 'printf sandbox-ok' | grep -q sandbox-ok \
 		&& echo "offline-check: 离线启动/执行/关闭通过"
 
 toolchain:
-	@expected=$$(sed -n 's/^go \([0-9.]*\)$$/\1/p' go.mod); actual=$$(go version | sed 's/^go version go//; s/ .*//'); if [ "$$actual" != "$$expected" ]; then echo "Go 版本与 go.mod 声明不一致: 本机 $$actual, 声明 $$expected" >&2; exit 1; fi; echo "Go $$actual(声明 $$expected)"; echo "golangci-lint $(GOLANGCI_LINT_VERSION)(CI action 参数)"; echo "客体工具链: 同一 Go 工具链 GOOS=wasip1 + gzip"
+	@expected=$$(sed -n 's/^go \([0-9.]*\)$$/\1/p' go.mod); actual=$$(go version | sed 's/^go version go//; s/ .*//'); if [ "$$actual" != "$$expected" ]; then echo "Go 版本与 go.mod 声明不一致: 本机 $$actual, 声明 $$expected" >&2; exit 1; fi; echo "Go $$actual(声明 $$expected)"; echo "golangci-lint $(GOLANGCI_LINT_VERSION)(CI action 参数)"
 
-guest:
-	go run ./cmd/assistant-sandbox-build
-
-build: guest
+build:
 	CGO_ENABLED=$(CGO_ENABLED) go build -trimpath $(BUILD_FLAGS) -o assistant-sandbox ./cmd/assistant-sandbox
 
-# U12:生成可上传的 CLI/客体与摘要、模块 SBOM 清单。
+# U12:生成可上传的 CLI 与摘要、模块 SBOM 清单。
 release: build
 	rm -rf dist
 	mkdir -p dist
 	cp assistant-sandbox dist/assistant-sandbox
-	cp assistant-bash.wasm.gz dist/assistant-bash.wasm.gz
-	cd dist && sha256sum assistant-sandbox assistant-bash.wasm.gz > SHA256SUMS
+	cd dist && sha256sum assistant-sandbox > SHA256SUMS
 	go version -m assistant-sandbox > dist/SBOM.txt
 	@echo "release: dist/SHA256SUMS 与 dist/SBOM.txt 已生成"
 
 install: build
-	install -d "$(PREFIX)/bin" "$(PREFIX)/share/assistant-sandbox"
+	install -d "$(PREFIX)/bin"
 	install -m 0755 assistant-sandbox "$(PREFIX)/bin/assistant-sandbox"
-	install -m 0644 assistant-bash.wasm.gz "$(PREFIX)/share/assistant-sandbox/assistant-bash.wasm.gz"
 
 clean:
 	rm -f assistant-sandbox assistant-sandbox.exe assistant-bash.wasm assistant-bash.wasm.gz
@@ -74,7 +68,7 @@ clean:
 lint:
 	golangci-lint run
 
-test: guest
+test: build
 	go test ./...
 
 bench:
@@ -103,10 +97,7 @@ docker-test:
 		-e GOGC=20 \
 		-e GOCACHE=/go-build \
 		golang:1.27.0 \
-		sh -c 'make guest && go test -count=1 -timeout=20m $(if $(TEST_ARGS),$(TEST_ARGS),./...)'; \
-	status=$$?; \
-	chown --quiet "$$(id -u):$$(id -g)" assistant-bash.wasm assistant-bash.wasm.gz 2>/dev/null || true; \
-	exit $$status
+		sh -c 'go test -count=1 -timeout=20m $(if $(TEST_ARGS),$(TEST_ARGS),./...)'
 
 # R09:新检出按 docs/getting-started.md 完成构建、Bash/Python/Node 启动。
 getting-started: build

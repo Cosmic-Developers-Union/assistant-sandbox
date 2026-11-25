@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### 移除
+
+- 删除历史 WASI 客体 `assistant-bash.wasm.gz`、WASI 构建器与运行时、
+  `--module` 兼容参数、POSIX WASI gate 及 wazero 依赖。
+- 发布与安装只包含 Linux ABI VM CLI，不再生成或分发 WASM 客体。
+
 ## [0.1.0] - 2026-11-25
 
 首个面向用户的 RISC-V Linux ABI VM 版本候选。

@@ -3,11 +3,11 @@
 本清单固定当前仓库 HEAD 的本地可重建产物。发布时必须先执行
 `make release`,再将 `dist/` 与本文档一起上传到稳定 Release。
 
-首个用户版本使用 `v0.1.0` 标签。发布构建必须注入标签版本，并检查
-`dist/assistant-sandbox --version` 输出与标签一致：
+发布构建必须注入标签版本，并检查 `dist/assistant-sandbox --version`
+输出与标签一致：
 
 ```sh
-make release VERSION=v0.1.0
+make release VERSION=vX.Y.Z
 ./dist/assistant-sandbox --version
 ```
 
@@ -16,7 +16,6 @@ make release VERSION=v0.1.0
 | 产物 | 版本/来源 | SHA-256 |
 | --- | --- | --- |
 | Go SDK/CLI | `assistant-sandbox` HEAD | 由 `make release` 写入 `dist/SHA256SUMS` |
-| WASI Bash 客体 | 构建器生成 `assistant-bash.wasm.gz` | 由 `dist/SHA256SUMS` 固定 |
 | CPython 客体 | 3.12.16 Alpine 3.22 riscv64（zstd tar） | `be182df1d7aa55ebe0f63ee6967a142f63ab0bb7291b6fcb2e5156a3af0b46b1` |
 | Node.js 客体 | 22.23.5-r0 Alpine 3.22 riscv64（zstd tar） | `23f6695490aee03ed372669896e37640e13b71a6b66cc2a5298d7fa69779294b` |
 | TinyCC 客体工具链 | 0.9.28rc/0.9.27 git Alpine | `dc16d9d4e2b8f3bd1301cf20519efc35fd44ab3ee7a05db3988c16d3bd73ce04` |
@@ -44,5 +43,5 @@ make isolated-check
 `make release` 不依赖原开发机路径;客体运行时的构建/装配入口见
 `docs/runtime/toolchain.md`、`internal/guest/testdata/python312/build.sh` 和
 `internal/guest/testdata/nodejs/build.sh`。下载资源必须由 Release 提供
-`dist/assistant-sandbox`、`dist/assistant-bash.wasm.gz`、`dist/SHA256SUMS`
-与 `dist/SBOM.txt`;缺少任一文件不得宣称完整发布。
+`dist/assistant-sandbox`、`dist/SHA256SUMS` 与 `dist/SBOM.txt`;
+缺少任一文件不得宣称完整发布。

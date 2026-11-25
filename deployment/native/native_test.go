@@ -9,7 +9,6 @@ import (
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/contract"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/deployment"
-	"github.com/Cosmic-Developers-Union/assistant-sandbox/deployment/wasm"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fd"
 	vmfs "github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fs"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/resources"
@@ -102,16 +101,6 @@ func TestMatricesAreHonest(t *testing.T) {
 
 	if native.AddressSpace != deployment.Partial {
 		t.Fatalf("native 的地址空间应声明为 partial: %v", native.AddressSpace)
-	}
-	guest := wasm.Matrix()
-	if guest.Name != "wasm" || guest.Executors["builtin-go"] != deployment.Supported {
-		t.Fatalf("wasm matrix=%+v", guest)
-	}
-	if guest.AddressSpace != deployment.Unsupported {
-		t.Fatalf("wasm 的地址空间应声明为不支持: %v", guest.AddressSpace)
-	}
-	if guest.Signals != deployment.Unsupported || guest.Snapshot != deployment.Unsupported {
-		t.Fatal("WASM 部署未装配的能力必须声明为不支持")
 	}
 }
 

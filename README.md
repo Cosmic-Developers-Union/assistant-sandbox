@@ -12,23 +12,8 @@ VM、运行 shell/Python/Node 与关闭的完整命令
 兼容等级、S3 开发工作流和 LTP/S4 门禁见
 [Linux 兼容性门禁](docs/compatibility.md)。
 
-SDK 的 WASI 兼容入口不内嵌生成物，也不依赖 assistant 的内部包。
-`Config.ShellArchive` 接收 gzip
-压缩的 WASM，宿主自行加载固定版本的 Release 资源；`Config.MessageSource`
-提供本轮消息文本和 JSON 消息记录。SDK 不自行联网下载客体。
-
-```go
-archive, err := os.ReadFile("assistant-bash.wasm.gz")
-if err != nil {
-    return err
-}
-runtime, err := sandbox.New(ctx, sandbox.Config{ShellArchive: archive})
-if err != nil {
-    return err
-}
-defer runtime.Close()
-result, err := runtime.Execute(ctx, workspace, "printf hello", stdout, stderr)
-```
+SDK 的公开执行入口为 `instance` 和 `model` 包。RISC-V Linux ABI VM
+不依赖外部 WASM 客体。
 
 Go 版本见 [go.mod](go.mod)。在项目根目录构建和运行：
 
@@ -99,23 +84,19 @@ CLI 会捕获 `SIGINT`/`SIGTERM`/`SIGHUP`/`SIGQUIT` 并恢复宿主终端；
 默认不挂载宿主目录：只有显式传入 `--dir` 才把该目录映射到客体
 `/work`；不传时使用临时内存工作区。
 
-`make install` 将 CLI 安装到 `$(PREFIX)/bin`，客体安装到
-`$(PREFIX)/share/assistant-sandbox`，默认前缀为 `$HOME/.local`。
-`--module` 是旧 WASI CLI 的兼容参数，新原生 VM CLI 会接受但忽略它；
-`assistant-bash.wasm.gz` 仍作为 SDK/旧入口产物保留，不由新 CLI 加载。
+`make install` 将 CLI 安装到 `$(PREFIX)/bin`，默认前缀为 `$HOME/.local`。
 `--help` 和 `--dry-run` 无需加载客体。单次 CLI 执行支持 `-c` 或从标准输入读取脚本；
 `--session` 在同一个 VM 中运行一个持续的原生 shell 进程。
 
-[测试工作流](.github/workflows/test.yml)在 GitHub 标准托管 runner 上执行客体构建、
-golangci-lint、Go 测试和 POSIX 开发检查；[发布工作流](.github/workflows/release.yml)
-在 `v*` 标签上构建客体、多平台 CLI 和 SHA-256 清单，上传 GitHub Release。
-WASI 构建产物由 [.gitignore](.gitignore) 排除，源码边界检查拒绝将其加入 Git。
+[测试工作流](.github/workflows/test.yml)在 GitHub 标准托管 runner 上执行
+golangci-lint 和 Go 测试；[发布工作流](.github/workflows/release.yml)
+在 `v*` 标签上构建多平台 CLI 和 SHA-256 清单，上传 GitHub Release。
 固定的 N10 原生 shell 资产作为 `go:embed` 输入直接纳入源码，并由
 [THIRD_PARTY.md](THIRD_PARTY.md) 记录版本、摘要与许可。
 
 开发时安装 lefthook 后执行 `lefthook install`，提交钩子执行 `golangci-lint run`。
-`make lint` 执行静态检查，`make test` 先生成客体再运行测试。
-完整测试和 POSIX 检查由 GitHub CI 承担。
+`make lint` 执行静态检查，`make test` 先构建 CLI 再运行测试。
+完整测试由 GitHub CI 承担。
 
 项目原创代码采用 [GNU AGPL v3](LICENSE)（`AGPL-3.0-only`）。
 第三方代码保留其原有许可，来源见 [THIRD_PARTY.md](THIRD_PARTY.md)。

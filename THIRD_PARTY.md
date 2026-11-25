@@ -4,7 +4,6 @@
 由 [许可核对测试](internal/metadata/licenses_test.go) 在 CI 强制):
 
 - mvdan.cc/sh/v3 v3.14.0，BSD-3-Clause。来源：https://github.com/mvdan/sh/tree/v3.14.0 ，完整许可见 [mvdan-sh-LICENSE](licenses/mvdan-sh-LICENSE)。
-- wazero v1.12.0，Apache-2.0。来源：https://github.com/tetratelabs/wazero/tree/v1.12.0 ，完整许可见 [wazero-LICENSE](licenses/wazero-LICENSE)。
 - github.com/mattn/go-runewidth v0.0.23，MIT。来源：https://github.com/mattn/go-runewidth/tree/v0.0.23 ，完整许可见 [go-runewidth-LICENSE](licenses/go-runewidth-LICENSE)。
 - github.com/spf13/pflag v1.0.10，BSD-3-Clause。来源：https://github.com/spf13/pflag/tree/v1.0.10 ，完整许可见 [spf13-pflag-LICENSE](licenses/spf13-pflag-LICENSE)。
 - golang.org/x/crypto v0.56.0，BSD-3-Clause(Go 许可)。来源：https://cs.opensource.google/go/x/crypto/+/v0.56.0 ，完整许可见 [x-crypto-LICENSE](licenses/x-crypto-LICENSE)。
@@ -18,9 +17,6 @@
 
 - qiangli/coreutils 命令适配来源，MIT。来源：https://github.com/qiangli/coreutils ，保留许可见 [qiangli-coreutils-LICENSE](licenses/qiangli-coreutils-LICENSE)。
 - GoAWK 客体适配代码，MIT；保留的版权与许可见 [LICENSE.txt](userland/toolcompat/goawk/LICENSE.txt)。
-- `guest/overlay/stdin_os.go.txt` 来自 mvdan 的 `interp/stdin_js.go`，调整为 WASI
-  内存管道。`build/interpreter.go` 在临时依赖副本中适配解释器；模块缓存不被修改。
-
 客体运行时发布物(版本/摘要/支持期见 [构建配置](docs/runtime/toolchain.md);
 随发布物分发的完整许可证清单由 Q01/Q15 流水线产出并追加到本文件):
 

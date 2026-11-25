@@ -16,19 +16,18 @@
 | 宿主时间 | `vm/clock`（`clock.Real`） | 客体可见时间只经时钟端口；`time` 包仅用于测量/展示 |
 | 宿主随机 | `platform/entropy`（`crypto/rand`） | 生产熵源；确定性模式用 `vm/entropy.Seeded`，无环境旁路 |
 | 宿主网络 | `vm/net.Network`、`platform/network`，默认 `Denied` | M09 出口策略在 vm/net 逐地址/端口/协议裁决；未配置时非回环目标 ENETUNREACH；guest socket 回环仍在 VM 命名空间内 |
-| 宿主进程 | `internal/build`、`internal/diff`、`test/posix` | 仅构建、差分参考执行与 POSIX 测试；客体执行路径不可达 |
+| 宿主进程 | `internal/diff` | 仅用于差分参考执行；客体执行路径不可达 |
 | CLI 终端 | `cmd/assistant-sandbox/pty.go`、`signals_*.go` | 仅把宿主 stdin/stdout 桥接到 VM PTY；使用 `term` 切换 raw 模式，并捕获终止信号恢复终端，不读取宿主文件 |
 | 扩展模块 | `vm/bridge.Bridge`、`capability.Set.Bridge` | 扩展调用必须经能力端口，不能取得宿主引用 |
-| 原生批量执行（受控 unsafe） | `executor/cpu/riscv64/batch.go`、`hot_cgo.go`、`vm/memory/table.go` | 仅把持锁期间的页数据/译码指令切片地址传给同进程批量解释器；调用期间锁覆盖生命周期，不读取宿主文件、网络、时钟或进程能力，WASM 构建不编译 cgo 路径 |
-| WASI 部署（已退役） | `internal/legacy/wasm.go`、`platform/modules` | 旧 Runtime/Session 只由 `test/posix` 显式调用；公开 VM 入口为 `instance`/`model`（R06 收敛） |
+| 原生批量执行（受控 unsafe） | `executor/cpu/riscv64/batch.go`、`hot_cgo.go`、`vm/memory/table.go` | 仅把持锁期间的页数据/译码指令切片地址传给同进程批量解释器；调用期间锁覆盖生命周期，不读取宿主文件、网络、时钟或进程能力 |
 
 ## 已审计的显式例外
 
 - `userland/toolcompat/goawk/interp` 保留上游 `os/exec` 代码，但客体
   `awk` 入口固定 `NoExec: true`，`system()`/管道分支不可达。
-- `internal/legacy/fs_unix.go` 与 `platform/filesystem/*` 的 `syscall` 只用于文件
-  属性/时间戳适配，不启动宿主进程。
-- `guest/cmd` 与 `cmd/*` 是进程入口，不是客体代码。
+- `platform/filesystem/*` 的 `syscall` 只用于文件属性/时间戳适配，
+  不启动宿主进程。
+- `cmd/*` 是进程入口，不是客体代码。
 
 `internal/metadata/hostcap_test.go` 对生产源码的导入与进程启动调用
 做白名单校验：出现新的宿主能力入口会失败，必须先在本文登记。

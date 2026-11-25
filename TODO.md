@@ -1,15 +1,16 @@
 # 虚拟机开发任务清单
 
-## 核对状态(2026-10-23)
+## 核对状态(2026-11-25)
 
 - 全表重新审计后仅保留有实现与测试证据的勾选,其余恢复为未完成;达标任务行末附证据(实现文件、测试命令、CI 记录)。
 - 此前"全部完成"的标记(原提交 615346d,已 revert)与实现不符,不得再次整体勾选。
 - S 组适用性已经 A02 ADR(docs/adr/vm-architecture.md)确认:选择 Linux ABI 虚拟机路线,S01–S19 整组不适用,条目保留备查。
+- WASI 客体、`assistant-bash.wasm.gz`、`internal/build`、`internal/legacy`、`test/posix` 与其 CI gate 已退役;B02/B04/B05/B06/R06 等行中的路径仅作为历史证据保留。
 ## 目标与边界
 
 最终交付一个可以独立开发、构建、测试和发布的虚拟机：具有客体 CPU、地址空间、进程与线程、文件系统、设备和网络；提供基础 Linux 运行环境；在客体内部运行真实 CPython、Node.js 及其依赖。Console、Terminal 和 Bash 是使用虚拟机的入口，不是虚拟机的全部。
 
-Python 和 Node.js 的验收必须执行客体运行时，不能通过调用宿主解释器、伪造命令结果、替换成同名脚本或仅提供接口模型完成。WASI 可以作为部署载体，但不能据此缩减 Linux、线程、后台进程或运行时需求。
+Python 和 Node.js 的验收必须执行客体运行时，不能通过调用宿主解释器、伪造命令结果、替换成同名脚本或仅提供接口模型完成。WASI 路径已移除，不能据此缩减 Linux、线程、后台进程或运行时需求。
 
 以当前 CPU / ELF / Linux ABI 实现作为任务拆解起点。是否还必须启动原版 Linux 内核、采用何种执行后端，由 A02 明确；不能把“具备部分 Linux ABI”描述为“已经能够启动 Linux”。若选择全系统虚拟机，S 组为必做任务；若选择 Linux ABI 虚拟机，必须经目标确认后在 ADR 中说明 S 组不适用，不能以当前实现局限代替架构决策。
 
@@ -32,12 +33,12 @@ Python 和 Node.js 的验收必须执行客体运行时，不能通过调用宿�
 
 | 范围 | 源码依据 | 后续处理 |
 | --- | --- | --- |
-| 独立模块与构建 | [go.mod](go.mod)、[Makefile](Makefile)、[构建器](internal/build/build.go) | B 组建立独立发布基线 |
-| 当前公开运行时 | [wasm.go](wasm.go)、[session.go](session.go)、[旧契约](contract/contract.go) | C、R 组统一 VM 所有权与入口 |
+| 独立模块与构建 | [go.mod](go.mod)、[Makefile](Makefile) | B 组建立独立发布基线 |
+| 当前公开运行时 | [instance](instance/vm.go)、[model](model/model.go)、[旧契约](contract/contract.go) | C、R 组统一 VM 所有权与入口 |
 | CPU、ELF、Linux ABI | [CPU](executor/cpu/riscv64/core.go)、[ELF](loader/elf/elf.go)、[ABI](abi/linux/common/abi.go) | D 至 L 组审计并补齐 |
 | 内核与存储 | [Kernel](vm/kernel.go)、[内存](vm/memory/contract.go)、[文件系统](vm/fs/contract.go) | C、E、G 至 O 组统一语义 |
 | 控制台 | [TTY](vm/tty/tty.go)、[Shell loop](userland/shell/loop.go) | P 组接入真正持续运行的 VM |
-| 后台任务限制 | [解释器适配](internal/build/interpreter.go) | H、P 组实现能力后解除限制 |
+| 后台任务限制 | [Shell](userland/shell/shell.go) | H、P 组实现能力后解除限制 |
 | 新模型来源 | 原项目 `examples/agent/sandbox-contract/sandbox.go` 与 `sandbox_test.go` | A06 迁入独立仓库，不形成构建依赖 |
 
 ## A. 架构、兼容范围与验收资产

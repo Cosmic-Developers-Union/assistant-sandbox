@@ -1,6 +1,0 @@
-[
- {"name":"coreutils","url":"https://github.com/coreutils/coreutils.git","commit":"98c8b158b621220a423758c5ee913cf6e5d74126","scope":"tests/misc/{basename,dirname}.pl"},
- {"name":"goawk","url":"https://github.com/benhoyt/goawk.git","commit":"f59bf0db58a7dd3bebcdd64c9bd75ae2ea10932e","scope":"testdata/gawk/*.awk + .in/.ok，stdout golden 子集"},
- {"name":"sed","url":"https://github.com/uutils/sed.git","commit":"479c4bedf0cdb010cf0a413f8a7ec1e789c0d189","scope":"tests/by-util/test_sed.rs 的 check_output! 字面量参数用例"},
- {"name":"posixutils","url":"https://github.com/rustcoreutils/posixutils-rs.git","commit":"5cbdfacb0c7e4a61086a658df5ef7dc80b82e834","scope":"sh/tests/sh/**/*.sh + .out，test_script 成功脚本子集"}
-]

@@ -16,10 +16,9 @@
    以 glibc/musl 实际可链接执行为目标(见兼容配置 A03)。
 4. **宿主平台:linux/amd64 与 linux/arm64(Go 原生编译)**。解释器为纯 Go,
    无宿主 ISA 假设;其他平台的采纳以 U10 部署矩阵实测为准。
-5. **WASI 的角色:部署载体与开发基线,不是能力缩减依据**。现有 WASI 客体
-   (assistant-bash.wasm)与 wazero 执行路径保留为兼容入口;本文按 TODO
-   「目标与边界」的约束,WASI 不用于缩减 Linux、线程、后台进程或运行时需求。
-   新能力一律先落在 Linux ABI 路径。
+5. **WASI 已退役**。历史 WASI 客体 (`assistant-bash.wasm`)、wazero 执行路径、
+   POSIX WASI gate 与发布资产已移除。Linux ABI 路径是唯一执行路径,不用于
+   缩减 Linux、线程、后台进程或运行时需求。
 6. **执行后端:顺序解释器为语义基准后端**。允许未来增加翻译/缓存后端,
    但一切验收与差分以解释器语义为准,翻译后端不改变可观察语义。
 
@@ -45,7 +44,7 @@
   每项能力由本 VM 哪一层提供。
 - **动态程序支持**:F 组(PT_INTERP、共享库、TLS)与 K 组(线程/futex)
   成为 CPython/Node 的硬前置,不可绕过。
-- **旧 WASI 双轨期**:executor/wasm 与 executor/elf 并存直至 R06 收敛;
-  收敛前新功能不得加在 WASI 路径上。
+- **旧 WASI 双轨期已结束**:executor/wasm 与 WASI 发布资产已删除,
+  新功能只落在 Linux ABI 路径。
 - 若未来目标变更要求启动原版 Linux 内核,须以新 ADR 推翻本决策、恢复 S 组
   必做地位,并重新评估 G–O 的实现归属(A10 同步)。

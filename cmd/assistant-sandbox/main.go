@@ -31,7 +31,6 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	flags := pflag.NewFlagSet("assistant-sandbox", pflag.ContinueOnError)
 	flags.SetOutput(stderr)
 	dir := flags.String("dir", "", "要挂载到 /work 的宿主目录；为空时使用临时内存 /work")
-	module := flags.String("module", "", "已弃用：兼容旧 WASI CLI 参数，原生 VM 忽略")
 	command := flags.StringP("command", "c", "", "shell 脚本（默认 Bash）；未指定时读取标准输入")
 	shellName := flags.String("shell", "bash", "原生客体 shell: bash 或 sh（zsh 暂不支持）")
 	tools := flags.String("tools", "dev", "开发工具包: dev 或 minimal")
@@ -82,9 +81,6 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 			return 1, err
 		}
 		workspace = absolute
-	}
-	if *module != "" && (*verbose || *debug) {
-		_, _ = fmt.Fprintf(stderr, "忽略 --module=%s（原生 Linux ABI VM）\n", *module)
 	}
 	if *verbose || *debug || *dryRun {
 		_, _ = fmt.Fprintf(stderr, "工作区=%s shell=%s 客体=原生VM 只读=%t cpus=%d memory=%s\n",

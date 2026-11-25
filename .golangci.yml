@@ -131,10 +131,6 @@ linters:
         linters: [gosec]
         text: 'G115:'
         source: 'p\.random = rand\.New\(rand\.NewSource\(int64\(seed\)\)\)'
-      - path: '^executor/wasm/host\.go$'
-        linters: [gosec]
-        text: 'G115:'
-        source: 'remaining := uint32\(length\)'
       - path: '^filesystem/memfs/capacity\.go$'
         linters: [gosec]
         text: 'G115:'
@@ -171,17 +167,9 @@ linters:
         linters: [gosec]
         text: 'G115:'
         source: 'value = uint64\(-int64\(number\)\)'
-      - path: '^executor/wasm/engine_host\.go$'
-        linters: [gosec]
-        text: 'G115:'
-        source: 'i\.state\.finish\(Result\{Code: uint8\(code\), Reason: Exited\}, nil\)'
       - linters: [staticcheck]
         text: 'ST1005: error strings should not be capitalized'
         source: '(fmt\.Errorf|errors\.New)\("(Anthropic|Bash|Chat Completions|Claude|Git|Gitea|HTTP|Issue|JSON|Markdown|MCP|POSIX|QQ|Responses|Rust|SOPS|TLS|UTF-8|WASI|WASM|WebSocket|YAML)( |：)'
-      - path: '^executor/wasm/hostcall_test\.go$'
-        linters: [staticcheck]
-        text: 'SA1012:'
-        source: 'checkCancelled\(nil\)'
       - path: '^userland/toolcompat/bre/bre\.go$'
         linters: [gosec]
         text: 'G115:'
@@ -206,10 +194,6 @@ linters:
         linters: [gosec]
         text: 'G115:'
         source: '(uint32\(l\)|uint32\(r\)|sv := int64\(v<<shift\)|decoded = append\(decoded, byte\(v>>16\), byte\(v>>8\), byte\(v\)\))'
-      - path: '^executor/wasm/module\.go$'
-        linters: [gosec]
-        text: 'G115:'
-        source: '(size > uint64\(len\(module\)-offset\)|body := module\[offset : offset\+int\(size\)\]|offset \+= int\(size\)|length > uint64\(len\(body\)-offset\)|return string\(body\[offset : offset\+int\(length\)\]\))'
       - path: '^userland/commands/ar/archive\.go$'
         linters: [gosec]
         text: 'G115:'
@@ -221,18 +205,10 @@ linters:
         linters: [gosec]
         text: 'G404:'
         source: 'rand\.New\(rand\.NewSource\(42\)\)'
-      - path: '^internal/build/(build|interpreter)\.go$'
-        linters: [gosec]
-        text: 'G304:'
-        source: 'os\.ReadFile\('
       - path: '^filesystem/persistent/store\.go$'
         linters: [gosec]
         text: 'G304:'
         source: 'os\.(ReadFile\((checksum|target)|Open\(dir)\)'
-      - path: '^internal/build/build\.go$'
-        linters: [gosec]
-        text: 'G204:'
-        source: 'exec\.Command\("go", "(mod|list)",'
       - path: '^userland/toolcompat/goawk/interp/io\.go$'
         linters: [gosec]
         text: 'G204:'
@@ -277,14 +253,6 @@ linters:
       - path: '^executor/cpu/riscv64/core\.go$'
         linters: [gosec]
         text: 'G115:'
-      - path: '^internal/build/build\.go$'
-        linters: [gosec]
-        text: 'G204:'
-        source: 'exec\.Command\("go", "build"'
-      - path: '^internal/build/build\.go$'
-        linters: [gosec]
-        text: 'G302:'
-        source: 'os\.Chmod\(temp\.Name\(\), 0o644\)'
       - path: '^userland/toolcompat/bre/byte_pattern\.go$'
         linters: [gosec]
         text: 'G602:'
@@ -295,15 +263,11 @@ linters:
       - path: '^(abi/linux/|executor/cpu/riscv64/|executor/elf/|loader/elf/|filesystem/memfs/|vm/|internal/guest/)'
         linters: [gosec]
         text: 'G115:'
-      # G204/G304/G703/G306:构建器、差分执行器与 POSIX 开发测试以
-      # 变量为路径/启动受控子进程(qemu 参考执行、go 工具链、git),
-      # 输入全部来自仓库自身或测试临时目录;客体产物需要执行位。
-      - path: '^internal/(build|diff)/'
+      # G204/G304/G703/G306:差分执行器以变量为路径/启动受控子进程
+      # (qemu 参考执行),输入全部来自仓库自身或测试临时目录。
+      - path: '^internal/diff/'
         linters: [gosec]
         text: 'G(204|304|306|703):'
-      - path: '^test/posix/'
-        linters: [gosec]
-        text: 'G(204|304):'
       # G602:eventfd 写入前已校验缓冲长度 ≥8。
       - path: '^vm/eventfd/eventfd\.go$'
         linters: [gosec]

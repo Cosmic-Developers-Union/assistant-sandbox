@@ -1,51 +1,16 @@
 package vm
 
 import (
-	"bytes"
 	"go/parser"
 	"go/token"
 	"io/fs"
-	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
-
-	"github.com/tetratelabs/wazero"
-	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
 )
 
-func TestKernelActuallyRunsInsideWASM(t *testing.T) {
-	file := filepath.Join(t.TempDir(), "vm.wasm")
-	cmd := exec.CommandContext(t.Context(), "go", "build", "-o", file, "./testdata/guest.go")
-	cmd.Env = append(os.Environ(), "GOOS=wasip1", "GOARCH=wasm", "CGO_ENABLED=0")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("编译客体: %v\n%s", err, out)
-	}
-	binary, err := os.ReadFile(file)
-	if err != nil {
-		t.Fatal(err)
-	}
-	runtime := wazero.NewRuntime(t.Context())
-	defer func() {
-		if err := runtime.Close(t.Context()); err != nil {
-			t.Error(err)
-		}
-	}()
-	if _, err := wasi_snapshot_preview1.Instantiate(t.Context(), runtime); err != nil {
-		t.Fatal(err)
-	}
-	var stdout, stderr bytes.Buffer
-	if _, err := runtime.InstantiateWithConfig(t.Context(), binary, wazero.NewModuleConfig().WithStdout(&stdout).WithStderr(&stderr)); err != nil {
-		t.Fatal(err, stderr.String())
-	}
-	if stdout.String() != "vm: pid=2 parent=1 exit=7 net=ENETUNREACH ipc=ENOSYS\n" || stderr.Len() != 0 {
-		t.Fatal(stdout.String(), stderr.String())
-	}
-}
 func TestVMProductionCodeHasNoAmbientHostImports(t *testing.T) {
-
 	boundary := map[string]map[string]bool{
 		"platform/filesystem/filesystem_native.go": {"os": true, "path/filepath": true, "time": true},
 		"platform/filesystem/modes_native.go":      {"os": true},
@@ -68,7 +33,6 @@ func TestVMProductionCodeHasNoAmbientHostImports(t *testing.T) {
 		"filesystem/memfs/file.go": {"time": true},
 		// 时钟读数只用于测量耗时(系统调用轨迹),不作为客体可见时间。
 		"vm/clock/monotonic.go": {"time": true},
-		"guest/cmd/main.go":     {"os": true},
 
 		"filesystem/persistent/store.go": {"os": true},
 
@@ -134,7 +98,7 @@ func TestVMProductionCodeHasNoAmbientHostImports(t *testing.T) {
 			if strings.HasPrefix(relative, "userland/") && (strings.HasPrefix(name, prefix+"platform/") || strings.HasPrefix(name, prefix+"guest")) {
 				t.Errorf("用户程序依赖启动或平台层: %s import %s", path, name)
 			}
-			if forbidden[name] && !boundary[strings.TrimPrefix(filepath.ToSlash(path), "../")][name] {
+			if forbidden[name] && !boundary[relative][name] {
 				t.Errorf("客体核心存在资源旁路: %s import %s", path, name)
 			}
 		}

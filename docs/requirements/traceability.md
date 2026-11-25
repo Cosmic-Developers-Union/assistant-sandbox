@@ -30,7 +30,7 @@
 | VM 类型/ISA/后端 | 已决:[vm-architecture.md](../adr/vm-architecture.md)(A02) |
 | Node JIT 与 W^X | 已决:[node-jit.md](../adr/node-jit.md)(A05;最终配置切换在 Q24) |
 | S 组适用性 | 已决:不适用(A02;推翻须新 ADR) |
-| 旧 WASI 路径去留 | 待 R06(以调用方证据决定迁移或删除) |
+| 旧 WASI 路径去留 | 已删除(2026-11-25;WASI 客体、运行时与 gate 退役) |
 | CPython/Node 版本 | 已固定:[toolchain.md](../runtime/toolchain.md)(A04;升级须重跑 Q 组验收) |
 
 ## 不支持项查询
@@ -59,6 +59,6 @@ ENOTSUP 表(33 项)、声明语义表(6 项)、ENOSYS 清单(34 项)与
 | 身份与隔离 | O01–O10 | 双 VM 隔离与故障注入测试 |
 | Console/Terminal/Bash | P01–P15 | `model` 契约套件六场景(A07) |
 | CPython/Node 客体运行 | Q01–Q31 | A04 固定版本 + Q02 缺口追踪 |
-| SDK/CLI/集成 | R01–R09 | 公开 API 示例 + `test/posix` |
+| SDK/CLI/集成 | R01–R09 | 公开 API 示例 + CLI/VM 测试 |
 | 可观测性与性能 | T01–T11 | 快照/重放测试 + 基准 |
 | 最终验收与发布 | U01–U14 | 阶段 5 门禁聚合 |

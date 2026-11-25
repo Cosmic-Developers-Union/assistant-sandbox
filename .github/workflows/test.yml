@@ -10,7 +10,7 @@ concurrency:
   group: test-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  # B08:轻量任务——源码边界、lint、构建器可重复性与勾选/许可纪律。
+  # B08:轻量任务——源码边界、lint 与勾选/许可纪律。
   light:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -25,7 +25,6 @@ jobs:
       - name: Verify source boundary
         shell: bash
         run: |
-          test -z "$(git ls-files -- assistant-bash.wasm assistant-bash.wasm.gz)"
           go mod tidy -diff
           go build ./...
       - name: Toolchain declaration check (B03)
@@ -34,8 +33,6 @@ jobs:
         run: make isolated-check
       - name: Track discipline and license inventory (A10/B10)
         run: go test ./internal/metadata/ -count=1
-      - name: Reproducible guest build (B06)
-        run: go test ./internal/build/ -count=1
       - uses: golangci/golangci-lint-action@v9
         with:
           version: v2.14.0
@@ -58,8 +55,6 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: Build WASI guest
-        run: make guest
       - name: Unit and integration tests
         shell: bash
         run: |
@@ -274,21 +269,6 @@ jobs:
           go test ./abi/... -count=1
           go test ./internal/diff/ -count=1 -v
 
-  # B08:POSIX 开发检查。
-  posix:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    env:
-      GOFLAGS: -p=2
-      GOMEMLIMIT: 768MiB
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-      - name: POSIX development checks
-        run: make -C test/posix gate
-
   # B08:运行时入口任务——离线运行、CLI 与产物核验。
   runtime:
     runs-on: ubuntu-latest
@@ -308,4 +288,4 @@ jobs:
       - name: Verify release checksums
         run: cd dist && sha256sum -c SHA256SUMS
       - name: Verify CLI
-        run: ./assistant-sandbox --module assistant-bash.wasm.gz -c 'printf sandbox-ok'
+        run: ./assistant-sandbox -c 'printf sandbox-ok'

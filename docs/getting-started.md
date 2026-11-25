@@ -15,17 +15,15 @@
 make toolchain
 ```
 
-构建 CLI 和 WASI 兼容客体入口:
+构建 CLI:
 
 ```sh
 make build
 ```
 
-产物为 `assistant-sandbox` 与 `assistant-bash.wasm.gz`。CLI 的单次
-执行使用新的 Linux ABI VM 内核;`--module` 只作为旧 WASI CLI 的兼容
-参数被接受,新 CLI 不会读取 WASI 模块。`assistant-bash.wasm.gz` 保留
-给 SDK/旧入口使用。CLI 自身内嵌真实 riscv64 GNU Bash 5.2.37 与
-BusyBox 1.37.0 sh,不依赖宿主 shell。
+产物为 `assistant-sandbox`。CLI 使用 Linux ABI VM 内核,自身内嵌真实
+riscv64 GNU Bash 5.2.37 与 BusyBox 1.37.0 sh,不依赖宿主 shell,
+也不加载外部 WASM 客体。
 
 `make build` 在 Linux 上生成静态链接的 C++ 加速 CLI;`CGO_ENABLED=0`
 构建不带 C++ 快速路径,适合无可移植 C++ 工具链的环境。
