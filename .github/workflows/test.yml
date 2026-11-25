@@ -235,6 +235,8 @@ jobs:
       - name: Install qemu-riscv64
         run: sudo apt-get update -qq && sudo apt-get install -y -qq qemu-user
       - name: Build CPython 3.12.16 from source (Q01)
+        env:
+          QEMU_RISCV64: qemu-riscv64
         run: bash internal/guest/testdata/python312/build.sh "$RUNNER_TEMP/python312-build"
       - uses: actions/upload-artifact@v4
         with:
