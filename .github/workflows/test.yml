@@ -1,6 +1,7 @@
 name: Test
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 permissions:
@@ -63,7 +64,7 @@ jobs:
         shell: bash
         run: |
           ulimit -d 1048576
-          go test -count=1 -skip 'TestPython312Multiprocessing|TestPython312VenvOfflineInstall|TestPython312ControlledPipInstall|TestPython312PipBuildsNativeSdist|TestPythonNodeCoexist|TestNode' ./abi/... ./filesystem/... ./loader/... ./vm/... ./executor/... ./model/... ./internal/guest/ ./deployment/... ./contract/... ./inspect/...
+          go test -count=1 -skip 'TestPython312Multiprocessing|TestPython312VenvOfflineInstall|TestPython312ControlledPipInstall|TestPython312PipBuildsNativeSdist|TestPython312UpstreamTestSlice|TestPythonNodeCoexist|TestNode' ./abi/... ./filesystem/... ./loader/... ./vm/... ./executor/... ./model/... ./internal/guest/ ./deployment/... ./contract/... ./inspect/...
       - name: ISA regression gate (D13)
         shell: bash
         run: go test ./executor/cpu/... -count=1 -v 2>&1 | grep -E '^(=== RUN|--- FAIL|FAIL|ok)' | tail -120
@@ -235,12 +236,20 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        id: python-build-cache
+        with:
+          path: ${{ runner.temp }}/python312-build
+          key: cpython-3.12.16-${{ runner.os }}-${{ hashFiles('internal/guest/testdata/python312/**') }}
       - uses: goto-bus-stop/setup-zig@v2
+        if: steps.python-build-cache.outputs.cache-hit != 'true'
         with:
           version: 0.17.0
       - name: Install qemu-riscv64
+        if: steps.python-build-cache.outputs.cache-hit != 'true'
         run: sudo apt-get update -qq && sudo apt-get install -y -qq qemu-user
       - name: Build CPython 3.12.16 from source (Q01)
+        if: steps.python-build-cache.outputs.cache-hit != 'true'
         env:
           QEMU_RISCV64: qemu-riscv64
         run: bash internal/guest/testdata/python312/build.sh "$RUNNER_TEMP/python312-build"
@@ -298,7 +307,5 @@ jobs:
         run: make release
       - name: Verify release checksums
         run: cd dist && sha256sum -c SHA256SUMS
-      - name: Build CLI
-        run: go build -trimpath -o assistant-sandbox ./cmd/assistant-sandbox
       - name: Verify CLI
         run: ./assistant-sandbox --module assistant-bash.wasm.gz -c 'printf sandbox-ok'
