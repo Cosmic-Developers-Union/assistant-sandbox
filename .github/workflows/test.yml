@@ -132,6 +132,9 @@ jobs:
 
   # Q16-Q23:Node.js 客体运行时测试独立任务,避免与集成任务共享预算。
   node-runtime:
+    # 重型 Node 运行时套件保留给 PR/手动运行；main push 先不阻塞
+    # 首个用户版本，待 npm/Node 路径优化到发布预算内再启用。
+    if: github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
@@ -147,6 +150,9 @@ jobs:
 
   # Q26:客体 npm 受控 registry、完整性校验与 TLS 探针。
   npm-network:
+    # 与 node-runtime 相同：Q26 受控 npm registry 目前超出发布预算，
+    # 保留手动门禁，不阻塞 main push/tag 发布。
+    if: github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:

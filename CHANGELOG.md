@@ -28,6 +28,8 @@
 - 当前没有客体 zsh 资产；`--shell zsh` 明确拒绝。
 - S4 的发行版 init、完整 sysfs/设备枚举和可用包仓库仍未完成。
 - 标准 V8 需要 `--allow-guest-rwx`，该开关降低客体代码页的 W^X 隔离。
+- Q25–Q27 重型 Node/npm 网络门禁在 main push 和 tag 发布中暂不阻塞；
+  仍可在 PR、`workflow_dispatch` 或本地 `make compat-*` 中运行。
 
 ### 验证
 
