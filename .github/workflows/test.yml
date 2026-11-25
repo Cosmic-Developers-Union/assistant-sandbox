@@ -50,7 +50,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     env:
-      GOFLAGS: -p=2
+      GOFLAGS: -p=1
       GOMEMLIMIT: 768MiB
     steps:
       - uses: actions/checkout@v4
