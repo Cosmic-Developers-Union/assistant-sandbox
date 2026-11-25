@@ -38,8 +38,8 @@ isolated-check:
 	rm -rf "$$tmp"
 
 # B05:依赖与镜像预置后关闭下载通道,启动 VM、执行程序并关闭。
-offline-check: guest
-	GOPROXY=off GOFLAGS=-mod=mod go run ./cmd/assistant-sandbox \
+offline-check: build
+	GOPROXY=off ./assistant-sandbox \
 		--module assistant-bash.wasm.gz -c 'printf sandbox-ok' | grep -q sandbox-ok \
 		&& echo "offline-check: 离线启动/执行/关闭通过"
 

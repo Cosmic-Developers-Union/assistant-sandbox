@@ -2,6 +2,241 @@
 // 宿主继续使用逐指令解释路径。生成代码位于宿主私有映射:先以 RW
 // 写入,再 mprotect 为 RX,不向客体暴露可执行数据页。
 
+static uint32_t fp_flags_from_host(int exceptions) {
+	uint32_t flags = 0;
+	if ((exceptions & FE_INEXACT) != 0) {
+		flags |= 1;
+	}
+	if ((exceptions & FE_UNDERFLOW) != 0) {
+		flags |= 2;
+	}
+	if ((exceptions & FE_OVERFLOW) != 0) {
+		flags |= 4;
+	}
+	if ((exceptions & FE_DIVBYZERO) != 0) {
+		flags |= 8;
+	}
+	if ((exceptions & FE_INVALID) != 0) {
+		flags |= 16;
+	}
+	return flags;
+}
+
+static bool fp_rounding_supported(uint32_t rm, uint64_t *fcsr) {
+	if (rm == 0) {
+		return true;
+	}
+	return rm == 7 && fcsr != nullptr && ((*fcsr >> 5) & 0x7) == 0;
+}
+
+static uint64_t fp_spec(uint32_t operation, uint8_t rd, uint8_t rs1, uint8_t rs2,
+                        bool single, uint32_t rm, uint32_t selector) {
+	return static_cast<uint64_t>(operation) | static_cast<uint64_t>(rd) << 8 |
+	       static_cast<uint64_t>(rs1) << 13 | static_cast<uint64_t>(rs2) << 18 |
+	       static_cast<uint64_t>(single ? 1 : 0) << 23 |
+	       static_cast<uint64_t>(rm) << 24 | static_cast<uint64_t>(selector) << 27;
+}
+
+static bool fp_execute(uint64_t *registers, uint64_t *floats, uint64_t *fcsr,
+                       uint64_t encoded, const uint64_t *int_source) {
+	if (registers == nullptr || floats == nullptr || fcsr == nullptr) {
+		return false;
+	}
+	const uint32_t operation = static_cast<uint32_t>(encoded) & 0xFF;
+	const uint32_t rd = static_cast<uint32_t>((encoded >> 8) & 0x1F);
+	const uint32_t rs1 = static_cast<uint32_t>((encoded >> 13) & 0x1F);
+	const uint32_t rs2 = static_cast<uint32_t>((encoded >> 18) & 0x1F);
+	const bool single = ((encoded >> 23) & 1) != 0;
+	const uint32_t rm = static_cast<uint32_t>((encoded >> 24) & 0x7);
+	const uint32_t selector = static_cast<uint32_t>((encoded >> 27) & 0x3);
+	if (!single) {
+		return false;
+	}
+	if (!fp_rounding_supported(rm, fcsr)) {
+		return false;
+	}
+
+	if (operation == op_fcvt_from_int) {
+		const int previous_round = std::fegetround();
+		if (previous_round != FE_TONEAREST) {
+			std::fesetround(FE_TONEAREST);
+		}
+		std::feclearexcept(FE_ALL_EXCEPT);
+		if (single) {
+			float value = 0;
+			const uint64_t source = rs1 == 0 ? 0
+			                                : int_source != nullptr ? *int_source
+			                                                        : registers[rs1];
+			switch (selector) {
+			case 0:
+				value = static_cast<float>(static_cast<int32_t>(source));
+				break;
+			case 1:
+				value = static_cast<float>(static_cast<uint32_t>(source));
+				break;
+			case 2:
+				value = static_cast<float>(static_cast<int64_t>(source));
+				break;
+			default:
+				value = static_cast<float>(source);
+				break;
+			}
+			uint32_t bits = 0;
+			std::memcpy(&bits, &value, sizeof(bits));
+			floats[rd] = UINT64_C(0xFFFFFFFF00000000) | bits;
+		} else {
+			double value = 0;
+			const uint64_t source = rs1 == 0 ? 0
+			                                : int_source != nullptr ? *int_source
+			                                                        : registers[rs1];
+			switch (selector) {
+			case 0:
+				value = static_cast<double>(static_cast<int32_t>(source));
+				break;
+			case 1:
+				value = static_cast<double>(static_cast<uint32_t>(source));
+				break;
+			case 2:
+				value = static_cast<double>(static_cast<int64_t>(source));
+				break;
+			default:
+				value = static_cast<double>(source);
+				break;
+			}
+			std::memcpy(&floats[rd], &value, sizeof(value));
+		}
+		*fcsr |= fp_flags_from_host(std::fetestexcept(FE_ALL_EXCEPT));
+		if (previous_round != FE_TONEAREST) {
+			std::fesetround(previous_round);
+		}
+		return true;
+	}
+
+	uint64_t left_bits = single ? static_cast<uint32_t>(floats[rs1]) : floats[rs1];
+	uint64_t right_bits = single ? static_cast<uint32_t>(floats[rs2]) : floats[rs2];
+	const uint32_t exponent_bits = single ? 8 : 11;
+	const uint32_t fraction_bits = single ? 23 : 52;
+	const uint64_t exponent_mask = (UINT64_C(1) << exponent_bits) - 1;
+	const uint64_t sign_shift = single ? 31 : 63;
+	const uint64_t exponent_shift = fraction_bits;
+	const uint64_t exponent =
+	    (left_bits >> exponent_shift) & exponent_mask;
+	const uint64_t right_exponent =
+	    (right_bits >> exponent_shift) & exponent_mask;
+	if (exponent == exponent_mask || right_exponent == exponent_mask) {
+		return false;
+	}
+
+	if (operation == op_feq || operation == op_flt || operation == op_fle) {
+		bool result = false;
+		if (single) {
+			float left = 0;
+			float right = 0;
+			const uint32_t left_word = static_cast<uint32_t>(left_bits);
+			const uint32_t right_word = static_cast<uint32_t>(right_bits);
+			std::memcpy(&left, &left_word, sizeof(left));
+			std::memcpy(&right, &right_word, sizeof(right));
+			result = operation == op_feq ? left == right
+			                              : operation == op_flt ? left < right
+			                                                    : left <= right;
+		} else {
+			double left = 0;
+			double right = 0;
+			std::memcpy(&left, &left_bits, sizeof(left));
+			std::memcpy(&right, &right_bits, sizeof(right));
+			result = operation == op_feq ? left == right
+			                              : operation == op_flt ? left < right
+			                                                    : left <= right;
+		}
+		if (rd != 0) {
+			registers[rd] = result ? 1 : 0;
+		}
+		return true;
+	}
+
+	if (operation == op_fsqrt) {
+		const bool negative = ((left_bits >> sign_shift) & 1) != 0;
+		const uint64_t fraction_mask = (UINT64_C(1) << fraction_bits) - 1;
+		if (negative && (left_bits & fraction_mask) != 0) {
+			return false;
+		}
+	}
+
+	const int previous_round = std::fegetround();
+	if (previous_round != FE_TONEAREST) {
+		std::fesetround(FE_TONEAREST);
+	}
+	std::feclearexcept(FE_ALL_EXCEPT);
+	if (single) {
+		float left = 0;
+		float right = 0;
+		float value = 0;
+		const uint32_t left_word = static_cast<uint32_t>(left_bits);
+		const uint32_t right_word = static_cast<uint32_t>(right_bits);
+		std::memcpy(&left, &left_word, sizeof(left));
+		std::memcpy(&right, &right_word, sizeof(right));
+		switch (operation) {
+		case op_fadd:
+			value = left + right;
+			break;
+		case op_fsub:
+			value = left - right;
+			break;
+		case op_fmul:
+			value = left * right;
+			break;
+		case op_fdiv:
+			value = left / right;
+			break;
+		case op_fsqrt:
+			value = std::sqrt(left);
+			break;
+		default:
+			if (previous_round != FE_TONEAREST) {
+				std::fesetround(previous_round);
+			}
+			return false;
+		}
+		uint32_t bits = 0;
+		std::memcpy(&bits, &value, sizeof(bits));
+		floats[rd] = UINT64_C(0xFFFFFFFF00000000) | bits;
+	} else {
+		double left = 0;
+		double right = 0;
+		double value = 0;
+		std::memcpy(&left, &left_bits, sizeof(left));
+		std::memcpy(&right, &right_bits, sizeof(right));
+		switch (operation) {
+		case op_fadd:
+			value = left + right;
+			break;
+		case op_fsub:
+			value = left - right;
+			break;
+		case op_fmul:
+			value = left * right;
+			break;
+		case op_fdiv:
+			value = left / right;
+			break;
+		case op_fsqrt:
+			value = std::sqrt(left);
+			break;
+		default:
+			if (previous_round != FE_TONEAREST) {
+				std::fesetround(previous_round);
+			}
+			return false;
+		}
+		std::memcpy(&floats[rd], &value, sizeof(value));
+	}
+	*fcsr |= fp_flags_from_host(std::fetestexcept(FE_ALL_EXCEPT));
+	if (previous_round != FE_TONEAREST) {
+		std::fesetround(previous_round);
+	}
+	return true;
+}
+
 #if defined(__x86_64__)
 
 namespace {
@@ -603,250 +838,12 @@ static bool jit_memory_sc(MemoryView *memory, uint64_t address, uint32_t width,
 	return true;
 }
 
-static bool fp_execute(uint64_t *registers, uint64_t *floats, uint64_t *fcsr,
-                       uint64_t encoded, const uint64_t *int_source);
-
 static bool jit_execute_fp(JitCall *call, uint64_t encoded) {
 	if (call == nullptr) {
 		return false;
 	}
 	return fp_execute(call->registers, call->floats, call->fcsr, encoded,
 	                  &call->scratch);
-}
-
-static uint32_t fp_flags_from_host(int exceptions) {
-	uint32_t flags = 0;
-	if ((exceptions & FE_INEXACT) != 0) {
-		flags |= 1;
-	}
-	if ((exceptions & FE_UNDERFLOW) != 0) {
-		flags |= 2;
-	}
-	if ((exceptions & FE_OVERFLOW) != 0) {
-		flags |= 4;
-	}
-	if ((exceptions & FE_DIVBYZERO) != 0) {
-		flags |= 8;
-	}
-	if ((exceptions & FE_INVALID) != 0) {
-		flags |= 16;
-	}
-	return flags;
-}
-
-static bool fp_rounding_supported(uint32_t rm, uint64_t *fcsr) {
-	if (rm == 0) {
-		return true;
-	}
-	return rm == 7 && fcsr != nullptr && ((*fcsr >> 5) & 0x7) == 0;
-}
-
-static uint64_t fp_spec(uint32_t operation, uint8_t rd, uint8_t rs1, uint8_t rs2,
-                        bool single, uint32_t rm, uint32_t selector) {
-	return static_cast<uint64_t>(operation) | static_cast<uint64_t>(rd) << 8 |
-	       static_cast<uint64_t>(rs1) << 13 | static_cast<uint64_t>(rs2) << 18 |
-	       static_cast<uint64_t>(single ? 1 : 0) << 23 |
-	       static_cast<uint64_t>(rm) << 24 | static_cast<uint64_t>(selector) << 27;
-}
-
-static bool fp_execute(uint64_t *registers, uint64_t *floats, uint64_t *fcsr,
-                       uint64_t encoded, const uint64_t *int_source) {
-	if (registers == nullptr || floats == nullptr || fcsr == nullptr) {
-		return false;
-	}
-	const uint32_t operation = static_cast<uint32_t>(encoded) & 0xFF;
-	const uint32_t rd = static_cast<uint32_t>((encoded >> 8) & 0x1F);
-	const uint32_t rs1 = static_cast<uint32_t>((encoded >> 13) & 0x1F);
-	const uint32_t rs2 = static_cast<uint32_t>((encoded >> 18) & 0x1F);
-	const bool single = ((encoded >> 23) & 1) != 0;
-	const uint32_t rm = static_cast<uint32_t>((encoded >> 24) & 0x7);
-	const uint32_t selector = static_cast<uint32_t>((encoded >> 27) & 0x3);
-	if (!single) {
-		return false;
-	}
-	if (!fp_rounding_supported(rm, fcsr)) {
-		return false;
-	}
-
-	if (operation == op_fcvt_from_int) {
-		const int previous_round = std::fegetround();
-		if (previous_round != FE_TONEAREST) {
-			std::fesetround(FE_TONEAREST);
-		}
-		std::feclearexcept(FE_ALL_EXCEPT);
-		if (single) {
-			float value = 0;
-			const uint64_t source = rs1 == 0 ? 0
-			                                : int_source != nullptr ? *int_source
-			                                                        : registers[rs1];
-			switch (selector) {
-			case 0:
-				value = static_cast<float>(static_cast<int32_t>(source));
-				break;
-			case 1:
-				value = static_cast<float>(static_cast<uint32_t>(source));
-				break;
-			case 2:
-				value = static_cast<float>(static_cast<int64_t>(source));
-				break;
-			default:
-				value = static_cast<float>(source);
-				break;
-			}
-			uint32_t bits = 0;
-			std::memcpy(&bits, &value, sizeof(bits));
-			floats[rd] = UINT64_C(0xFFFFFFFF00000000) | bits;
-		} else {
-			double value = 0;
-			const uint64_t source = rs1 == 0 ? 0
-			                                : int_source != nullptr ? *int_source
-			                                                        : registers[rs1];
-			switch (selector) {
-			case 0:
-				value = static_cast<double>(static_cast<int32_t>(source));
-				break;
-			case 1:
-				value = static_cast<double>(static_cast<uint32_t>(source));
-				break;
-			case 2:
-				value = static_cast<double>(static_cast<int64_t>(source));
-				break;
-			default:
-				value = static_cast<double>(source);
-				break;
-			}
-			std::memcpy(&floats[rd], &value, sizeof(value));
-		}
-		*fcsr |= fp_flags_from_host(std::fetestexcept(FE_ALL_EXCEPT));
-		if (previous_round != FE_TONEAREST) {
-			std::fesetround(previous_round);
-		}
-		return true;
-	}
-
-	uint64_t left_bits = single ? static_cast<uint32_t>(floats[rs1]) : floats[rs1];
-	uint64_t right_bits = single ? static_cast<uint32_t>(floats[rs2]) : floats[rs2];
-	const uint32_t exponent_bits = single ? 8 : 11;
-	const uint32_t fraction_bits = single ? 23 : 52;
-	const uint64_t exponent_mask = (UINT64_C(1) << exponent_bits) - 1;
-	const uint64_t sign_shift = single ? 31 : 63;
-	const uint64_t exponent_shift = fraction_bits;
-	const uint64_t exponent =
-	    (left_bits >> exponent_shift) & exponent_mask;
-	const uint64_t right_exponent =
-	    (right_bits >> exponent_shift) & exponent_mask;
-	if (exponent == exponent_mask || right_exponent == exponent_mask) {
-		return false;
-	}
-
-	if (operation == op_feq || operation == op_flt || operation == op_fle) {
-		bool result = false;
-		if (single) {
-			float left = 0;
-			float right = 0;
-			const uint32_t left_word = static_cast<uint32_t>(left_bits);
-			const uint32_t right_word = static_cast<uint32_t>(right_bits);
-			std::memcpy(&left, &left_word, sizeof(left));
-			std::memcpy(&right, &right_word, sizeof(right));
-			result = operation == op_feq ? left == right
-			                              : operation == op_flt ? left < right
-			                                                    : left <= right;
-		} else {
-			double left = 0;
-			double right = 0;
-			std::memcpy(&left, &left_bits, sizeof(left));
-			std::memcpy(&right, &right_bits, sizeof(right));
-			result = operation == op_feq ? left == right
-			                              : operation == op_flt ? left < right
-			                                                    : left <= right;
-		}
-		if (rd != 0) {
-			registers[rd] = result ? 1 : 0;
-		}
-		return true;
-	}
-
-	if (operation == op_fsqrt) {
-		const bool negative = ((left_bits >> sign_shift) & 1) != 0;
-		const uint64_t fraction_mask = (UINT64_C(1) << fraction_bits) - 1;
-		if (negative && (left_bits & fraction_mask) != 0) {
-			return false;
-		}
-	}
-
-	const int previous_round = std::fegetround();
-	if (previous_round != FE_TONEAREST) {
-		std::fesetround(FE_TONEAREST);
-	}
-	std::feclearexcept(FE_ALL_EXCEPT);
-	if (single) {
-		float left = 0;
-		float right = 0;
-		float value = 0;
-		const uint32_t left_word = static_cast<uint32_t>(left_bits);
-		const uint32_t right_word = static_cast<uint32_t>(right_bits);
-		std::memcpy(&left, &left_word, sizeof(left));
-		std::memcpy(&right, &right_word, sizeof(right));
-		switch (operation) {
-		case op_fadd:
-			value = left + right;
-			break;
-		case op_fsub:
-			value = left - right;
-			break;
-		case op_fmul:
-			value = left * right;
-			break;
-		case op_fdiv:
-			value = left / right;
-			break;
-		case op_fsqrt:
-			value = std::sqrt(left);
-			break;
-		default:
-			if (previous_round != FE_TONEAREST) {
-				std::fesetround(previous_round);
-			}
-			return false;
-		}
-		uint32_t bits = 0;
-		std::memcpy(&bits, &value, sizeof(bits));
-		floats[rd] = UINT64_C(0xFFFFFFFF00000000) | bits;
-	} else {
-		double left = 0;
-		double right = 0;
-		double value = 0;
-		std::memcpy(&left, &left_bits, sizeof(left));
-		std::memcpy(&right, &right_bits, sizeof(right));
-		switch (operation) {
-		case op_fadd:
-			value = left + right;
-			break;
-		case op_fsub:
-			value = left - right;
-			break;
-		case op_fmul:
-			value = left * right;
-			break;
-		case op_fdiv:
-			value = left / right;
-			break;
-		case op_fsqrt:
-			value = std::sqrt(left);
-			break;
-		default:
-			if (previous_round != FE_TONEAREST) {
-				std::fesetround(previous_round);
-			}
-			return false;
-		}
-		std::memcpy(&floats[rd], &value, sizeof(value));
-	}
-	*fcsr |= fp_flags_from_host(std::fetestexcept(FE_ALL_EXCEPT));
-	if (previous_round != FE_TONEAREST) {
-		std::fesetround(previous_round);
-	}
-	return true;
 }
 
 static uint64_t jit_mix(uint64_t value) {
@@ -2143,8 +2140,8 @@ static uint64_t jit_run(MemoryView &memory, CodeView &code, uint64_t identity,
 #else
 
 static uint64_t jit_run(MemoryView &, CodeView &, uint64_t, uint64_t *,
-                        uint64_t current, uint32_t, uint64_t *, uint64_t *,
-                        uint64_t *, uint64_t *) {
+                        uint64_t current, uint32_t, uint64_t, uint64_t *,
+                        uint64_t *, uint64_t *, uint64_t *) {
 	return 0;
 }
 

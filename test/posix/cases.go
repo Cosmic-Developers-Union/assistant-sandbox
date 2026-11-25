@@ -49,7 +49,7 @@ func probes() []probe {
 
 		{"xargs", `printf 'a b\n' | xargs -n1 printf '%s-'`, "a-b-", 0},
 
-		{"nohup", `nohup printf '%s' kept`, "kept", 0},
+		{"nohup", `nohup sh -c 'printf kept > result'; sleep 1; cat result`, "kept", 0},
 	} {
 		add("utility."+item.id, "utilities", item.script, item.want, item.exit, base+item.id+".html")
 	}

@@ -233,7 +233,7 @@ jobs:
         with:
           version: 0.17.0
       - name: Install qemu-riscv64
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq qemu-user-static
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq qemu-user
       - name: Build CPython 3.12.16 from source (Q01)
         run: bash internal/guest/testdata/python312/build.sh "$RUNNER_TEMP/python312-build"
       - uses: actions/upload-artifact@v4
@@ -251,7 +251,7 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Install qemu-riscv64 user emulation
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq qemu-user-static
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq qemu-user
       - name: Profile consistency and differential probes
         run: |
           go test ./abi/... -count=1
