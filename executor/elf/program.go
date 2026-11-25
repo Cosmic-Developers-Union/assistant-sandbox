@@ -432,7 +432,11 @@ func (p processPriorities) SetNice(pid uint64, nice int) error {
 }
 
 func syscalls(ctx context.Context, process proc.Proc, space *memory.Table, plan *loaderelf.Plan, core cpu.Port) common.Syscalls {
-	handler := common.Syscalls{Memory: space, Sysname: "Linux", Nodename: "assistant-sandbox", Release: "6.8.0", Version: "#1", Machine: "riscv64", Domainname: "(none)", Cwd: process.Dir}
+	handler := common.Syscalls{
+		Memory: space, Sysname: "Linux", Nodename: "assistant-sandbox",
+		Release: "6.8.0", Version: "#1", Machine: "riscv64",
+		Domainname: "(none)", Cwd: process.Dir, ExitGroup: new(atomic.Bool),
+	}
 	if topology, ok := process.Control.(interface{ CPUs() int }); ok {
 		handler.CPUs = uint64(topology.CPUs())
 	}
@@ -1403,7 +1407,7 @@ func (t processThreader) CloneThread(ctx context.Context, request common.CloneRe
 		}
 		// H08:exit_group 结束整组;exit 仅结束当前线程。致命信号
 		// 中断由内核在 Signal 投递时升级为整组结束(K08)。
-		if childHandler.LastExitGroup {
+		if childHandler.ExitGroup != nil && childHandler.ExitGroup.Load() {
 			_ = t.control.FinishGroup(child.ID, uint8(code), 0)
 			return
 		}

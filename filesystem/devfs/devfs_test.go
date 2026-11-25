@@ -75,6 +75,28 @@ func TestNullReadsEOFAndDiscardsWrites(t *testing.T) {
 	}
 }
 
+func TestDeviceStatusFlagsReflectOpenMode(t *testing.T) {
+	fs := newFS(t, nil)
+	handle := open(t, fs, nullName, vmfs.WriteOnly)
+	defer func() {
+		if err := handle.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	flags, err := handle.(interface{ StatusFlags() (uint32, error) }).StatusFlags()
+	if err != nil || flags&0o3 != vmfs.WriteOnly {
+		t.Fatalf("F_GETFL=%#x err=%v want 写模式", flags, err)
+	}
+	setter := handle.(interface{ SetStatusFlags(uint32) error })
+	if err := setter.SetStatusFlags(0o4000); err != nil {
+		t.Fatal(err)
+	}
+	flags, err = handle.(interface{ StatusFlags() (uint32, error) }).StatusFlags()
+	if err != nil || flags&0o4000 == 0 {
+		t.Fatalf("F_SETFL 后 F_GETFL=%#x err=%v", flags, err)
+	}
+}
+
 func TestZeroProducesZeroBytes(t *testing.T) {
 	fs := newFS(t, nil)
 	handle := open(t, fs, zeroName, vmfs.ReadWrite)

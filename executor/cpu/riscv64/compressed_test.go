@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"math"
 	"testing"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/executor/cpu"
@@ -413,6 +414,31 @@ func TestCompressedFloatStackRoundTrip(t *testing.T) {
 	}
 	if got := state.Floats[9]; got != pattern {
 		t.Fatalf("f9=%#x want %#x(压缩浮点栈往返失败)", got, pattern)
+	}
+}
+
+func TestCompressedFloatStackOffset64(t *testing.T) {
+	ctx := context.Background()
+	memory := newSparse()
+	port := newPort(t, memory, 0)
+	if err := port.WriteRegister(regSP, 0x800); err != nil {
+		t.Fatal(err)
+	}
+	if err := port.WriteFP(8, math.Float64bits(256)); err != nil {
+		t.Fatal(err)
+	}
+	writeCompressedAt(t, memory, 0, []uint16{
+		0xa0a2, // c.fsdsp f8, 64(sp)
+		0x2486, // c.fldsp f9, 64(sp)
+	})
+	for step := 0; step < 2; step++ {
+		if outcome, err := port.Step(ctx); err != nil || outcome != cpu.Continued {
+			t.Fatalf("第 %d 步: outcome=%v err=%v", step, outcome, err)
+		}
+	}
+	got, err := port.ReadFP(9)
+	if err != nil || got != math.Float64bits(256) {
+		t.Fatalf("f9=%#x want %#x (err=%v)", got, math.Float64bits(256), err)
 	}
 }
 

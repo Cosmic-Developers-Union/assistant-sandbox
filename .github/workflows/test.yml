@@ -225,6 +225,23 @@ jobs:
       - name: Build and run the documented getting-started flow
         run: make getting-started
 
+  # S4:内置开发合同与初步 sandbox-in-sandbox 验证。
+  s4:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GOFLAGS: -p=2
+      GOMEMLIMIT: 768MiB
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Built-in S4 development contract
+        run: make compat-s4
+      - name: Sandbox in sandbox smoke test
+        run: make sandbox-in-sandbox
+
   # Q01:从固定源码构建 CPython 3.12.16(riscv64-linux-musl),保存摘要工件。
   python-build:
     runs-on: ubuntu-latest

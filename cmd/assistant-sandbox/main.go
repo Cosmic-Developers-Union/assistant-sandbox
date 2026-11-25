@@ -119,9 +119,13 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		options.Session = resources.Limits{Memory: memoryBytes, Work: 1 << 38}
 		options.Process = resources.Limits{Memory: memoryBytes, Work: 1 << 38}
 	}
+	started := time.Now()
 	machine, err := instance.New(ctx, options)
 	if err != nil {
 		return 1, err
+	}
+	if *debug {
+		_, _ = fmt.Fprintf(stderr, "debug: 创建 VM 用时 %s\n", time.Since(started))
 	}
 	defer func() {
 		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -131,9 +135,15 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	if err := nativeshell.Install(ctx, machine.Filesystem()); err != nil {
 		return 1, err
 	}
+	if *debug {
+		_, _ = fmt.Fprintf(stderr, "debug: 安装原生 shell 用时 %s\n", time.Since(started))
+	}
 	if *tools == "dev" {
 		if err := devroot.Install(ctx, machine.Filesystem()); err != nil {
 			return 1, err
+		}
+		if *debug {
+			_, _ = fmt.Fprintf(stderr, "debug: 安装开发工具用时 %s\n", time.Since(started))
 		}
 	}
 	if mountWorkspace {
@@ -160,6 +170,9 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	connection, err := machine.Connect(ctx)
 	if err != nil {
 		return 1, err
+	}
+	if *debug {
+		_, _ = fmt.Fprintf(stderr, "debug: 建立连接用时 %s\n", time.Since(started))
 	}
 	if *session {
 		if interactive {
@@ -199,9 +212,15 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	if err != nil {
 		return 1, err
 	}
+	if *debug {
+		_, _ = fmt.Fprintf(stderr, "debug: 启动 shell 用时 %s\n", time.Since(started))
+	}
 	state, err := connection.Wait(ctx, process.ID)
 	if err != nil {
 		return 1, err
+	}
+	if *debug {
+		_, _ = fmt.Fprintf(stderr, "debug: shell 退出用时 %s\n", time.Since(started))
 	}
 	return int(state.ExitCode), nil
 }

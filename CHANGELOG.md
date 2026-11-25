@@ -2,11 +2,24 @@
 
 ## [Unreleased]
 
+### 新增
+
+- 内置 S4 开发合同门禁 `make compat-s4`。
+- 初步嵌套验证 `make sandbox-in-sandbox`：外层 VM 中运行 riscv64 CLI，
+  再启动内层 BusyBox sh。
+
 ### 移除
 
 - 删除历史 WASI 客体 `assistant-bash.wasm.gz`、WASI 构建器与运行时、
   `--module` 兼容参数、POSIX WASI gate 及 wazero 依赖。
 - 发布与安装只包含 Linux ABI VM CLI，不再生成或分发 WASM 客体。
+
+### 修复
+
+- 线程从非组长 TID 调用 `exit_group` 时未结束整个线程组的问题。
+- 批量 FP 比较把 FLE/FLT/FEQ 的 funct3 映射错位的问题。
+- `/dev/null` 等静态设备缺少 `F_GETFL`/`F_SETFL` 状态标志的问题。
+- CLI 内存值解析改用整数有理数，避免嵌套运行时误判合法值。
 
 ## [0.1.0] - 2026-11-25
 

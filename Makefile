@@ -26,7 +26,7 @@ endif
 # golangci-lint 版本固定在 .github/workflows/test.yml 的 action 参数中。
 GOLANGCI_LINT_VERSION := v2.14.0
 
-.PHONY: build release install clean lint test bench test-multicore docker-test toolchain isolated-check offline-check getting-started compat-s3 compat-ltp compat-s4 compat-python perf-languages
+.PHONY: build release install clean lint test bench test-multicore docker-test toolchain isolated-check offline-check getting-started compat-s3 compat-ltp compat-s4 sandbox-in-sandbox compat-python perf-languages
 
 # B01:全新克隆仅依赖模块缓存即可构建(无 replace/无宿主绝对路径,
 # 由 internal/metadata TestModuleResolvesWithoutLocalReplacements 锁定)。
@@ -114,7 +114,11 @@ compat-ltp:
 	go test ./internal/guest -run '^TestCompatibilityExternalLTP$$' -count=1 -v -timeout 3h
 
 compat-s4:
-	go test ./internal/guest -run '^TestCompatibilityS4DevelopmentImageExternal$$' -count=1 -v -timeout 1h
+	go test ./internal/guest -run '^TestCompatibilityS4DevelopmentWorkflow$$|^TestCompatibilityS4DevelopmentImageExternal$$' -count=1 -v -timeout 1h
+
+# 初步嵌套验证:构建 riscv64 CLI,在外层 VM 中启动内层 sandbox。
+sandbox-in-sandbox:
+	SANDBOX_NESTED_TEST=1 go test ./internal/guest -run '^TestSandboxInSandboxDevelopment$$' -count=1 -v -timeout 15m
 
 # Q14:运行 CPython 上游测试。PYTHON_SUITE_TESTS="test_sys test_os" 指定模块，
 # 或设为 all 运行完整测试集；PYTHON_SUITE_TIMEOUT=秒数 限制单模块时长。

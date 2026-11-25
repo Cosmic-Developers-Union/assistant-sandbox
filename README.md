@@ -11,6 +11,8 @@ VM、运行 shell/Python/Node 与关闭的完整命令
 (`make getting-started`)。
 兼容等级、S3 开发工作流和 LTP/S4 门禁见
 [Linux 兼容性门禁](docs/compatibility.md)。
+内置 S4 开发合同用 `make compat-s4` 验证；初步嵌套启动用
+`make sandbox-in-sandbox` 验证。
 
 SDK 的公开执行入口为 `instance` 和 `model` 包。RISC-V Linux ABI VM
 不依赖外部 WASM 客体。

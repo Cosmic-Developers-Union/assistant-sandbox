@@ -9,6 +9,7 @@ import (
 	"math"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/executor/cpu"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/clock"
@@ -289,9 +290,10 @@ type Syscalls struct {
 	// set/get_robust_list 报 ENOSYS 族。
 	RobustLists RobustListPort
 
-	// LastExitGroup 记录最近一次 exit 族调用是否为 exit_group(H08):
-	// 线程运行器据此区分线程退出与整组退出。仅调用线程读写。
-	LastExitGroup bool
+	// ExitGroup 记录最近一次 exit 族调用是否为 exit_group(H08):
+	// 线程运行器据此区分线程退出与整组退出。Handle 的接收者是值,
+	// 因此必须经指针共享给调用方。
+	ExitGroup *atomic.Bool
 
 	Kills SignalSender
 
@@ -438,7 +440,9 @@ func (s Syscalls) dispatch(ctx context.Context, call Call) Reply {
 	switch call.Syscall {
 	case SysExit, SysExitGroup:
 		// H08:exit_group 与 exit 的区分由线程运行器消费(K02)。
-		s.LastExitGroup = call.Syscall == SysExitGroup
+		if s.ExitGroup != nil {
+			s.ExitGroup.Store(call.Syscall == SysExitGroup)
+		}
 		return Reply{Exit: true, Value: call.Args[0]}
 	case SysWrite:
 		return s.write(ctx, call)

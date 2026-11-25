@@ -17,7 +17,7 @@ jobs:
         with:
           go-version-file: go.mod
       # B09:发布门禁——标签提交必须先通过 Test 工作流的全部任务
-      # (light/integration/differential/runtime);等待其完成,
+      # (light/integration/differential/s4/runtime);等待其完成,
       # 结论非 success 即拒绝发布。
       - name: Require Test workflow success for this tag
         env:

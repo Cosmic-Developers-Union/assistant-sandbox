@@ -342,6 +342,33 @@ func TestFloatClassifyAndCompare(t *testing.T) {
 	}
 }
 
+func TestFloatLessEqualDouble(t *testing.T) {
+	port := runFP(t, func(port *Core) {
+		_ = port.WriteFP(9, math.Float64bits(256))
+		_ = port.WriteFP(10, math.Float64bits(0))
+	}, 0xa2a484d3) // fle.d x9, f9, f10
+	if got, err := port.ReadRegister(9); err != nil || got != 0 {
+		t.Fatalf("256 <= 0 = %d want 0 (err=%v)", got, err)
+	}
+}
+
+// TestBatchDecodeFPCompareFunct3 锁定 RISC-V FLE/FLT/FEQ 的 funct3
+// 编码:0=FLE、1=FLT、2=FEQ。批量执行若把 FLE 解成 FEQ,会让
+// `x <= 0` 对正数恒真。
+func TestBatchDecodeFPCompareFunct3(t *testing.T) {
+	for funct3, want := range map[uint32]uint32{
+		0: batchOpFLE,
+		1: batchOpFLT,
+		2: batchOpFEQ,
+	} {
+		instruction := uint32(0x50)<<25 | funct3<<12 | 0x53
+		decoded := decodeBatchInstruction(instruction, 4)
+		if decoded.op != want {
+			t.Fatalf("funct3=%d op=%v want %v", funct3, decoded.op, want)
+		}
+	}
+}
+
 // TestFloatClassifySignBits 验证 FCLASS.D 按符号位区分正负规格化数、
 // 零与无穷;符号位取位型最高位,而非尾数最高位(回归)。
 func TestFloatClassifySignBits(t *testing.T) {
@@ -381,6 +408,40 @@ func TestFloatEqualityForInfinities(t *testing.T) {
 		if got, err := port.ReadRegister(register); err != nil || got != expected {
 			t.Fatalf("feq.d a%d = %d want %d (err=%v)", register, got, expected, err)
 		}
+	}
+}
+
+func TestFloatDoubleLoadCompareStackValue(t *testing.T) {
+	memory := newSparse()
+	if err := memory.Write(context.Background(), 0x400, []byte{
+		0, 0, 0, 0, 0, 0, 0x70, 0x40, // 256.0
+		0, 0, 0, 0, 0, 0, 0, 0, // 0.0
+	}); err != nil {
+		t.Fatal(err)
+	}
+	port := newPort(t, memory, 0)
+	if err := port.WriteRegister(10, 0x400); err != nil {
+		t.Fatal(err)
+	}
+	instructions := []uint32{
+		encodeFPLoad(0x3, 9, 10, 0),
+		encodeFPLoad(0x3, 10, 10, 8),
+		0xa2a484d3, // fle.d x9, f9, f10
+	}
+	for index, instruction := range instructions {
+		var raw [4]byte
+		binary.LittleEndian.PutUint32(raw[:], instruction)
+		if err := memory.Write(context.Background(), uint64(index*4), raw[:]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for index := range instructions {
+		if outcome, err := port.Step(context.Background()); err != nil || outcome != cpu.Continued {
+			t.Fatalf("第 %d 条: outcome=%v err=%v", index, outcome, err)
+		}
+	}
+	if got, err := port.ReadRegister(9); err != nil || got != 0 {
+		t.Fatalf("256 <= 0 = %d want 0 (err=%v)", got, err)
 	}
 }
 

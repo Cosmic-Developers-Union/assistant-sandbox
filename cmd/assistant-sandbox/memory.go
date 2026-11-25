@@ -2,8 +2,7 @@ package main
 
 import (
 	"fmt"
-	"math"
-	"strconv"
+	"math/big"
 	"strings"
 )
 
@@ -14,10 +13,10 @@ func parseMemory(value string) (uint64, error) {
 	if text == "" {
 		return 0, fmt.Errorf("内存值不能为空")
 	}
-	multiplier := float64(1)
+	multiplier := uint64(1)
 	for _, suffix := range []struct {
 		name       string
-		multiplier float64
+		multiplier uint64
 	}{
 		{"tib", 1 << 40}, {"tb", 1 << 40}, {"t", 1 << 40},
 		{"gib", 1 << 30}, {"gb", 1 << 30}, {"g", 1 << 30},
@@ -31,13 +30,21 @@ func parseMemory(value string) (uint64, error) {
 			break
 		}
 	}
-	number, err := strconv.ParseFloat(text, 64)
-	if err != nil || math.IsNaN(number) || math.IsInf(number, 0) || number <= 0 {
+	number, ok := new(big.Rat).SetString(text)
+	if !ok || number.Sign() <= 0 {
 		return 0, fmt.Errorf("非法内存值 %q", value)
 	}
-	bytes := number * multiplier
-	if bytes > math.MaxUint64 {
+	bytes := new(big.Rat).Mul(number, new(big.Rat).SetInt(new(big.Int).SetUint64(multiplier)))
+	rounded := new(big.Int).Quo(bytes.Num(), bytes.Denom())
+	remainder := new(big.Int).Rem(bytes.Num(), bytes.Denom())
+	if new(big.Int).Lsh(remainder, 1).Cmp(bytes.Denom()) >= 0 {
+		rounded.Add(rounded, big.NewInt(1))
+	}
+	if rounded.Sign() <= 0 {
+		return 0, fmt.Errorf("非法内存值 %q", value)
+	}
+	if rounded.BitLen() > 64 {
 		return 0, fmt.Errorf("内存值 %q 超出 uint64", value)
 	}
-	return uint64(math.Round(bytes)), nil
+	return rounded.Uint64(), nil
 }

@@ -137,19 +137,26 @@ func (f *file) Stat() (stdfs.FileInfo, error) {
 // StatusFlags/SetStatusFlags 转发给动态设备(PTY 主端)的打开状态;
 // signal.set_wakeup_fd 等路径会对设备 fd 做 fcntl 校验。
 func (f *file) StatusFlags() (uint32, error) {
+	if f.closed {
+		return 0, errno.Wrap(errno.Cancelled, "句柄已关闭")
+	}
 	if flagger, ok := f.stream.(interface {
 		StatusFlags() (uint32, error)
 	}); ok {
 		return flagger.StatusFlags()
 	}
-	return 0, errno.Wrap(errno.NotSupported, "设备不支持状态标志查询")
+	return f.flags & (0o3 | 0o2000 | 0o4000), nil
 }
 
 func (f *file) SetStatusFlags(flags uint32) error {
+	if f.closed {
+		return errno.Wrap(errno.Cancelled, "句柄已关闭")
+	}
 	if setter, ok := f.stream.(interface{ SetStatusFlags(uint32) error }); ok {
 		return setter.SetStatusFlags(flags)
 	}
-	return errno.Wrap(errno.NotSupported, "设备不支持状态标志设置")
+	f.flags = f.flags&^(0o2000|0o4000) | flags&(0o2000|0o4000)
+	return nil
 }
 
 // Ready/OnChange 转发动态设备的就绪图;静态设备恒就绪。

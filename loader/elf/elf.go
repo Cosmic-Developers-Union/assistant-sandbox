@@ -44,7 +44,9 @@ const (
 
 	DefaultStackTop = 1 << 47
 
-	DefaultMaxImageBytes = 64 << 20
+	// 嵌套 sandbox、Go 静态二进制和发行版多段 ELF 的页簇映射
+	// 会明显超过单个文件的字节数;每进程内存预算仍是最终硬上限。
+	DefaultMaxImageBytes = 256 << 20
 
 	maxSegments = 64
 )

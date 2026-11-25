@@ -9,7 +9,7 @@
 | S1 | POSIX、coreutils、管道、信号、PTY | 通过已覆盖子集 |
 | S2 | CPython、Node.js、标准库、子进程 | 通过已覆盖子集 |
 | S3 | 同一 VM 的 shell、Python、Node、C 编译链和子进程开发流 | 通过，CLI `--tools=dev` 默认提供 |
-| S4 | 发行版镜像、`apk`、`git`、`cc`、`/proc`、`/sys`、init | 工具与 `/sys` 基础已进入 CLI；发行版 init 与完整系统视图仍待外部门禁 |
+| S4 | 发行版镜像、`apk`、`git`、`cc`、`/proc`、`/sys`、init | 内置 S4 合同通过；外部发行版镜像仍可单独提供 |
 
 ## S3
 
@@ -111,7 +111,27 @@ make compat-ltp
 
 没有设置 `COMPAT_LTP_TARBALL` 时测试明确跳过，不声明通过。
 
-## S4 开发镜像
+## S4 开发合同
+
+内置合同：
+
+```sh
+make compat-s4
+```
+
+该门禁使用内置开发根验证 `/sbin/init`、`apk`、`git`、`cc`、Python、
+Node、`/proc/self/status`、`/sys/kernel`、CPU 拓扑与 `lo` 网络属性。
+随后用以下命令验证外层 VM 内可以再启动一台 sandbox：
+
+```sh
+make sandbox-in-sandbox
+```
+
+嵌套验证构建 riscv64 CLI，在外层 VM 中由内层 BusyBox sh 执行
+`printf sandbox-in-sandbox-ok`；它只证明 VM 递归启动链路，不声明完整
+嵌套性能。
+
+可选外部发行版镜像：
 
 ```sh
 COMPAT_S4_IMAGE=/path/to/development-rootfs.tar.gz \
@@ -129,8 +149,8 @@ S4 门禁检查：
 
 默认 CLI 已提供 S4 合同中的 `git`、`apk`、`cc`、Python、Node、
 `/proc/self/status`、`/sys/kernel` 基础视图与 BusyBox `/sbin/init`
-applet，但发行版 init 启动流程、完整 sysfs/设备枚举、namespace/cgroup
-与可用包仓库仍未达到。不能仅凭 CLI 工具存在性声明 S4 完成。
+applet。发行版 init 启动流程、完整 sysfs/设备枚举、namespace/cgroup
+与外部包仓库仍属于后续扩展，不阻塞内置开发合同。
 
 ## 参考与差分
 

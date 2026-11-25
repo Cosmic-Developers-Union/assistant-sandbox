@@ -377,11 +377,11 @@ func decodeBatchInstruction(instruction uint32, length uint8) decodedBatchInstru
 			decoded.imm = int32(funct3) | single<<2
 			switch funct3 {
 			case 0x0:
-				decoded.op = batchOpFEQ
+				decoded.op = batchOpFLE
 			case 0x1:
 				decoded.op = batchOpFLT
 			case 0x2:
-				decoded.op = batchOpFLE
+				decoded.op = batchOpFEQ
 			}
 		case 0x34:
 			decoded.imm = int32(instruction>>20&0x1F) | single<<3 | fpMode<<4
