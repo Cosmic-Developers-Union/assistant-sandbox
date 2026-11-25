@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	stdnet "net"
+	"os"
 	"sync"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
@@ -93,9 +95,17 @@ func (p *Publication) Revoke() error {
 	p.ns.mu.Unlock()
 	var closeErr error
 	for _, conn := range conns {
-		closeErr = errors.Join(closeErr, conn.Close())
+		closeErr = errors.Join(closeErr, closeIgnoreClosed(conn))
 	}
-	return errors.Join(closeErr, host.Close())
+	return errors.Join(closeErr, closeIgnoreClosed(host))
+}
+
+func closeIgnoreClosed(closer io.Closer) error {
+	err := closer.Close()
+	if err == nil || errors.Is(err, stdnet.ErrClosed) || errors.Is(err, os.ErrClosed) {
+		return nil
+	}
+	return err
 }
 
 func (p *Publication) acceptLoop(listener *TCPListener) {
