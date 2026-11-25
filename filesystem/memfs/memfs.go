@@ -480,8 +480,14 @@ func (f *FS) Open(ctx context.Context, p string, flags uint32, mode stdfs.FileMo
 		case kindSymlink:
 			return nil, errno.NotFound
 		case kindFifo:
-
-			return nil, errno.Wrap(errno.NotSupported, "客体没有命名管道的读写语义")
+			if (access != 0 && !f.canWrite(node)) || (access == 0 && !f.canRead(node)) {
+				return nil, errno.Permission
+			}
+			node.opened++
+			return &handle{
+				fs: f, node: node, fifo: true, writable: access != 0, accessMode: access,
+				nonBlock: flags&vmfs.NonBlock != 0,
+			}, nil
 		}
 		if access == 0 && !f.canRead(node) || access != 0 && !f.canWrite(node) {
 			return nil, errno.Permission
@@ -495,7 +501,10 @@ func (f *FS) Open(ctx context.Context, p string, flags uint32, mode stdfs.FileMo
 		node.mtime = f.now()
 	}
 	node.opened++
-	return &handle{fs: f, node: node, appendMode: append, writable: access != 0, accessMode: access}, nil
+	return &handle{
+		fs: f, node: node, appendMode: append, nonBlock: flags&vmfs.NonBlock != 0,
+		writable: access != 0, accessMode: access,
+	}, nil
 }
 
 func (f *FS) Stat(ctx context.Context, p string) (stdfs.FileInfo, error) {
@@ -542,7 +551,7 @@ func (f *FS) ReadDir(ctx context.Context, p string) ([]stdfs.DirEntry, error) {
 	slices.Sort(names)
 	out := make([]stdfs.DirEntry, 0, len(names))
 	for _, name := range names {
-		out = append(out, dirEntry{info: fileInfo{node: node.children[name]}})
+		out = append(out, dirEntry{name: name, info: fileInfo{node: node.children[name]}})
 	}
 	return out, nil
 }

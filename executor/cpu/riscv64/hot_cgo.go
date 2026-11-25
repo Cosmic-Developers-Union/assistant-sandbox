@@ -17,16 +17,21 @@ const hotBatchSupported = true
 
 func runHotBatch(
 	registers []uint64,
-	pc, pageBase uint64,
+	pc, pageBase, jitIdentity uint64,
 	limit uint64,
+	retiredBase uint64,
 	regions []uint64,
 	pageNumbers []uint64,
 	pageAddresses []uintptr,
 	pageSize uint64,
 	codeBases []uint64,
-	codeWords []uintptr,
-	codeLengths []uintptr,
+	codeDecoded []uintptr,
+	codeVersions []uint64,
+	codeStartSlots []uint64,
 	instructionPageSize uint64,
+	reservation []uint64,
+	floats []uint64,
+	fcsr *uint64,
 ) (uint64, uint64) {
 	if len(registers) < numRegs || limit == 0 {
 		return pc, 0
@@ -47,20 +52,38 @@ func runHotBatch(
 	if len(codeBases) > 0 {
 		codeBasesPointer = (*C.uint64_t)(unsafe.Pointer(&codeBases[0]))
 	}
-	var codeWordsPointer *C.uint64_t
-	if len(codeWords) > 0 {
-		codeWordsPointer = (*C.uint64_t)(unsafe.Pointer(&codeWords[0]))
+	var codeDecodedPointer *C.uint64_t
+	if len(codeDecoded) > 0 {
+		codeDecodedPointer = (*C.uint64_t)(unsafe.Pointer(&codeDecoded[0]))
 	}
-	var codeLengthsPointer *C.uint64_t
-	if len(codeLengths) > 0 {
-		codeLengthsPointer = (*C.uint64_t)(unsafe.Pointer(&codeLengths[0]))
+	var codeVersionsPointer *C.uint64_t
+	if len(codeVersions) > 0 {
+		codeVersionsPointer = (*C.uint64_t)(unsafe.Pointer(&codeVersions[0]))
+	}
+	var codeStartSlotsPointer *C.uint64_t
+	if len(codeStartSlots) > 0 {
+		codeStartSlotsPointer = (*C.uint64_t)(unsafe.Pointer(&codeStartSlots[0]))
+	}
+	var reservationPointer *C.uint64_t
+	if len(reservation) >= 4 {
+		reservationPointer = (*C.uint64_t)(unsafe.Pointer(&reservation[0]))
+	}
+	var floatsPointer *C.uint64_t
+	if len(floats) > 0 {
+		floatsPointer = (*C.uint64_t)(unsafe.Pointer(&floats[0]))
+	}
+	var fcsrPointer *C.uint64_t
+	if fcsr != nil {
+		fcsrPointer = (*C.uint64_t)(unsafe.Pointer(fcsr))
 	}
 	nativePC := C.uint64_t(pc)
 	steps := C.rv64_hot_run(
 		(*C.uint64_t)(unsafe.Pointer(&registers[0])),
 		&nativePC,
 		C.uint64_t(pageBase),
+		C.uint64_t(jitIdentity),
 		C.uint32_t(limit),
+		C.uint64_t(retiredBase),
 		regionsPointer,
 		C.uint32_t(len(regions)/3),
 		pageNumbersPointer,
@@ -68,17 +91,25 @@ func runHotBatch(
 		C.uint32_t(len(pageNumbers)),
 		C.uint64_t(pageSize),
 		codeBasesPointer,
-		codeWordsPointer,
-		codeLengthsPointer,
+		codeDecodedPointer,
+		codeVersionsPointer,
+		codeStartSlotsPointer,
 		C.uint32_t(len(codeBases)),
 		C.uint64_t(instructionPageSize),
+		reservationPointer,
+		floatsPointer,
+		fcsrPointer,
 	)
 	runtime.KeepAlive(registers)
 	runtime.KeepAlive(regions)
 	runtime.KeepAlive(pageNumbers)
 	runtime.KeepAlive(pageAddresses)
 	runtime.KeepAlive(codeBases)
-	runtime.KeepAlive(codeWords)
-	runtime.KeepAlive(codeLengths)
+	runtime.KeepAlive(codeDecoded)
+	runtime.KeepAlive(codeVersions)
+	runtime.KeepAlive(codeStartSlots)
+	runtime.KeepAlive(reservation)
+	runtime.KeepAlive(floats)
+	runtime.KeepAlive(fcsr)
 	return uint64(nativePC), uint64(steps)
 }

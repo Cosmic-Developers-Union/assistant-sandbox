@@ -80,6 +80,9 @@ func (n *Namespace) SendTo(ctx context.Context, from *UDPEndpoint, data []byte, 
 		return 0, errno.BadHandle
 	}
 	target, ok := n.udpBound[listenKey{addr: to.IP, port: to.Port}]
+	if !ok && to.IP == LoopbackIPv4 {
+		target, ok = n.udpBound[listenKey{addr: netip.IPv4Unspecified(), port: to.Port}]
+	}
 	n.mu.Unlock()
 	if !ok || target.drain {
 		return len(data), nil // 尽力而为:无接收方即丢弃,发送仍成功
@@ -299,12 +302,12 @@ func readHostUDP(endpoint *UDPEndpoint, host io.ReadWriteCloser, from Addr) {
 // OnChange 订阅就绪变化(poll/epoll 等待图,M07)。
 func (e *UDPEndpoint) OnChange(fn func()) (cancel func()) { return e.base.OnChange(fn) }
 
-// Ready 实现 poll 就绪:有报文时可读。
+// Ready 实现 poll 就绪:有报文时可读;数据报发送不排队,始终可写。
 func (e *UDPEndpoint) Ready() poll.Readiness {
 	e.mu.Lock()
 	pending := len(e.queue) > 0
 	e.mu.Unlock()
-	var bits poll.Readiness
+	bits := poll.Writable
 	if pending {
 		bits |= poll.Readable
 	}

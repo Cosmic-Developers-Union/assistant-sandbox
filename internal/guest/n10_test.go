@@ -20,7 +20,7 @@ import (
 var n10Assets = map[string]string{
 	"bin/bash":                   "009e1bab308b4c6df742c7768ae0fa7b182b78256f92f93acdb10d516bf39a94",
 	"bin/busybox.static":         "62831fb7c4a0da509481107a8aeb022244235c5dced18101e3d39131d303d704",
-	"lib/ld-musl-riscv64.so.1":   "4fdd77eccfb6019bf4f36e3efb25e73b165a6648aeef66f2d890959198914123",
+	"lib/ld-musl-riscv64.so.1":   "23ea7ef0c0fb58d350b0a847c75de7529a68c240af87c4fdd4a327444801b0fd",
 	"usr/lib/libreadline.so.8.2": "e8cce022079187a8b353a6baa7611f44092d97bd98096d538cc5a6f81729cca2",
 	"usr/lib/libncursesw.so.6.5": "28e544f2e21d8a9a0458b8f3425ee46a416c0d35d2ec1a4ae44fa60b9019c3e4",
 }

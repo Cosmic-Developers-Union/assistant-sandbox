@@ -1,5 +1,6 @@
 PREFIX ?= $(HOME)/.local
 HOST_GOOS := $(shell go env GOOS)
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || printf dev)
 
 ifeq ($(HOST_GOOS),linux)
 CGO_ENABLED ?= 1
@@ -8,11 +9,16 @@ CGO_ENABLED ?= 0
 endif
 
 BUILD_FLAGS :=
+GO_LDFLAGS := -X main.version=$(VERSION)
 ifeq ($(CGO_ENABLED),1)
 BUILD_FLAGS += -tags netgo,osusergo
 ifeq ($(HOST_GOOS),linux)
-BUILD_FLAGS += -ldflags "-linkmode external -extldflags -static"
+BUILD_FLAGS += -ldflags "-linkmode external -extldflags -static $(GO_LDFLAGS)"
+else
+BUILD_FLAGS += -ldflags "$(GO_LDFLAGS)"
 endif
+else
+BUILD_FLAGS += -ldflags "$(GO_LDFLAGS)"
 endif
 
 # 工具链声明:Go 版本以 go.mod 的 go 指令为唯一事实来源(CI 经 setup-go
@@ -21,7 +27,7 @@ endif
 # 客体工具链 = 同一 Go 工具链(GOOS=wasip1 GOARCH=wasm)+ gzip,无外部交叉编译器。
 GOLANGCI_LINT_VERSION := v2.14.0
 
-.PHONY: guest build release install clean lint test docker-test toolchain isolated-check offline-check getting-started compat-s3 compat-ltp compat-s4
+.PHONY: guest build release install clean lint test bench test-multicore docker-test toolchain isolated-check offline-check getting-started compat-s3 compat-ltp compat-s4 compat-python perf-languages
 
 # B01:全新克隆仅依赖模块缓存即可构建(无 replace/无宿主绝对路径,
 # 由 internal/metadata TestModuleResolvesWithoutLocalReplacements 锁定)。
@@ -71,6 +77,18 @@ lint:
 test: guest
 	go test ./...
 
+bench:
+	go test ./executor/cpu/riscv64 -run '^$$' -bench . -benchtime=3s -count=3
+
+test-multicore:
+	go test -race ./instance -run '^TestMultiCoreTypicalConfigs$$' -count=1 -v
+
+perf-languages:
+	SANDBOX_PERF=1 go test ./internal/guest -run '^TestPerformancePython$$' -count=1 -v -timeout 10m
+	SANDBOX_PERF=1 go test ./internal/guest -run '^TestPerformanceNodeJitless$$' -count=1 -v -timeout 10m
+	SANDBOX_PERF=1 go test ./internal/guest -run '^TestPerformanceNodeStandard$$' -count=1 -v -timeout 10m
+	SANDBOX_PERF=1 go test ./internal/guest -run '^TestPerformanceGo$$' -count=1 -v -timeout 10m
+
 # 所有测试在 Docker 内执行并以 cgroup 硬限 512MB(含 swap),避免宿主机内存压力。
 # 用法:make docker-test                          # 全量 go test ./...
 # 	或:make docker-test TEST_ARGS="./abi/... -run TestXxx"  # 定向
@@ -106,3 +124,9 @@ compat-ltp:
 
 compat-s4:
 	go test ./internal/guest -run '^TestCompatibilityS4DevelopmentImageExternal$$' -count=1 -v -timeout 1h
+
+# Q14:运行 CPython 上游测试。PYTHON_SUITE_TESTS="test_sys test_os" 指定模块，
+# 或设为 all 运行完整测试集；PYTHON_SUITE_TIMEOUT=秒数 限制单模块时长。
+compat-python:
+	PYTHON_SUITE_TESTS="$(PYTHON_SUITE_TESTS)" go test ./internal/guest \
+		-run '^TestPython312UpstreamSuite$$' -count=1 -v -timeout 3h

@@ -46,11 +46,23 @@ func TestMkfifoCreatesNamespaceFactWithoutIOSemantics(t *testing.T) {
 	if !found {
 		t.Fatalf("目录项里应能看见管道及其类型: %v", entries)
 	}
-	if _, err := f.Open(ctx, "/pipe", vmfs.ReadOnly, 0); !errors.Is(err, errno.NotSupported) {
-		t.Fatalf("打开命名管道应如实拒绝: %v", err)
+	reader, err := f.Open(ctx, "/pipe", vmfs.ReadOnly|vmfs.NonBlock, 0)
+	if err != nil {
+		t.Fatalf("非阻塞读侧应能打开: %v", err)
 	}
-	if _, err := f.Open(ctx, "/pipe", vmfs.WriteOnly, 0); !errors.Is(err, errno.NotSupported) {
-		t.Fatalf("写侧同样拒绝: %v", err)
+	if info, err := reader.Stat(); err != nil || info.Mode()&stdfs.ModeNamedPipe == 0 {
+		t.Fatalf("fd 的 fstat 应报告命名管道: %v %v", info, err)
+	}
+	var buffer [1]byte
+	if _, err := reader.Read(buffer[:]); !errors.Is(err, errno.WouldBlock) {
+		t.Fatalf("空命名管道非阻塞读应报 EAGAIN: %v", err)
+	}
+	writer, err := f.Open(ctx, "/pipe", vmfs.WriteOnly|vmfs.NonBlock, 0)
+	if err != nil {
+		t.Fatalf("非阻塞写侧应能打开: %v", err)
+	}
+	if _, err := writer.Write([]byte("x")); !errors.Is(err, errno.NotSupported) {
+		t.Fatalf("写侧等待语义尚未接入时应如实拒绝: %v", err)
 	}
 }
 
@@ -78,7 +90,9 @@ func TestMkfifoErrorsAndSnapshotRoundTrip(t *testing.T) {
 	if err != nil || info.Mode()&stdfs.ModeNamedPipe == 0 || info.Mode().Perm() != 0o644 {
 		t.Fatalf("快照往返后仍是命名管道: %v %v", info.Mode(), err)
 	}
-	if _, err := f.Open(ctx, "/pipe", vmfs.ReadOnly, 0); !errors.Is(err, errno.NotSupported) {
-		t.Fatalf("恢复后打开仍应拒绝: %v", err)
+	reader, err := f.Open(ctx, "/pipe", vmfs.ReadOnly|vmfs.NonBlock, 0)
+	if err != nil {
+		t.Fatalf("恢复后读侧应能打开: %v", err)
 	}
+	_ = reader.Close()
 }

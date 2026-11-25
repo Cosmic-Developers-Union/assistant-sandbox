@@ -27,14 +27,13 @@
 ## 2. 系统调用
 
 编号与名称一一对应由 G01 的 `TestRegistryMatchesAdapterMapping` 锁定;
-适配器认识但未实现的 25 个编号(memfd_create、
-clone3、openat2、faccessat2、
+适配器认识但未实现的 24 个编号(clone3、openat2、faccessat2、
 ptrace、chroot、mount、umount2、sync、acct、reboot、kexec_load、
 syslog、pivot_root、perf_event_open、pidfd_open、pidfd_getfd、
 close_range、fadvise64、fallocate、userfaultfd、accept4)固定登记为
 ENOSYS 清单,归 L/I/H 组后续任务。
 
-### 已交付语义(96 项)
+### 已交付语义(103 项)
 
 | 调用 | 语义来源(任务/测试) |
 | --- | --- |
@@ -43,18 +42,20 @@ ENOSYS 清单,归 L/I/H 组后续任务。
 | execve | H06/H07;`TestRealELFExecve*` |
 | waitid | H09;`TestKernelWaitChild*`、`TestWaitid*` |
 | inotify_init1 / inotify_add_watch / inotify_rm_watch | I20(路径匹配子集:CREATE/MODIFY/DELETE/OPEN/ACCESS/CLOSE/MOVED_FROM/TO/DELETE_SELF/MOVE_SELF/IGNORED/Q_OVERFLOW;rename 后旧路径不跟随为登记差异);`TestInotifyLifecycleAgainstRealFileSystem`、`vm/inotify` |
-| socket / socketpair / bind / listen / accept / accept4 / connect / sendto / recvfrom / sendmsg / recvmsg / shutdown / getsockname / getpeername / getsockopt / setsockopt | M01–M08(VM 独立命名空间,回环撮合;AF_INET 流式/数据报与 AF_UNIX 流式;SOCK_NONBLOCK/CLOEXEC;选项子集 SO_REUSEADDR/SO_TYPE/SO_ERROR/SO_KEEPALIVE/TCP_NODELAY;AF_INET6 与 AF_UNIX 数据报 ENOTSUP;MSG_NOSIGNAL 忽略;sendmsg/recvmsg 分散缓冲与 AF_UNIX SCM_RIGHTS 共享打开文件描述,控制缓冲不足置 MSG_CTRUNC 并归还引用;socket 就绪经 poll/epoll 水平/边缘触发,M07);`vm/net`、`TestSocketSyscallsDispatchWithSockaddrEncoding`、`TestSendmsg*`、`TestRecvmsg*`、`TestEpollReportsListenerAndConnectionReadiness`、`TestPollNotifies*` |
+| socket / socketpair / bind / listen / accept / accept4 / connect / sendto / recvfrom / sendmsg / recvmsg / shutdown / getsockname / getpeername / getsockopt / setsockopt | M01–M08(VM 独立命名空间,回环撮合;AF_INET 流式/数据报与 AF_UNIX 流式;SOCK_NONBLOCK/CLOEXEC;选项子集 SO_REUSEADDR/SO_TYPE/SO_ERROR/SO_KEEPALIVE/SO_SNDBUF/SO_RCVBUF/TCP_NODELAY;AF_INET6 与 AF_UNIX 数据报 ENOTSUP;MSG_NOSIGNAL 忽略;sendmsg/recvmsg 分散缓冲与 AF_UNIX SCM_RIGHTS 共享打开文件描述,控制缓冲不足置 MSG_CTRUNC 并归还引用;UDP bind(0) 回读分配端口与恒可写就绪;socket 就绪经 poll/epoll 水平/边缘触发,M07);`vm/net`、`TestSocketSyscallsDispatchWithSockaddrEncoding`、`TestSendmsg*`、`TestRecvmsg*`、`TestEpollReportsListenerAndConnectionReadiness`、`TestPollNotifies*`、`TestBindPortZeroReportsAssignedAddress`、`TestSocketOptionsAcceptRuntimeBuffers`、`TestPython312AsyncioThreadsafeWake` |
 | getpid / gettid / getppid | G 组身份查询 |
 | openat / close / read / write | I03/I06;`TestOpenFlag*`、`TestReadWriteShort*` |
 | pread64 / pwrite64 | 显式偏移读写,不改变描述符游标;非可定位描述符 ESPIPE;I03;`TestPreadPwrite*` |
+| sendfile | 常规文件到 socket/描述符发送;offset 指针与文件游标语义;CPython `test_os` |
 | readv / writev | I07;`TestReadvWritevScatterGather` |
 | lseek / getdents64 | I09;`TestGetdents64Walks*` |
 | fstat / newfstatat / statx | I08;`TestFstat*`、`TestStatx*` |
 | statfs / fstatfs | I19;`TestStatfs*` |
-| mkdirat / unlinkat / renameat / renameat2 | I10;`TestDirectoryOperations*` |
+| mkdirat / mknodat / unlinkat / renameat / renameat2 | I10;`mknodat` 支持 FIFO 创建;`TestDirectoryOperations*` |
 | symlinkat / linkat / readlinkat | I11;`TestLinkSymlinkLifecycle*` |
 | ftruncate / fsync / fdatasync / utimensat | I12;`TestUtimensatAndFtruncate*` |
 | fchmod / fchmodat | I13 权限位;`TestFchmodat*`、Q12 venv |
+| fchown / fchownat | I13/O01 属主与属组更新;CPython `test_os` |
 | umask | I13 每进程文件创建掩码;`TestUmask*`、Q12 pip |
 | chdir / fchdir | I01 工作目录;Q12 venv、`TestChdir*` |
 | faccessat | G 组;`TestFaccessat*` |
@@ -65,6 +66,7 @@ ENOSYS 清单,归 L/I/H 组后续任务。
 | pselect6 | L06;fd_set 位图、坏描述符 EBADF、空集合纯睡眠、sigmask 结构;`TestPselect6*` |
 | epoll_create1 / epoll_ctl / epoll_pwait / epoll_pwait2 | L07/L08;水平/边缘触发(EPOLLET)与一次性(EPOLLONESHOT),增删改与重复登记、关闭语义、maxevents 截断不丢边沿;`TestEpoll*`、`TestEpollProbeSemanticsMatchLinux` |
 | eventfd2 | L09;`TestEventfd2ValidatesAndDelegates` |
+| memfd_create | 匿名内存文件；CPython `test_os`、`sendfile` 路径 |
 | futex | K05/K06;WAIT/WAKE 值校验与计数唤醒、REQUEUE/CMP_REQUEUE(原子迁移,CMP 值校验 EAGAIN)、WAIT_BITSET/WAKE_BITSET(绝对超时按单调/实时钟、位集交集匹配)、FUTEX_PRIVATE_FLAG、4 字节对齐;vm/futex、`TestFutex*`、`TestFutexProbe*` |
 | signalfd4 | L11;被进程屏蔽且命中掩码的信号经 fd 队列读取,KILL/STOP 位登记时剥离;`TestSignalfd4ValidatesAndDelegates`、`TestKernelSignalfdRoutesMaskedSignals`、`TestSignalfdProbeRunsOnKernel` |
 | brk / mmap / munmap / mprotect / mremap / madvise | 匿名私有(E03)与文件私有/共享映射(E08/E09:私有=映射时快照不写回,共享=经 chargeFile 随机访问直通、越尾零页、fork 后仍共享);msync 校验覆盖性;E03/E06/E07/E08/E09/E11/E12;`TestMmap*`、`TestMapperFile*`、`TestBrk*`、`TestMmapProbe*` |
@@ -78,17 +80,17 @@ ENOSYS 清单,归 L/I/H 组后续任务。
 | getrandom | L04;`TestGetrandomValidatesFlags` |
 | uname / sysinfo | G09;`TestUnameAndSysinfo*` |
 | getrlimit / setrlimit / prlimit64 | G10;`TestGetrlimit*`、`TestPrlimit64*` |
+| getpriority / setpriority | 每进程 nice 值；CPython `test_os` |
 | sched_getaffinity / sched_setaffinity / getcpu | L12;`TestAffinityAndTopology*` |
 | getcwd | G 组;`vm` 内核用例 |
 | getuid / geteuid / getgid / getegid | G 组单身份查询(O01 前固定客体身份) |
 | getpgid / getsid / setpgid / setsid | H11;`TestKernelProcessGroupsAndSessions`、`TestSessionProbeErrnosMatchLinuxSemantics` |
 
-### 明确 ENOTSUP(31 项:在册、语义未交付)
+### 明确 ENOTSUP(29 项:在册、语义未交付)
 
 | 调用 | 承接任务 |
 | --- | --- |
 | getitimer / setitimer | 未纳入配置(需要时立任务) |
-| getpriority / setpriority | 未纳入配置(需要时立任务) |
 | mlock / munlock / mlockall / munlockall / mincore | E15(映射/物理页预算) |
 | setuid / setgid / setreuid / setregid / setresuid / setresgid / setfsuid / setfsgid | O01(客体身份) |
 

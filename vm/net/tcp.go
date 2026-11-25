@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/netip"
 	"sync"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
@@ -422,6 +423,10 @@ func (n *Namespace) BindTCPListener(addr Addr, reuse bool) (*TCPListener, error)
 	if n.closed {
 		return nil, errno.BadHandle
 	}
+	if addr.Port == 0 {
+		n.nextCookie++
+		addr.Port = uint16(32768 + n.nextCookie%16384)
+	}
 	key := listenKey{addr: addr.IP, port: addr.Port}
 	if _, ok := n.tcpListen[key]; ok {
 		return nil, errno.Wrap(errno.AddressInUse, "端口已占用")
@@ -435,8 +440,17 @@ func (n *Namespace) BindTCPListener(addr Addr, reuse bool) (*TCPListener, error)
 func (n *Namespace) LookupTCPListener(addr Addr) (*TCPListener, bool) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	listener, ok := n.tcpListen[listenKey{addr: addr.IP, port: addr.Port}]
-	return listener, ok
+	key := listenKey{addr: addr.IP, port: addr.Port}
+	if listener, ok := n.tcpListen[key]; ok {
+		return listener, true
+	}
+	// bind(..., 0.0.0.0) 的监听匹配本机任意 IPv4 地址;当前命名
+	// 空间只有回环,因此 127.0.0.1 回退到通配键。
+	if addr.IP == LoopbackIPv4 {
+		listener, ok := n.tcpListen[listenKey{addr: netip.IPv4Unspecified(), port: addr.Port}]
+		return listener, ok
+	}
+	return nil, false
 }
 
 // Listen 把端点标记为可接受连接;队列容量固定为 backlogLimit。

@@ -32,6 +32,21 @@ func (h *pollReadyHandle) OnChange(func()) (cancel func()) {
 	return func() {}
 }
 
+type pollSignalHandle struct{ ready chan struct{} }
+
+func (h *pollSignalHandle) Read([]byte) (int, error)    { return 0, nil }
+func (h *pollSignalHandle) Write(p []byte) (int, error) { return len(p), nil }
+func (h *pollSignalHandle) Close() error                { return nil }
+func (h *pollSignalHandle) Ready() poll.Readiness {
+	if len(h.ready) > 0 {
+		return poll.Readable
+	}
+	return 0
+}
+func (h *pollSignalHandle) OnChange(func()) (cancel func()) {
+	return func() {}
+}
+
 // writePollfd 写入一个 struct pollfd。
 func writePollfd(t *testing.T, space *fakeMemory, address uint64, descriptor uint32, events uint16) {
 	t.Helper()
@@ -120,6 +135,46 @@ func TestPollWaitsForReadiness(t *testing.T) {
 	}
 	if revents := readPollfd(t, space, 0x2100); revents&pollIn == 0 {
 		t.Fatalf("revents=%#x want POLLIN", revents)
+	}
+}
+
+// TestPpollSlicesInfiniteWaitUntilReady 验证 L05/J09 回归:无限 ppoll
+// 接入信号轮询后必须跨 1ms 切片继续等待,不能在首个切片超时时以
+// revents=0 立即返回并形成忙循环。
+func TestPpollSlicesInfiniteWaitUntilReady(t *testing.T) {
+	ctx := context.Background()
+	space := newFakeMemory()
+	table := fd.New()
+	const pid = 66
+	table.Attach(pid, fd.Streams{})
+	ready := make(chan struct{}, 1)
+	if err := table.Install(pid, 3, &pollSignalHandle{ready: ready}); err != nil {
+		t.Fatal(err)
+	}
+	sleeps := 0
+	sleeper := &fakeSleeper{onSleep: func(uint64) {
+		sleeps++
+		if sleeps == 2 {
+			ready <- struct{}{}
+		}
+	}}
+	handler := Syscalls{
+		Memory: space, Descriptors: ProcessDescriptors{Table: table, PID: pid},
+		Sleeper: sleeper, Interrupts: &fakeInterruptor{after: 1000},
+	}
+	writePollfd(t, space, 0x2200, 3, pollIn)
+	reply := handler.Handle(ctx, Call{
+		Syscall: SysPpoll,
+		Args:    [6]uint64{0x2200, 1, 0, 0, 0},
+	})
+	if reply.Errno != "" || reply.Value != 1 {
+		t.Fatalf("ppoll=%+v want 1 个就绪", reply)
+	}
+	if revents := readPollfd(t, space, 0x2200); revents&pollIn == 0 {
+		t.Fatalf("revents=%#x want POLLIN", revents)
+	}
+	if len(sleeper.durations) < 2 {
+		t.Fatalf("应在多个切片后返回: %+v", sleeper.durations)
 	}
 }
 

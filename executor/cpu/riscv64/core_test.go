@@ -1727,6 +1727,14 @@ func TestCSRCountersAreReadable(t *testing.T) {
 	if got, err := port.ReadRegister(12); err != nil || got != 4 {
 		t.Fatalf("第二次 cycle=%d err=%v want 4", got, err)
 	}
+
+	memory.load(t, 20, encodeCSR(0x2, 13, 0, int(csrTime)))
+	if outcome, err := port.Step(ctx); err != nil || outcome != cpu.Continued {
+		t.Fatalf("time: outcome=%v err=%v", outcome, err)
+	}
+	if got, err := port.ReadRegister(13); err != nil || got != 5 {
+		t.Fatalf("time=%d err=%v want 5", got, err)
+	}
 }
 
 func TestCSRWritesAndUnknownAddressesAreRejected(t *testing.T) {
@@ -1742,7 +1750,6 @@ func TestCSRWritesAndUnknownAddressesAreRejected(t *testing.T) {
 		{"csrrc 清位写 cycle", encodeCSR(0x3, 10, 11, int(csrCycle)), cpu.TrapIllegalInstruction, false},
 		{"csrrwi 立即写 instret", encodeCSR(0x5, 10, 3, int(csrInstret)), cpu.TrapIllegalInstruction, false},
 		{"csrrs 零源读合法", encodeCSR(0x2, 10, 0, int(csrCycle)), 0, true},
-		{"time 未实现", encodeCSR(0x2, 10, 0, int(csrTime)), cpu.TrapNotImplemented, false},
 		{"mstatus 未实现", encodeCSR(0x2, 10, 0, 0x300), cpu.TrapNotImplemented, false},
 	} {
 		memory := newSparse()

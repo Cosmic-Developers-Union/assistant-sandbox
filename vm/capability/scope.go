@@ -194,6 +194,13 @@ func (s scopedFDs) EventFD(_ uint64, initialValue uint64, options eventfd.Option
 	return 0, errno.Wrap(errno.NotSupported, "描述符表不支持 eventfd")
 }
 
+func (s scopedFDs) Memfd(_ uint64, name string) (uint32, error) {
+	if creator, ok := s.base.(fd.Creator); ok {
+		return creator.Memfd(s.pid, name)
+	}
+	return 0, errno.Wrap(errno.NotSupported, "描述符表不支持 memfd")
+}
+
 // SignalFD 实现 fd.Creator:以作用域绑定的进程创建 signalfd。
 func (s scopedFDs) SignalFD(_ uint64, mask uint64, options signalfd.Options) (uint32, error) {
 	if creator, ok := s.base.(fd.Creator); ok {
@@ -499,6 +506,17 @@ func (c chargeFS) Chmod(ctx context.Context, name string, mode stdfs.FileMode) e
 	return modes.Chmod(ctx, name, mode)
 }
 
+func (c chargeFS) Chown(ctx context.Context, name string, uid, gid int64) error {
+	ownership, ok := c.base.(fs.Ownership)
+	if !ok {
+		return errno.Wrap(errno.NotSupported, "文件系统不支持 chown")
+	}
+	if err := c.scope.charge(ctx, costMeta); err != nil {
+		return err
+	}
+	return ownership.Chown(ctx, name, uid, gid)
+}
+
 func (c chargeFS) Space(ctx context.Context, name string) (fs.Space, error) {
 	capacity, ok := c.base.(fs.Capacity)
 	if !ok {
@@ -790,6 +808,17 @@ func (c chargeFS) SetTimes(ctx context.Context, name string, atime, mtime int64)
 		return err
 	}
 	return timestamps.SetTimes(ctx, name, atime, mtime)
+}
+
+func (c chargeFS) SetTimesFollow(ctx context.Context, name string, atime, mtime int64, follow bool) error {
+	timestamps, ok := c.base.(fs.LinkTimestamps)
+	if !ok {
+		return errno.Wrap(errno.NotSupported, "文件系统不支持按链接方式更新时间")
+	}
+	if err := c.scope.charge(ctx, costMeta); err != nil {
+		return err
+	}
+	return timestamps.SetTimesFollow(ctx, name, atime, mtime, follow)
 }
 
 func (c chargeFS) Snapshot(ctx context.Context) (fs.Snapshotted, error) {

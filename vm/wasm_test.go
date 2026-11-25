@@ -80,6 +80,12 @@ func TestVMProductionCodeHasNoAmbientHostImports(t *testing.T) {
 		"vm/pty/pty.go": {"time": true},
 		// 标准流的 fstat 视图;time 仅用于 FileInfo.ModTime 的零值。
 		"vm/fd/table.go": {"time": true},
+		// memfd 的 FileInfo 只返回零值 ModTime;内容与时钟均由 VM 管理。
+		"vm/memfd/memfd.go": {"time": true},
+		// 套接字 fstat 视图只返回零值 ModTime。
+		"vm/net/stat.go": {"time": true},
+		// 管道 fstat 视图只返回零值 ModTime。
+		"vm/pipe/pipe.go": {"time": true},
 
 		// 原生批量执行把持锁期间的页/译码切片地址传给同进程 C++ 解释器;
 		// 仅内存寻址,不访问宿主文件、网络、时钟或进程能力。

@@ -22,6 +22,8 @@ type handle struct {
 	off        int64
 	dirPos     uint64
 	appendMode bool
+	nonBlock   bool
+	fifo       bool
 	writable   bool
 	accessMode uint32
 	closed     bool
@@ -38,6 +40,12 @@ func (h *handle) Read(p []byte) (int, error) {
 	if h.node.kind == kindDir {
 		// Linux 语义:read(2) 对目录句柄返回 EISDIR,目录内容经 readdir 读取。
 		return 0, errno.IsDirectory
+	}
+	if h.fifo {
+		if h.nonBlock {
+			return 0, errno.WouldBlock
+		}
+		return 0, errno.Wrap(errno.NotSupported, "命名管道读写等待尚未接入")
 	}
 	if h.off >= int64(len(h.node.data)) {
 		return 0, io.EOF
@@ -61,6 +69,9 @@ func (h *handle) Write(p []byte) (int, error) {
 	if h.node.kind == kindDir {
 		// 目录句柄只以只读方式打开;write(2) 返回 EBADF。
 		return 0, errno.BadHandle
+	}
+	if h.fifo {
+		return 0, errno.Wrap(errno.NotSupported, "命名管道读写等待尚未接入")
 	}
 	if !h.writable {
 		// fd 未以写方式打开(含 O_APPEND|O_RDONLY)。
@@ -259,12 +270,13 @@ func (h *handle) Readdir(limit int) ([]stdfs.DirEntry, error) {
 	}
 	type pending struct {
 		cookie uint64
+		name   string
 		node   *inode
 	}
 	var remaining []pending
-	for _, child := range h.node.children {
+	for name, child := range h.node.children {
 		if child.id >= h.dirPos {
-			remaining = append(remaining, pending{cookie: child.id, node: child})
+			remaining = append(remaining, pending{cookie: child.id, name: name, node: child})
 		}
 	}
 	slices.SortFunc(remaining, func(a, b pending) int { return cmp.Compare(a.cookie, b.cookie) })
@@ -274,7 +286,7 @@ func (h *handle) Readdir(limit int) ([]stdfs.DirEntry, error) {
 	out := make([]stdfs.DirEntry, 0, len(remaining))
 	for _, item := range remaining {
 		h.dirPos = item.cookie + 1
-		out = append(out, dirEntry{info: fileInfo{node: item.node}})
+		out = append(out, dirEntry{name: item.name, info: fileInfo{node: item.node}})
 	}
 	return out, nil
 }
@@ -321,7 +333,7 @@ func (h *handle) Truncate(size int64) error {
 }
 
 // StatusFlags 报告句柄的打开状态标志(F_GETFL 视图):
-// 访问模式 + O_APPEND。
+// 访问模式 + O_APPEND + O_NONBLOCK。
 func (h *handle) StatusFlags() (uint32, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -332,12 +344,15 @@ func (h *handle) StatusFlags() (uint32, error) {
 	if h.appendMode {
 		flags |= 0o2000 // O_APPEND
 	}
+	if h.nonBlock {
+		flags |= 0o4000 // O_NONBLOCK
+	}
 	return flags, nil
 }
 
 // SetStatusFlags 应用 F_SETFL:访问模式位不可改(忽略),
-// O_APPEND 切换追加写,O_NONBLOCK 对常规文件是无效果的成功
-// (与 Linux 语义一致),其余位忽略。
+// O_APPEND 切换追加写,O_NONBLOCK 作为描述符状态保存,
+// 其余位忽略。
 func (h *handle) SetStatusFlags(flags uint32) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -349,6 +364,7 @@ func (h *handle) SetStatusFlags(flags uint32) error {
 	} else {
 		h.appendMode = false
 	}
+	h.nonBlock = flags&0o4000 != 0
 	return nil
 }
 
@@ -446,9 +462,12 @@ func (i fileInfo) Sys() any {
 	}
 }
 
-type dirEntry struct{ info fileInfo }
+type dirEntry struct {
+	name string
+	info fileInfo
+}
 
-func (e dirEntry) Name() string                  { return e.info.Name() }
+func (e dirEntry) Name() string                  { return e.name }
 func (e dirEntry) IsDir() bool                   { return e.info.IsDir() }
 func (e dirEntry) Type() stdfs.FileMode          { return e.info.Mode().Type() }
 func (e dirEntry) Info() (stdfs.FileInfo, error) { return e.info, nil }

@@ -36,3 +36,34 @@
   "不含 JIT 能力"的能力报告条目(U11)。
 - E06/E15:mprotect 的 W↔X 转换与可执行页记账先于 Q24 落地并在
   内存表测试中锁定;文件映射(E08/E09)落地后 JIT 页仍限匿名私有。
+
+## 宿主翻译缓存补充(2026-11-25)
+
+执行器的 x86-64 页级翻译缓存属于**宿主私有实现**,不映射到客体
+地址空间,也不改变上文的客体 W^X 契约:
+
+- 翻译器以 `mmap(PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS)`
+  分配宿主缓存,写入机器码后 `mprotect(PROT_READ|PROT_EXEC)`;
+  缓存从不以 RWX 权限存在。
+- 客体页从不因翻译而获得执行权限;客体 `mprotect` 仍拒绝
+  `PROT_WRITE|PROT_EXEC`,执行权限检查仍由地址空间表执行。
+- 翻译缓存按客体代码页版本失效,不缓存文件共享后备页;翻译失败、
+  特殊浮点值、原子/CSR/系统调用等回退到解释器语义基准。
+- 该缓存不计入客体物理页预算,但受固定条数与代码体积上限约束。
+
+## 标准 V8 JIT 实验开关
+
+标准 Node 的 V8 JIT 会在启动阶段请求 guest
+`mprotect(PROT_READ|PROT_WRITE|PROT_EXEC)`。默认 VM 仍按本 ADR
+拒绝该请求。为进行标准 Node 性能对比，CLI 提供显式实验开关：
+
+```sh
+assistant-sandbox --allow-guest-rwx -c 'node app.js'
+```
+
+该模式只允许 guest 逻辑页同时具备 W/X；宿主 JIT 代码缓存仍严格
+保持 RW→RX，不产生宿主 RWX 映射。它会降低 guest 代码页的 W^X
+隔离保证，不得作为默认生产配置。
+
+该开关会让 `/usr/bin/node` 包装器切换到标准 V8；不带开关时仍使用
+`--jitless`。直接执行 `/usr/bin/node-bin` 始终是标准 V8。

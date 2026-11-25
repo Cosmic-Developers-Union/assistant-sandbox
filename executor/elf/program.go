@@ -31,16 +31,21 @@ import (
 
 const randomBytes = 16
 
-type Factory struct{}
+type Factory struct {
+	AllowWX bool
+}
 
-func (Factory) New(path string) (executable.Program, []string, error) {
+func (f Factory) New(path string) (executable.Program, []string, error) {
 	if path == "" {
 		return nil, nil, errno.Wrap(errno.Invalid, "程序路径不能为空")
 	}
-	return &program{path: path}, []string{path}, nil
+	return &program{path: path, allowWX: f.AllowWX}, []string{path}, nil
 }
 
-type program struct{ path string }
+type program struct {
+	path    string
+	allowWX bool
+}
 
 func (p *program) Run(ctx context.Context, process proc.Proc) (uint8, error) {
 	loaded, err := loadProgram(ctx, process, p.path, argv(process, p.path), environment(process))
@@ -53,7 +58,7 @@ func (p *program) Run(ctx context.Context, process proc.Proc) (uint8, error) {
 		return 0, err
 	}
 	chargeSegments(ctx, process, loaded.interpreterSegments())
-	space, err := addressSpace(ctx, plan)
+	space, err := addressSpace(ctx, plan, p.allowWX)
 	if err != nil {
 		return 0, err
 	}
@@ -217,8 +222,8 @@ func populateSegments(ctx context.Context, space *memory.Table, segments []loade
 	return nil
 }
 
-func addressSpace(ctx context.Context, plan *loaderelf.Plan) (*memory.Table, error) {
-	space := memory.New(0)
+func addressSpace(ctx context.Context, plan *loaderelf.Plan, allowWX bool) (*memory.Table, error) {
+	space := memory.NewWithOptions(0, memory.Options{AllowWX: allowWX})
 	if err := populateSpace(ctx, space, plan); err != nil {
 		return nil, err
 	}
@@ -416,8 +421,21 @@ func (u processUmask) SetUmask(mask stdfs.FileMode) error {
 	return control.SetUmask(u.process.ID, mask)
 }
 
+type processPriorities struct{ control proc.PriorityControl }
+
+func (p processPriorities) Nice(pid uint64) (int, error) {
+	return p.control.Nice(proc.PID(pid))
+}
+
+func (p processPriorities) SetNice(pid uint64, nice int) error {
+	return p.control.SetNice(proc.PID(pid), nice)
+}
+
 func syscalls(ctx context.Context, process proc.Proc, space *memory.Table, plan *loaderelf.Plan, core cpu.Port) common.Syscalls {
 	handler := common.Syscalls{Memory: space, Sysname: "Linux", Nodename: "assistant-sandbox", Release: "6.8.0", Version: "#1", Machine: "riscv64", Domainname: "(none)", Cwd: process.Dir}
+	if topology, ok := process.Control.(interface{ CPUs() int }); ok {
+		handler.CPUs = uint64(topology.CPUs())
+	}
 	directory := common.NewDirectoryState(process.Dir)
 	handler.Directory = directory
 	umask := processUmask{process: process}
@@ -433,6 +451,9 @@ func syscalls(ctx context.Context, process proc.Proc, space *memory.Table, plan 
 	}
 	if control, ok := process.Resources.(proc.CredentialControl); ok {
 		handler.Credentials = control
+	}
+	if control, ok := process.Control.(proc.PriorityControl); ok {
+		handler.Priorities = processPriorities{control: control}
 	}
 	if gaps, ok := process.Control.(proc.GapControl); ok {
 		handler.Gaps = gaps
@@ -857,6 +878,21 @@ func (p processSignals) Action(sig uint64) (common.SignalAction, error) {
 	}, nil
 }
 
+func (p processSignals) SwapAction(sig uint64, action common.SignalAction) (common.SignalAction, error) {
+	if !signal.Number(sig).Valid() {
+		return common.SignalAction{}, errno.Invalid
+	}
+	previous, err := p.control.SwapSignalAction(signal.Number(sig), signal.ActionConfig{
+		Handler: action.Handler, Flags: action.Flags, Restorer: action.Restorer, Mask: action.Mask,
+	})
+	if err != nil {
+		return common.SignalAction{}, err
+	}
+	return common.SignalAction{
+		Handler: previous.Handler, Flags: previous.Flags, Restorer: previous.Restorer, Mask: previous.Mask,
+	}, nil
+}
+
 func (p processSignals) ApplyMask(how, set uint64) (uint64, error) {
 	switch how {
 	case 0:
@@ -1126,7 +1162,7 @@ func (f processForker) Fork(ctx context.Context) (uint64, error) {
 	go func() {
 		// 子进程生命周期独立于 fork 调用方上下文:调用返回后子进程
 		// 继续执行直到自身退出;随内核关闭的传播由 C06/C12 复核。
-		runCtx, cancel := context.WithCancelCause(context.WithoutCancel(ctx))
+		runCtx, cancel := context.WithCancelCause(proc.WithContext(context.WithoutCancel(ctx), child))
 		defer cancel(nil)
 		// K08:fork 子进程与线程/vfork 子进程一样登记信号中断钩子;
 		// 否则默认致命信号只挂起 pending,阻塞中的子进程不会退出。
@@ -1277,7 +1313,7 @@ func (t processThreader) CloneThread(ctx context.Context, request common.CloneRe
 		}
 	}
 	go func() {
-		runCtx, cancel := context.WithCancelCause(context.WithoutCancel(ctx))
+		runCtx, cancel := context.WithCancelCause(proc.WithContext(context.WithoutCancel(ctx), child))
 		defer cancel(nil)
 		// K08:线程接线的信号中断钩子——signals.Interrupt(tid, n)
 		// 取消运行上下文,fatal 信号由此终结整组。
@@ -1430,7 +1466,7 @@ func (f processVforker) Vfork(ctx context.Context, request common.VforkRequest) 
 	go func() {
 		// 子进程生命周期独立于调用方上下文;父进程在 vfork 调用内
 		// 暂停,完成(exec/退出)后恢复。
-		runCtx, cancel := context.WithCancelCause(context.WithoutCancel(ctx))
+		runCtx, cancel := context.WithCancelCause(proc.WithContext(context.WithoutCancel(ctx), child))
 		defer cancel(nil)
 		// K08/J09:vfork 子进程同样需要信号中断钩子,fatal 信号
 		// 才能取消运行上下文并以信号状态结束。exec 会复位信号表

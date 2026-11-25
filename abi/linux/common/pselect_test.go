@@ -123,8 +123,8 @@ done:
 	}
 }
 
-// TestPselect6ValidatesArguments 验证 L06:nfds 越界、例外集、非法
-// timespec 与非法 sigmask 长度按 EINVAL 拒绝。
+// TestPselect6ValidatesArguments 验证 L06:nfds 越界、非法 timespec
+// 与非法 sigmask 长度按 EINVAL 拒绝;无紧急数据时例外集清零。
 func TestPselect6ValidatesArguments(t *testing.T) {
 	ctx := context.Background()
 	handler := newPselectHarness(t)
@@ -132,8 +132,15 @@ func TestPselect6ValidatesArguments(t *testing.T) {
 		t.Fatalf("nfds 越界: %+v want EINVAL", reply)
 	}
 	writeFDSet(t, handler, 0x2100, 3)
-	if reply := handler.Handle(ctx, Call{Syscall: SysPselect6, Args: [6]uint64{8, 0, 0, 0x2100, 0, 0}}); reply.Errno != errno.Invalid {
-		t.Fatalf("例外集: %+v want EINVAL", reply)
+	var zeroTimeout [16]byte
+	if err := handler.Memory.Write(ctx, 0x3000, zeroTimeout[:]); err != nil {
+		t.Fatal(err)
+	}
+	if reply := handler.Handle(ctx, Call{Syscall: SysPselect6, Args: [6]uint64{8, 0, 0, 0x2100, 0x3000, 0}}); reply.Errno != "" || reply.Value != 0 {
+		t.Fatalf("例外集: %+v want 0", reply)
+	}
+	if got := readFDSetBits(t, handler, 0x2100); len(got) != 0 {
+		t.Fatalf("例外集应清零: %v", got)
 	}
 	var badTimeout [16]byte
 	binary.LittleEndian.PutUint64(badTimeout[0:], 0)
@@ -429,6 +436,72 @@ func TestEpollPwaitBlocksAndWakes(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("就绪变化未唤醒无限等待")
+	}
+}
+
+// blockingSleeper 按请求时长真实阻塞,用于验证有限超时等待仍在
+// 就绪时立即返回,而不是睡满整个超时切片。
+type blockingSleeper struct{}
+
+func (blockingSleeper) Sleep(ctx context.Context, nanoseconds uint64) error {
+	timer := time.NewTimer(time.Duration(nanoseconds))
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// TestEpollPwaitFiniteTimeoutWakesOnReadiness 验证有限超时(毫秒)
+// 等待在就绪变化时立即返回;此前实现睡满整个超时才复查就绪,导致
+// asyncio 自管道唤醒被吞掉。
+func TestEpollPwaitFiniteTimeoutWakesOnReadiness(t *testing.T) {
+	ctx := context.Background()
+	table := fd.New()
+	const pid = 95
+	table.Attach(pid, fd.Streams{})
+	reader, writer, err := table.Pipe(pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := Syscalls{
+		Memory:      newFakeMemory(),
+		Descriptors: ProcessDescriptors{Table: table, PID: pid},
+		Clock:       &fakeClock{monotonic: 0},
+		Sleeper:     blockingSleeper{},
+	}
+	reply := handler.Handle(ctx, Call{Syscall: SysEpollCreate1})
+	if reply.Errno != "" {
+		t.Fatal(reply)
+	}
+	epfd := reply.Value
+	writeEpollEvent(t, handler, 0x4100, epollIn, 9)
+	if r := handler.Handle(ctx, Call{Syscall: SysEpollCtl, Args: [6]uint64{epfd, epollCtlAdd, uint64(reader), 0x4100}}); r.Errno != "" {
+		t.Fatal(r)
+	}
+	type result struct {
+		value uint64
+		errno errno.Code
+	}
+	done := make(chan result, 1)
+	go func() {
+		// 30 秒超时:就绪变化必须立即返回,不能等满超时。
+		r := handler.Handle(ctx, Call{Syscall: SysEpollPwait, Args: [6]uint64{epfd, 0x5100, 8, 30_000, 0}})
+		done <- result{r.Value, r.Errno}
+	}()
+	time.Sleep(30 * time.Millisecond)
+	if err := writePipe(t, table, pid, writer, "wake"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-done:
+		if got.errno != "" || got.value != 1 {
+			t.Fatalf("有限超时等待: %+v want 1", got)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("有限超时等待未在就绪变化时返回")
 	}
 }
 

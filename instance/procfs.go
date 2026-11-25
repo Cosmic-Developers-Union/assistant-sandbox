@@ -93,6 +93,10 @@ func (p kernelProcfs) Processes(ctx context.Context) ([]procfs.Entry, error) {
 		return nil, err
 	}
 	processes := p.kernel.Processes()
+	threadCounts := make(map[proc.PID]int, len(processes))
+	for _, item := range processes {
+		threadCounts[item.TGID]++
+	}
 	out := make([]procfs.Entry, 0, len(processes))
 	for _, item := range processes {
 		descriptors, err := p.kernel.OpenFDs(item.ID)
@@ -105,7 +109,8 @@ func (p kernelProcfs) Processes(ctx context.Context) ([]procfs.Entry, error) {
 			Dir: item.Dir, Env: item.Env, State: item.State.String(),
 			ExitCode: item.ExitCode, ExitSignal: item.ExitSignal,
 			PGID: item.PGID, SID: item.SID,
-			Exe: item.Program, Maps: p.maps(ctx, item.ID),
+			ThreadCount: threadCounts[item.TGID],
+			Exe:         item.Program, Maps: p.maps(ctx, item.ID),
 			OpenFDs: descriptors,
 		})
 	}

@@ -20,6 +20,8 @@ type OpenFlags struct {
 	Append      bool
 	CloseOnExec bool
 	NoFollow    bool
+	NonBlock    bool
+	PathOnly    bool
 }
 
 func (f OpenFlags) Validate() error {

@@ -176,7 +176,7 @@ func TestGuestReadsProcSelf(t *testing.T) {
 func TestProcSystemViewsReflectVMConfiguration(t *testing.T) {
 	machine, err := New(t.Context(), Options{
 		Deterministic: true, Seed: 1,
-		MemoryBytes: 64 << 20,
+		MemoryBytes: 256 << 20,
 		CPUs:        2,
 	})
 	if err != nil {
@@ -184,7 +184,7 @@ func TestProcSystemViewsReflectVMConfiguration(t *testing.T) {
 	}
 	defer func() { _ = machine.Close(context.Background()) }()
 	meminfo := readProcFile(t, machine, t.Context(), "/proc/meminfo")
-	if !strings.Contains(meminfo, "MemTotal:") || !strings.Contains(meminfo, "65536 kB") {
+	if !strings.Contains(meminfo, "MemTotal:") || !strings.Contains(meminfo, "262144 kB") {
 		t.Fatalf("meminfo=%q", meminfo)
 	}
 	cpuinfo := readProcFile(t, machine, t.Context(), "/proc/cpuinfo")

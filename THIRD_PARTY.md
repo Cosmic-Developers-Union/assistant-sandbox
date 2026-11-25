@@ -39,7 +39,10 @@ N10 真实 Bash 与基础工具验收资产(Alpine 3.22 riscv64 官方包;
 - BusyBox 1.37.0-r20(static),GPL-2.0。包:https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/busybox-static-1.37.0-r20.apk (sha256=29072f0a…f31c);二进制 bin/busybox.static sha256=62831fb7…d704。完整许可 [GPL-2.0.txt](licenses/GPL-2.0.txt)。
 - GNU Readline 8.2.13-r1,GPL-3.0-or-later。包:https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/readline-8.2.13-r1.apk (sha256=4b6c7e5f…05fa);库 sha256=e8cce022…cca2。完整许可 [GPL-3.0.txt](licenses/GPL-3.0.txt)。
 - NCurses 6.5_p20250503-r0,X11。包:https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/libncursesw-6.5_p20250503-r0.apk (sha256=7d88384b…9607);库 sha256=28e544f2…c3e4。完整许可 [ncurses-X11.txt](licenses/ncurses-X11.txt)。
-- musl 1.2.6 动态加载器沿用 A04 固定版本(testdata/lib/ld-musl-riscv64.so.1 sha256=4fdd77ec…4123),MIT。
+- musl 1.2.6 动态加载器由 A04 固定源码构建,附加
+  `fpathconf` 描述符校验补丁(testdata/lib/ld-musl-riscv64.so.1
+  sha256=23ea7ef0…b0fd;补丁见
+  [testdata/lib/fpathconf-ebadf.patch](internal/guest/testdata/lib/fpathconf-ebadf.patch)),MIT。
 
 上述 N10 资产中的 Bash、BusyBox、musl 加载器、GNU Readline 与 NCurses
 同时作为 CLI 的 `go:embed` 输入位于 `guest/native/assets`,版本、摘要与

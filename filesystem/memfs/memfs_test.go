@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"slices"
 	"strings"
 	"testing"
 
@@ -327,6 +328,17 @@ func TestHardLinks(t *testing.T) {
 	meta := info.Sys().(*vmfs.Metadata)
 	if meta.NLink != 2 {
 		t.Fatalf("nlink=%d", meta.NLink)
+	}
+	entries, err := f.ReadDir(ctx, "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	if !slices.Contains(names, "one") || !slices.Contains(names, "two") {
+		t.Fatalf("硬链接目录项=%v", names)
 	}
 
 	if err := f.SetTimes(ctx, "/two", 0, 0); err != nil {

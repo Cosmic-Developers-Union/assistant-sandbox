@@ -2,6 +2,7 @@ package net
 
 import (
 	"context"
+	stdfs "io/fs"
 	"sync"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
@@ -92,6 +93,12 @@ func (s *INETSocket) NonBlock() bool { return s.base.blocked() }
 // Type 返回 socket 类型(SO_TYPE 用)。
 func (s *INETSocket) Type() SockType { return s.typ }
 
+// Stat 返回套接字的 fstat 视图;signal.set_wakeup_fd 等路径会先
+// fstat 校验描述符类型。
+func (s *INETSocket) Stat() (stdfs.FileInfo, error) {
+	return socketFileInfo{name: "socket"}, nil
+}
+
 // StatusFlags 报告 fd 状态标志(O_RDWR + O_NONBLOCK;fcntl F_GETFL 用)。
 func (s *INETSocket) StatusFlags() (uint32, error) {
 	flags := uint32(2) // O_RDWR
@@ -135,6 +142,7 @@ func (s *INETSocket) Bind(addr Addr) error {
 		}
 		listener.OnChange(s.base.notify)
 		s.listener = listener
+		s.local = listener.local
 	} else {
 		endpoint, err := s.ns.BindUDP(addr)
 		if err != nil {
@@ -142,8 +150,8 @@ func (s *INETSocket) Bind(addr Addr) error {
 		}
 		endpoint.OnChange(s.base.notify)
 		s.udp = endpoint
+		s.local = endpoint.local
 	}
-	s.local = addr
 	s.state = stateBound
 	return nil
 }
@@ -621,6 +629,10 @@ func (s *INETSocket) Ready() poll.Readiness {
 		return conn.Ready()
 	case udp != nil:
 		return udp.Ready()
+	case s.typ == SockDatagram:
+		// 未绑定数据报套接字仍可立即 sendto(内核自动绑定),poll
+		// 报告可写;否则 asyncio 的 add_writer 路径会永久等待。
+		return s.base.Ready(poll.Writable)
 	default:
 		return s.base.Ready(0)
 	}
@@ -637,6 +649,11 @@ type UnixSocket struct {
 
 	listener *UnixListener
 	conn     *UnixConn
+}
+
+// Stat 返回套接字的 fstat 视图。
+func (s *UnixSocket) Stat() (stdfs.FileInfo, error) {
+	return socketFileInfo{name: "socket"}, nil
 }
 
 // SetNonBlock 切换非阻塞(M02)。

@@ -20,6 +20,8 @@ import (
 	"golang.org/x/term"
 )
 
+var version = "dev"
+
 // run 只调用公开 VM API(instance/guest native):单次执行在同一
 // VM 内核中运行真实客体 shell,不再创建第二套运行时。
 func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
@@ -33,18 +35,26 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	command := flags.StringP("command", "c", "", "shell 脚本（默认 Bash）；未指定时读取标准输入")
 	shellName := flags.String("shell", "bash", "原生客体 shell: bash 或 sh（zsh 暂不支持）")
 	tools := flags.String("tools", "dev", "开发工具包: dev 或 minimal")
+	cpus := flags.Int("cpus", 2, "客体 CPU 数 (1..8)")
+	memory := flags.String("memory", "4g", "客体内存 (256m..16g，例如 300m/1.5g/16g)")
 	noPTY := flags.Bool("no-pty", false, "禁用宿主 PTY，仅用于排查终端兼容问题")
 	readOnly := flags.Bool("read-only", false, "工作区只读（当前原生 VM 明确拒绝）")
+	allowGuestRWX := flags.Bool("allow-guest-rwx", false, "实验性：允许客体同时写与执行（标准 V8 JIT 需要；降低隔离级别）")
 	session := flags.Bool("session", false, "从 stdin 运行 shell 并保持同一 VM 会话")
 	dryRun := flags.Bool("dry-run", false, "显示执行配置")
 	debug := flags.Bool("debug", false, "输出调试信息")
 	verbose := flags.Bool("verbose", false, "显示执行信息")
+	showVersion := flags.BoolP("version", "V", false, "显示版本")
 	help := flags.BoolP("help", "h", false, "显示帮助")
 	if err := flags.Parse(args); err != nil {
 		return 1, err
 	}
 	if *help {
 		flags.PrintDefaults()
+		return 0, nil
+	}
+	if *showVersion {
+		_, _ = fmt.Fprintf(stdout, "assistant-sandbox %s\n", version)
 		return 0, nil
 	}
 	if flags.NArg() != 0 {
@@ -55,6 +65,10 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	}
 	if *tools != "dev" && *tools != "minimal" {
 		return 1, fmt.Errorf("不支持的开发工具包 %q（可用: dev, minimal）", *tools)
+	}
+	memoryBytes, err := parseMemory(*memory)
+	if err != nil {
+		return 1, err
 	}
 	selectedShell, err := nativeshell.Parse(*shellName)
 	if err != nil {
@@ -73,7 +87,8 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		_, _ = fmt.Fprintf(stderr, "忽略 --module=%s（原生 Linux ABI VM）\n", *module)
 	}
 	if *verbose || *debug || *dryRun {
-		_, _ = fmt.Fprintf(stderr, "工作区=%s shell=%s 客体=原生VM 只读=%t\n", workspace, selectedShell, *readOnly)
+		_, _ = fmt.Fprintf(stderr, "工作区=%s shell=%s 客体=原生VM 只读=%t cpus=%d memory=%s\n",
+			workspace, selectedShell, *readOnly, *cpus, *memory)
 	}
 	if *dryRun {
 		return 0, nil
@@ -92,10 +107,21 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		}
 		*command = string(data)
 	}
+	interactive := *session && !*noPTY && terminalPair(stdin, stdout)
+	terminalName := "dumb"
+	if interactive {
+		terminalName = os.Getenv("TERM")
+		if terminalName == "" || terminalName == "dumb" {
+			terminalName = "xterm-256color"
+		}
+	}
 	options := instance.Options{}
+	options.MemoryBytes = memoryBytes
+	options.CPUs = *cpus
+	options.AllowGuestRWX = *allowGuestRWX
 	if *tools == "dev" {
-		options.Session = resources.Limits{Memory: 4 << 30, Work: 1 << 38}
-		options.Process = resources.Limits{Memory: 2 << 30, Work: 1 << 38}
+		options.Session = resources.Limits{Memory: memoryBytes, Work: 1 << 38}
+		options.Process = resources.Limits{Memory: memoryBytes, Work: 1 << 38}
 	}
 	machine, err := instance.New(ctx, options)
 	if err != nil {
@@ -119,14 +145,6 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 			return 1, err
 		}
 	}
-	interactive := *session && !*noPTY && terminalPair(stdin, stdout)
-	terminalName := "dumb"
-	if interactive {
-		terminalName = os.Getenv("TERM")
-		if terminalName == "" {
-			terminalName = "xterm-256color"
-		}
-	}
 	environmentMap := map[string]string{
 		"HOME": instance.WorkRoot, "PATH": "/usr/local/bin:/usr/bin:/bin",
 		"LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "USER": "sandbox",
@@ -139,6 +157,9 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	if *tools == "dev" {
 		environmentMap["PYTHONHOME"] = "/usr"
 		environmentMap["NODE_ICU_DATA"] = "/usr/share/icu/76.1"
+	}
+	if *allowGuestRWX {
+		environmentMap["ASSISTANT_SANDBOX_NODE_STANDARD"] = "1"
 	}
 	connection, err := machine.Connect(ctx)
 	if err != nil {

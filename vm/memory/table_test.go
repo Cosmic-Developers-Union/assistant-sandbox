@@ -57,6 +57,29 @@ func TestMapRejectsWriteExecute(t *testing.T) {
 	}
 }
 
+func TestAllowWXCompatibilityMode(t *testing.T) {
+	ctx := context.Background()
+	table := NewWithOptions(0, Options{AllowWX: true})
+	if err := table.Map(ctx, Region{
+		Start: page(1), End: page(2), Prot: ProtRead | ProtWrite | ProtExec,
+	}); err != nil {
+		t.Fatalf("显式兼容模式应允许 guest RWX: %v", err)
+	}
+	if err := table.Write(ctx, page(1), []byte{0x13, 0, 0, 0}); err != nil {
+		t.Fatalf("RWX 兼容页应可写: %v", err)
+	}
+	if err := table.Protect(ctx, page(1), page(2), ProtRead|ProtWrite|ProtExec); err != nil {
+		t.Fatalf("RWX 兼容页应可重复 mprotect: %v", err)
+	}
+	clone, err := table.Clone()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := clone.Protect(ctx, page(1), page(2), ProtRead|ProtWrite|ProtExec); err != nil {
+		t.Fatalf("fork 克隆应继承 RWX 兼容模式: %v", err)
+	}
+}
+
 func TestMapRejectsOverlap(t *testing.T) {
 	ctx := context.Background()
 	table := New(0)

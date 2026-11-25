@@ -7,10 +7,10 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 )
 
-// runQueue 是 H02 的可运行队列:以执行权令牌实现单核语义——同一
-// 时刻至多一个进程执行客体指令。时间片用尽或进入(可能阻塞的)
-// 系统调用时让出令牌排到队尾;驻停与退出归还令牌;阻塞在等待
-// 队列/睡眠中的进程不持有令牌,不占用其他进程的执行时间片。
+// runQueue 是 H02 的可运行队列:以执行权令牌实现客体 CPU 调度——
+// 令牌数等于客体 CPU 数,同一时刻至多 CPU 数个任务执行指令。
+// 时间片用尽或进入(可能阻塞的)系统调用时让出一个令牌并重新排队;
+// 驻停与退出归还令牌;阻塞在等待队列/睡眠中的进程不持有令牌。
 // 没有其他等待者时让出立即拿回,单进程执行不产生额外等待。
 type runQueue struct {
 	token     chan struct{}
@@ -18,9 +18,14 @@ type runQueue struct {
 	closeOnce sync.Once
 }
 
-func newRunQueue() *runQueue {
-	q := &runQueue{token: make(chan struct{}, 1), closed: make(chan struct{})}
-	q.token <- struct{}{}
+func newRunQueue(cpus int) *runQueue {
+	if cpus < 1 {
+		cpus = 1
+	}
+	q := &runQueue{token: make(chan struct{}, cpus), closed: make(chan struct{})}
+	for range cpus {
+		q.token <- struct{}{}
+	}
 	return q
 }
 

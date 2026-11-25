@@ -20,6 +20,10 @@ type Table struct {
 
 	limit uint64
 
+	// allowWX 是显式兼容模式，仅供需要同时写与执行同一 guest 页的
+	// 运行时（例如标准 V8 JIT）使用；宿主翻译缓存仍保持 W^X。
+	allowWX bool
+
 	instructionPages [256]instructionPage
 	codeGeneration   uint64
 
@@ -54,6 +58,16 @@ func (t *Table) instructionPageLocked(page uint64) *instructionPage {
 
 func New(limitBytes uint64) *Table { return &Table{limit: limitBytes} }
 
+// Options 是地址空间策略。
+type Options struct {
+	AllowWX bool
+}
+
+// NewWithOptions 创建地址空间；AllowWX 开启 guest 逻辑 RWX 兼容模式。
+func NewWithOptions(limitBytes uint64, options Options) *Table {
+	return &Table{limit: limitBytes, allowWX: options.AllowWX}
+}
+
 // Limit 返回表的总字节上限(0=不限);换绑重建(H12)沿用同一上限。
 func (t *Table) Limit() uint64 { return t.limit }
 
@@ -79,6 +93,7 @@ func (t *Table) Clone() (*Table, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	clone := New(t.limit)
+	clone.allowWX = t.allowWX
 	clone.regions = make([]Region, len(t.regions))
 	copy(clone.regions, t.regions)
 	if t.pages != nil {
@@ -96,7 +111,7 @@ func (t *Table) Map(ctx context.Context, region Region) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := validateRegion(region); err != nil {
+	if err := validateRegion(region, t.allowWX); err != nil {
 		return err
 	}
 	t.mu.Lock()
@@ -177,7 +192,7 @@ func (t *Table) Protect(ctx context.Context, start, end uint64, prot Prot) error
 	if err := validateRange(start, end); err != nil {
 		return err
 	}
-	if err := validateProt(prot); err != nil {
+	if err := validateProt(prot, t.allowWX); err != nil {
 		return err
 	}
 	t.mu.Lock()
@@ -469,12 +484,12 @@ func (t *Table) invalidateCodeLocked(start, end uint64) {
 	for page := start / PageSize; page <= (end-1)/PageSize; page++ {
 		entry := &t.instructionPages[instructionPageSlot(page)]
 		if entry.valid && entry.page == page {
+			entry.valid = false
+			entry.data = nil
 			invalidated = true
-			break
 		}
 	}
 	if invalidated {
-		clear(t.instructionPages[:])
 		t.codeGeneration++
 	}
 }
@@ -727,11 +742,11 @@ func (t *Table) Account(ctx context.Context) (Account, error) {
 	return Account{Mapped: mapped, Regions: len(t.regions), Limit: t.limit}, nil
 }
 
-func validateRegion(region Region) error {
+func validateRegion(region Region, allowWX bool) error {
 	if err := validateRange(region.Start, region.End); err != nil {
 		return err
 	}
-	return validateProt(region.Prot)
+	return validateProt(region.Prot, allowWX)
 }
 
 func validateRange(start, end uint64) error {
@@ -748,11 +763,11 @@ func validateRange(start, end uint64) error {
 	return nil
 }
 
-func validateProt(prot Prot) error {
+func validateProt(prot Prot, allowWX bool) error {
 	if prot&^(ProtRead|ProtWrite|ProtExec) != 0 {
 		return errno.Wrap(errno.Invalid, "存在未知保护位")
 	}
-	if prot.WritableAndExecutable() {
+	if prot.WritableAndExecutable() && !allowWX {
 		return errno.Wrap(errno.Permission, "不允许同时授予写与执行（W^X）")
 	}
 	return nil
@@ -958,7 +973,7 @@ func (t *Table) Replace(ctx context.Context, region Region, noReplace bool) erro
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := validateRegion(region); err != nil {
+	if err := validateRegion(region, t.allowWX); err != nil {
 		return err
 	}
 	t.mu.Lock()

@@ -577,7 +577,7 @@ func TestDupAndFcntlFlagsAgainstRealFileSystem(t *testing.T) {
 		t.Fatalf("F_GETFL: %+v want O_RDWR", reply)
 	}
 
-	// F_SETFL:O_NONBLOCK 对常规文件无效果地成功,O_APPEND 生效。
+	// F_SETFL:O_NONBLOCK 作为描述符状态保留,O_APPEND 生效。
 	if reply := syscalls.Handle(ctx, Call{Syscall: SysFcntl, Args: [6]uint64{origin, fSetFL, oNonBlock}}); reply.Errno != "" {
 		t.Fatalf("F_SETFL NONBLOCK: %+v", reply)
 	}

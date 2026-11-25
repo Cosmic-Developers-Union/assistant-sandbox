@@ -246,6 +246,14 @@ func (s Syscalls) epollWaitReady(ctx context.Context, call Call, timeoutNanos ui
 	}
 	remaining := deadline
 	for {
+		// 有限超时按 1ms 切片轮询信号,但等待内核已就绪时必须立即
+		// 返回:切片只是信号检查周期,不是就绪延迟上限。
+		select {
+		case result := <-done:
+			cancel()
+			return s.epollOutcome(ctx, call.Args[1], result, maxEvents)
+		default:
+		}
 		if s.Interrupts != nil {
 			if _, _, ok := s.Interrupts.DeliverableSignal(); ok {
 				cancel()

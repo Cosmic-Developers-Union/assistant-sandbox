@@ -116,7 +116,14 @@ func Install(ctx context.Context, system vmfs.System) error {
 		}
 	}
 	if err := writeFile(ctx, system, "/usr/bin/node",
-		[]byte("#!/bin/sh\ncase \" $* \" in\n  *\" --jitless \"*) exec /usr/bin/node-bin \"$@\" ;;\n  *) exec /usr/bin/node-bin --jitless \"$@\" ;;\nesac\n"), 0o755); err != nil {
+		[]byte("#!/bin/sh\n"+
+			"case \" $* \" in\n"+
+			"  *\" --jitless \"*) NODE_NO_WARNINGS=1 exec /usr/bin/node-bin \"$@\" ;;\n"+
+			"esac\n"+
+			"if [ \"${ASSISTANT_SANDBOX_NODE_STANDARD:-0}\" = \"1\" ]; then\n"+
+			"  exec /usr/bin/node-bin \"$@\"\n"+
+			"fi\n"+
+			"NODE_NO_WARNINGS=1 exec /usr/bin/node-bin --jitless \"$@\"\n"), 0o755); err != nil {
 		return err
 	}
 	for name, content := range map[string]string{

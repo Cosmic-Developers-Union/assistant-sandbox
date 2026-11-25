@@ -22,6 +22,8 @@ const (
 
 	SysWrite
 
+	SysSendfile
+
 	SysOpenAt
 
 	SysClose
@@ -112,6 +114,7 @@ const (
 	SysFsync
 	SysFdatasync
 
+	SysMknodat
 	SysMkdirat
 	SysUnlinkat
 	SysSymlinkat
@@ -236,6 +239,8 @@ const (
 
 	SysFchmod
 	SysFchmodat
+	SysFchown
+	SysFchownat
 
 	SysChdir
 	SysFchdir
@@ -253,6 +258,8 @@ func (s Syscall) String() string {
 		return "read"
 	case SysWrite:
 		return "write"
+	case SysSendfile:
+		return "sendfile"
 	case SysPread64:
 		return "pread64"
 	case SysPwrite64:
@@ -365,6 +372,8 @@ func (s Syscall) String() string {
 		return "setfsgid"
 	case SysMkdirat:
 		return "mkdirat"
+	case SysMknodat:
+		return "mknodat"
 	case SysUnlinkat:
 		return "unlinkat"
 	case SysSymlinkat:
@@ -383,6 +392,10 @@ func (s Syscall) String() string {
 		return "fchmod"
 	case SysFchmodat:
 		return "fchmodat"
+	case SysFchown:
+		return "fchown"
+	case SysFchownat:
+		return "fchownat"
 	case SysChdir:
 		return "chdir"
 	case SysFchdir:
@@ -666,7 +679,11 @@ func NewRunner(config Config) (*Runner, error) {
 	return runner, nil
 }
 
-const batchStepLimit = 1024
+// batchStepLimit 是单次 cgo 批量执行的指令上限。更大的批次摊薄
+// cgo、内存视图锁、译码页查找与信号边界检查;65536 条在 220 MIPS
+// 下约 0.3ms,与调度时间片同量级,仍低于 Linux 信号投递的可感知
+// 延迟。
+const batchStepLimit = 1 << 16
 
 func (r *Runner) Run(ctx context.Context) (uint64, error) {
 	for {

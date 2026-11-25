@@ -3,8 +3,10 @@ package pipe
 import (
 	"context"
 	"io"
+	stdfs "io/fs"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/poll"
@@ -290,6 +292,25 @@ func (e *Endpoint) SetStatusFlags(flags uint32) error {
 	e.c.notify()
 	return nil
 }
+
+// Stat 返回管道端点的 fstat 视图(Linux:S_IFIFO,大小为零)。
+func (e *Endpoint) Stat() (stdfs.FileInfo, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.refs == 0 {
+		return nil, errno.BadHandle
+	}
+	return pipeFileInfo{}, nil
+}
+
+type pipeFileInfo struct{}
+
+func (pipeFileInfo) Name() string         { return "pipe" }
+func (pipeFileInfo) Size() int64          { return 0 }
+func (pipeFileInfo) Mode() stdfs.FileMode { return stdfs.ModeNamedPipe | 0o600 }
+func (pipeFileInfo) ModTime() time.Time   { return time.Time{} }
+func (pipeFileInfo) IsDir() bool          { return false }
+func (pipeFileInfo) Sys() any             { return nil }
 
 func (e *Endpoint) OnBroken(hook func()) {
 	c := e.c

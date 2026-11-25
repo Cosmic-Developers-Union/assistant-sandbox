@@ -284,16 +284,23 @@ func (s *State) ignoredLocked() uint64 {
 
 // SetAction 登记 rt_sigaction 处置;KILL/STOP 不可改,EINVAL。
 func (s *State) SetAction(n Number, config ActionConfig) error {
+	_, err := s.SwapAction(n, config)
+	return err
+}
+
+// SwapAction 原子地替换处置并返回替换前的值;KILL/STOP 不可改。
+func (s *State) SwapAction(n Number, config ActionConfig) (ActionConfig, error) {
 	if !n.Valid() {
-		return errno.Invalid
+		return ActionConfig{}, errno.Invalid
 	}
 	if Unmaskable(n) {
-		return errno.Invalid
+		return ActionConfig{}, errno.Invalid
 	}
 	s.disp.mu.Lock()
 	defer s.disp.mu.Unlock()
+	previous := s.disp.actions[n]
 	s.disp.actions[n] = config
-	return nil
+	return previous, nil
 }
 
 // Action 返回登记的处置;未登记为零值(即 SIG_DFL)。
@@ -502,13 +509,19 @@ func (t *Table) Share(parent, child uint64) error {
 
 // SetAction 登记 pid 的 rt_sigaction 处置。
 func (t *Table) SetAction(pid uint64, n Number, config ActionConfig) error {
+	_, err := t.SwapAction(pid, n, config)
+	return err
+}
+
+// SwapAction 原子替换 pid 的信号处置并返回旧值。
+func (t *Table) SwapAction(pid uint64, n Number, config ActionConfig) (ActionConfig, error) {
 	t.mu.Lock()
 	state := t.states[pid]
 	t.mu.Unlock()
 	if state == nil {
-		return errno.NoProcess
+		return ActionConfig{}, errno.NoProcess
 	}
-	return state.SetAction(n, config)
+	return state.SwapAction(n, config)
 }
 
 // Action 返回 pid 已登记的处置;未登记为零值(SIG_DFL)。

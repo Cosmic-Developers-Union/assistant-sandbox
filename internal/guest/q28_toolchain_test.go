@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"debug/elf"
+	"io"
+	"os"
 	"testing"
 	"time"
 
@@ -188,6 +190,11 @@ func runGuestProgram(
 	t.Helper()
 	output := &bytes.Buffer{}
 	diagnostic := &bytes.Buffer{}
+	var stdout, stderr io.Writer = output, diagnostic
+	if os.Getenv("PYTHON_SUITE_STREAM") != "" {
+		stdout = io.MultiWriter(output, os.Stderr)
+		stderr = io.MultiWriter(diagnostic, os.Stderr)
+	}
 	runCtx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	process, err := connection.Exec(runCtx, instance.ExecSpec{
@@ -195,7 +202,7 @@ func runGuestProgram(
 		Args:    args,
 		Dir:     "/work",
 		Env:     env,
-		Streams: fd.Streams{Output: output, Error: diagnostic},
+		Streams: fd.Streams{Output: stdout, Error: stderr},
 	})
 	if err != nil {
 		t.Fatal(err)

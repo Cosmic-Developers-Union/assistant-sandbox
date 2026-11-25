@@ -190,6 +190,12 @@ func (s Syscalls) waitPoll(ctx context.Context, entries []pollEntry, timeout uin
 	if timeout == poll.PollInfinite && s.Interrupts != nil {
 		for {
 			results, err := poll.WaitFor(ctx, clk, sources, sleepSlice)
+			if errors.Is(err, errno.TimedOut) {
+				if _, _, ok := s.Interrupts.DeliverableSignal(); ok {
+					return entries, errno.Interrupted
+				}
+				continue
+			}
 			if err != nil {
 				return entries, err
 			}

@@ -41,6 +41,7 @@ type Terminal struct {
 	flags Flags
 	size  Size
 	fg    proc.PID
+	fgSet bool
 
 	mesg bool
 
@@ -70,7 +71,10 @@ func New(flags Flags, size Size, outLimit int, raise Raise) (*Terminal, error) {
 	if size.Cols == 0 {
 		size.Cols = 80
 	}
-	return &Terminal{flags: flags, size: size, outLimit: outLimit, raise: raise, fg: 1, mesg: true, scr: newScreen(int(size.Rows), int(size.Cols))}, nil
+	return &Terminal{
+		flags: flags, size: size, outLimit: outLimit, raise: raise, mesg: true,
+		fg: 1, scr: newScreen(int(size.Rows), int(size.Cols)),
+	}, nil
 }
 
 func (t *Terminal) State() fd.TerminalState {
@@ -94,12 +98,12 @@ func (t *Terminal) SetState(state fd.TerminalState) error {
 		t.pending = t.pending[:0]
 	}
 	resized := false
-	if state.Rows != 0 && state.Columns != 0 {
+	if state.Rows != 0 && state.Columns != 0 &&
+		(state.Rows != t.size.Rows || state.Columns != t.size.Cols) {
 		t.size = Size{Rows: state.Rows, Cols: state.Columns}
 		resized = true
 	}
 	if resized {
-
 		t.scr = newScreen(int(t.size.Rows), int(t.size.Cols))
 	}
 	t.mu.Unlock()
@@ -301,14 +305,22 @@ func (t *Terminal) Close() error {
 	}
 	t.closed = true
 	foreground := t.fg
+	foregroundSet := t.fgSet
 	raise := t.raise
 	t.mu.Unlock()
 	t.wake.Close()
 	// P09:终端挂断只向当前前台进程组投递 SIGHUP。
-	if raise != nil && foreground != 0 {
+	if raise != nil && foregroundSet && foreground != 0 {
 		raise(foreground, signal.HUP)
 	}
 	return nil
+}
+
+// Closed 报告终端是否已关闭;PTY 管理器据此重新分配设备对。
+func (t *Terminal) Closed() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.closed
 }
 
 // DrainContext 等待并取出终端输出(P08):无输出时阻塞到有新输出
@@ -345,6 +357,31 @@ func (t *Terminal) Drain() []byte {
 	t.notify()
 	t.mu.Lock()
 	return out
+}
+
+// TryDrain 在输出缓冲为空时返回 nil,不等待;供非阻塞 PTY 主端读取。
+func (t *Terminal) TryDrain() []byte {
+	t.mu.Lock()
+	if len(t.out) == 0 {
+		t.mu.Unlock()
+		return nil
+	}
+	t.mu.Unlock()
+	return t.Drain()
+}
+
+// OutputReady 报告主端读取方向(输出缓冲)的就绪位。
+func (t *Terminal) OutputReady() poll.Readiness {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	var bits poll.Readiness
+	if len(t.out) > 0 {
+		bits |= poll.Readable
+	}
+	if len(t.out) < t.outLimit {
+		bits |= poll.Writable
+	}
+	return bits
 }
 
 func (t *Terminal) Flags() Flags {
@@ -410,12 +447,14 @@ func (t *Terminal) SetSize(size Size) error {
 		t.mu.Unlock()
 		return errno.BadHandle
 	}
+	changed := size != t.size
 	t.size = size
-
-	t.scr = newScreen(int(size.Rows), int(size.Cols))
+	if changed {
+		t.scr = newScreen(int(size.Rows), int(size.Cols))
+	}
 	t.mu.Unlock()
 	t.notify()
-	if t.raise != nil {
+	if changed && t.raise != nil {
 		t.raise(t.Foreground(), signal.WINCH)
 	}
 	return nil
@@ -437,6 +476,7 @@ func (t *Terminal) SetForeground(pgid proc.PID) error {
 		return errno.BadHandle
 	}
 	t.fg = pgid
+	t.fgSet = true
 	return nil
 }
 

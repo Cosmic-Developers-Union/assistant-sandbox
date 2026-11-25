@@ -21,7 +21,8 @@ import (
 //   - 超时是 timespec 且不被修改;sigmask 参数是指向
 //     {const sigset_t *, size_t} 的结构,等待期间替换屏蔽集
 //     (与 ppoll 同语义);
-//   - 例外集不接受(socket 紧急数据不在兼容配置),置位报 EINVAL。
+//   - 例外集只做描述符有效性校验;当前没有可上报的紧急数据,
+//     结果集合清零。
 
 // fdSetBytes 是 fd_set 的字节数(1024 位)。
 const fdSetBytes = 128
@@ -53,10 +54,6 @@ func (s Syscalls) pselect6(ctx context.Context, call Call) Reply {
 	if code != "" {
 		return Reply{Errno: code}
 	}
-	if excepts.count() != 0 {
-		// 例外条件(socket 紧急数据)不在首个兼容配置。
-		return Reply{Errno: errno.Invalid}
-	}
 	// 超时:NULL 表示无限等待;timespec 非法值 EINVAL。
 	timeout, forever, code := s.pselectTimeout(ctx, call.Args[4])
 	if code != "" {
@@ -82,6 +79,14 @@ func (s Syscalls) pselect6(ctx context.Context, call Call) Reply {
 	for _, fd := range order {
 		if _, err := s.Descriptors.Get(ctx, uint64(fd)); err != nil {
 			// select(2):集合中的坏描述符立即 EBADF,不进入等待。
+			return Reply{Errno: errno.BadHandle}
+		}
+	}
+	for fd := uint64(0); fd < nfds; fd++ {
+		if !excepts.test(fd) {
+			continue
+		}
+		if _, err := s.Descriptors.Get(ctx, fd); err != nil {
 			return Reply{Errno: errno.BadHandle}
 		}
 	}
@@ -172,6 +177,12 @@ func (s Syscalls) pselect6(ctx context.Context, call Call) Reply {
 	}
 	if call.Args[2] != 0 {
 		if err := s.Memory.Write(ctx, call.Args[2], resultWrites[:]); err != nil {
+			return Reply{Errno: errno.Fault}
+		}
+	}
+	if call.Args[3] != 0 {
+		empty := newFDSet()
+		if err := s.Memory.Write(ctx, call.Args[3], empty[:]); err != nil {
 			return Reply{Errno: errno.Fault}
 		}
 	}
@@ -327,16 +338,6 @@ func (f *fdSet) set(fd uint64) {
 		return
 	}
 	f[fd/8] |= 1 << (fd % 8)
-}
-
-func (f *fdSet) count() int {
-	total := 0
-	for _, b := range f {
-		for bits := b; bits != 0; bits &= bits - 1 {
-			total++
-		}
-	}
-	return total
 }
 
 // readFDSet 读入一个 fd_set;address 为 0 表示空集。

@@ -281,6 +281,21 @@ func (p ProcessDescriptors) EventFD(ctx context.Context, initialValue, flags uin
 	return uint64(descriptor), nil
 }
 
+func (p ProcessDescriptors) Memfd(ctx context.Context, name string) (uint64, error) {
+	if p.Table == nil {
+		return 0, errno.Wrap(errno.NotImplemented, "描述符端口未装配")
+	}
+	creator, ok := p.Table.(fd.Creator)
+	if !ok {
+		return 0, errno.Wrap(errno.NotSupported, "描述符表不支持 memfd")
+	}
+	descriptor, err := creator.Memfd(p.PID, name)
+	if err != nil {
+		return 0, err
+	}
+	return uint64(descriptor), nil
+}
+
 func (p ProcessDescriptors) SignalFD(ctx context.Context, mask, flags uint64) (uint64, error) {
 	if p.Table == nil {
 		return 0, errno.Wrap(errno.NotImplemented, "描述符端口未装配")
@@ -536,6 +551,36 @@ func (p ProcessFiles) Mkdir(ctx context.Context, path string, mode uint32) error
 	return p.System.Mkdir(ctx, target, p.applyUmask(stdfs.FileMode(mode)))
 }
 
+func (p ProcessFiles) Mkfifo(ctx context.Context, path string, mode stdfs.FileMode) error {
+	if p.System == nil {
+		return errno.Wrap(errno.NotImplemented, "文件端口未装配")
+	}
+	target, err := p.resolver().Resolve(path)
+	if err != nil {
+		return err
+	}
+	fifos, ok := p.System.(fs.Fifos)
+	if !ok {
+		return errno.Wrap(errno.NotSupported, "文件系统不支持命名管道")
+	}
+	return fifos.Mkfifo(ctx, target, p.applyUmask(mode))
+}
+
+func (p ProcessFiles) Chown(ctx context.Context, path string, uid, gid int64) error {
+	if p.System == nil {
+		return errno.Wrap(errno.NotImplemented, "文件端口未装配")
+	}
+	target, err := p.resolver().Resolve(path)
+	if err != nil {
+		return err
+	}
+	ownership, ok := p.System.(fs.Ownership)
+	if !ok {
+		return errno.Wrap(errno.NotSupported, "文件端口不支持 chown")
+	}
+	return ownership.Chown(ctx, target, uid, gid)
+}
+
 func (p ProcessFiles) Remove(ctx context.Context, path string) error {
 	if p.System == nil {
 		return errno.Wrap(errno.NotImplemented, "文件端口未装配")
@@ -696,9 +741,21 @@ func (p ProcessFiles) Open(ctx context.Context, request OpenRequest) (uint64, er
 			return 0, err
 		}
 	}
-	file, err := p.System.Open(ctx, target, rawOpenFlags(request.Flags), p.applyUmask(stdfs.FileMode(request.Perm)))
+	flags := request.Flags
+	if flags.PathOnly {
+		// O_PATH 只取得路径引用,不接受读写、截断或创建语义。
+		flags.Mode = OpenRead
+		flags.Create = false
+		flags.Exclusive = false
+		flags.Truncate = false
+		flags.Append = false
+	}
+	file, err := p.System.Open(ctx, target, rawOpenFlags(flags), p.applyUmask(stdfs.FileMode(request.Perm)))
 	if err != nil {
 		return 0, err
+	}
+	if request.Flags.PathOnly {
+		file = pathOnlyFile{File: file}
 	}
 	id, err := p.Store.InstallNext(p.PID, file)
 	if err != nil {
@@ -769,7 +826,18 @@ func rawOpenFlags(flags OpenFlags) uint32 {
 	if flags.Append {
 		raw |= fs.Append
 	}
+	if flags.NonBlock {
+		raw |= fs.NonBlock
+	}
 	return raw
+}
+
+type pathOnlyFile struct{ fs.File }
+
+func (f pathOnlyFile) Read([]byte) (int, error)  { return 0, errno.BadHandle }
+func (f pathOnlyFile) Write([]byte) (int, error) { return 0, errno.BadHandle }
+func (f pathOnlyFile) Seek(int64, int) (int64, error) {
+	return 0, errno.BadHandle
 }
 
 var (

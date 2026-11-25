@@ -6,6 +6,7 @@ package instance
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"sync"
 
@@ -44,13 +45,22 @@ const (
 const defaultMaxProcesses = 128
 
 const (
-	defaultMemoryBytes = 256 << 20
-	defaultCPUs        = 1
+	defaultMemoryBytes = 4 << 30
+	defaultCPUs        = 2
 	defaultShmBytes    = 64 << 20
+
+	// MinCPUs/MaxCPUs 是客体可见 CPU 数的规范范围。
+	MinCPUs = 1
+	MaxCPUs = 8
+
+	// MinMemoryBytes/MaxMemoryBytes 是 VM 内存配置的规范范围。
+	MinMemoryBytes = 256 << 20
+	MaxMemoryBytes = 16 << 30
 )
 
-// defaultSessionLimits/defaultProcessLimits 是未配置时的宽松预算:
-// 仍是有界值,防止死循环或泄漏拖垮宿主(O03/O04)。
+// defaultSessionLimits/defaultProcessLimits 是未配置字段的默认模板;
+// Memory 由 VM MemoryBytes 覆盖,其余仍是有界值,防止死循环或泄漏
+// 拖垮宿主(O03/O04)。
 var (
 	defaultSessionLimits = resources.Limits{Memory: 1 << 30, Work: 1 << 32, Descriptors: 4096, Output: 16 << 20, Files: 1 << 20}
 	defaultProcessLimits = resources.Limits{Memory: 256 << 20, Work: 64 << 20, Descriptors: 1024, Output: 1 << 20, Files: 1 << 18}
@@ -71,13 +81,14 @@ type Options struct {
 	// TraceLimit 是系统调用轨迹保留上限;非正时使用默认值。
 	TraceLimit int
 
-	// MemoryBytes 是 /proc/meminfo 报告的客体内存配置;非正时 256MiB。
+	// MemoryBytes 是 /proc/meminfo 报告的客体内存配置,范围
+	// 256MiB..16GiB;0 时默认 4GiB,并按会话/进程预算推导(至少 256MiB)。
 	MemoryBytes uint64
 
 	// ShmBytes 是 /dev/shm 共享内存容量;非正时 64MiB。
 	ShmBytes int64
 
-	// CPUs 是 /proc/cpuinfo 报告的客体处理器数;非正时 1。
+	// CPUs 是客体处理器数,范围 1..8;0 时使用 2。
 	CPUs int
 
 	// Session/Process 是 VM 级与每进程资源预算(O03/O04);零值使用
@@ -87,6 +98,10 @@ type Options struct {
 
 	// ProcessTimeout 是每客体进程的墙钟上限(纳秒);0 表示不额外限制。
 	ProcessTimeout uint64
+
+	// AllowGuestRWX 显式允许客体同时申请写与执行权限，供标准 V8
+	// JIT 等运行时使用。默认关闭；宿主 JIT 代码缓存始终 W^X。
+	AllowGuestRWX bool
 
 	// HostNetwork/Egress 装配受策略约束的宿主 TCP 出口(M09);
 	// 两者同时提供才启用,零值保持非回环拒绝。
@@ -192,19 +207,64 @@ func newVM(ctx context.Context, opts Options, root *memfs.FS, source clock.Sourc
 		opts.MaxProcesses = defaultMaxProcesses
 	}
 	if opts.MemoryBytes == 0 {
-		opts.MemoryBytes = defaultMemoryBytes
+		opts.MemoryBytes = max(defaultMemoryBytes, opts.Session.Memory, opts.Process.Memory)
+		if opts.MemoryBytes > MaxMemoryBytes {
+			return nil, fmt.Errorf("内存预算 %d 超出上限 %d: %w",
+				opts.MemoryBytes, MaxMemoryBytes, errno.Invalid)
+		}
 	}
-	if opts.CPUs <= 0 {
+	if opts.MemoryBytes < MinMemoryBytes || opts.MemoryBytes > MaxMemoryBytes {
+		return nil, fmt.Errorf("MemoryBytes=%d 超出 %d..%d: %w",
+			opts.MemoryBytes, MinMemoryBytes, MaxMemoryBytes, errno.Invalid)
+	}
+	if opts.CPUs == 0 {
 		opts.CPUs = defaultCPUs
+	}
+	if opts.CPUs < MinCPUs || opts.CPUs > MaxCPUs {
+		return nil, fmt.Errorf("CPUs=%d 超出 %d..%d: %w",
+			opts.CPUs, MinCPUs, MaxCPUs, errno.Invalid)
 	}
 	if opts.ShmBytes <= 0 {
 		opts.ShmBytes = defaultShmBytes
 	}
-	if opts.Session.Memory == 0 && opts.Session.Work == 0 {
-		opts.Session = defaultSessionLimits
+	// 预算的空字段从 VM 内存与默认模板补齐;显式值必须落在 VM 内存内。
+	if opts.Session.Memory == 0 {
+		opts.Session.Memory = opts.MemoryBytes
 	}
-	if opts.Process.Memory == 0 && opts.Process.Work == 0 {
-		opts.Process = defaultProcessLimits
+	if opts.Session.Work == 0 {
+		opts.Session.Work = defaultSessionLimits.Work
+	}
+	if opts.Session.Descriptors == 0 {
+		opts.Session.Descriptors = defaultSessionLimits.Descriptors
+	}
+	if opts.Session.Output == 0 {
+		opts.Session.Output = defaultSessionLimits.Output
+	}
+	if opts.Session.Files == 0 {
+		opts.Session.Files = defaultSessionLimits.Files
+	}
+	if opts.Process.Memory == 0 {
+		opts.Process.Memory = opts.MemoryBytes
+	}
+	if opts.Process.Work == 0 {
+		opts.Process.Work = defaultProcessLimits.Work
+	}
+	if opts.Process.Descriptors == 0 {
+		opts.Process.Descriptors = defaultProcessLimits.Descriptors
+	}
+	if opts.Process.Output == 0 {
+		opts.Process.Output = defaultProcessLimits.Output
+	}
+	if opts.Process.Files == 0 {
+		opts.Process.Files = defaultProcessLimits.Files
+	}
+	if opts.Session.Memory > opts.MemoryBytes {
+		return nil, fmt.Errorf("会话内存预算 %d 超过 VM 内存 %d: %w",
+			opts.Session.Memory, opts.MemoryBytes, errno.Invalid)
+	}
+	if opts.Process.Memory > opts.Session.Memory {
+		return nil, fmt.Errorf("进程内存预算 %d 超过会话预算 %d: %w",
+			opts.Process.Memory, opts.Session.Memory, errno.Invalid)
 	}
 	meters, err := resources.NewSession(opts.Session, opts.Process)
 	if err != nil {
@@ -267,7 +327,7 @@ func newVM(ctx context.Context, opts Options, root *memfs.FS, source clock.Sourc
 	}
 	binaries := opts.Binaries
 	if binaries == nil {
-		binaries = elf.Factory{}
+		binaries = elf.Factory{AllowWX: opts.AllowGuestRWX}
 	}
 	kernel, err := vm.New(vm.Services{
 		Set: capability.Set{
@@ -283,6 +343,7 @@ func newVM(ctx context.Context, opts Options, root *memfs.FS, source clock.Sourc
 		Programs:      registry,
 		Binaries:      binaries,
 		Meters:        meters,
+		CPUs:          opts.CPUs,
 		NetworkBudget: opts.NetworkBudget,
 	}, opts.MaxProcesses)
 	if err != nil {

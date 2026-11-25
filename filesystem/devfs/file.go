@@ -7,6 +7,7 @@ import (
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fd"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/poll"
 )
 
 type file struct {
@@ -131,6 +132,39 @@ func (f *file) Stat() (stdfs.FileInfo, error) {
 		return nil, errno.Wrap(errno.Cancelled, "句柄已关闭")
 	}
 	return info{name: f.name, mode: f.fs.deviceMode(f.name)}, nil
+}
+
+// StatusFlags/SetStatusFlags 转发给动态设备(PTY 主端)的打开状态;
+// signal.set_wakeup_fd 等路径会对设备 fd 做 fcntl 校验。
+func (f *file) StatusFlags() (uint32, error) {
+	if flagger, ok := f.stream.(interface {
+		StatusFlags() (uint32, error)
+	}); ok {
+		return flagger.StatusFlags()
+	}
+	return 0, errno.Wrap(errno.NotSupported, "设备不支持状态标志查询")
+}
+
+func (f *file) SetStatusFlags(flags uint32) error {
+	if setter, ok := f.stream.(interface{ SetStatusFlags(uint32) error }); ok {
+		return setter.SetStatusFlags(flags)
+	}
+	return errno.Wrap(errno.NotSupported, "设备不支持状态标志设置")
+}
+
+// Ready/OnChange 转发动态设备的就绪图;静态设备恒就绪。
+func (f *file) Ready() poll.Readiness {
+	if source, ok := f.stream.(poll.Source); ok {
+		return source.Ready()
+	}
+	return poll.Readable | poll.Writable
+}
+
+func (f *file) OnChange(fn func()) (cancel func()) {
+	if source, ok := f.stream.(poll.Source); ok {
+		return source.OnChange(fn)
+	}
+	return func() {}
 }
 
 func (f *file) Close() error {

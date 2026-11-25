@@ -46,6 +46,9 @@ type Services struct {
 
 	Meters *resources.Meters
 
+	// CPUs 是客体可见 CPU 数;零值按 1。
+	CPUs int
+
 	Sequencer *scheduler.Sequencer
 
 	Journal *replay.Memory
@@ -82,6 +85,7 @@ type Kernel struct {
 	signals    *signal.Table
 	fds        *fd.Table
 	init       proc.PID
+	cpus       int
 
 	bootTime     int64
 	bootDeclared bool
@@ -226,6 +230,10 @@ func New(services Services, maxProcesses int) (*Kernel, error) {
 	k.bootTime = bootTimeValue
 	k.bootDeclared = bootTimeDeclared
 	k.table = table
+	k.cpus = services.CPUs
+	if k.cpus <= 0 {
+		k.cpus = 1
+	}
 	k.trace = trace.New(trace.DefaultLimit)
 	if services.CredentialTable == nil {
 		services.CredentialTable = identity.NewTable(identity.Identity{Name: "sandbox"})
@@ -236,7 +244,7 @@ func New(services Services, maxProcesses int) (*Kernel, error) {
 	k.sequencer = services.Sequencer
 	k.signals = signal.New()
 	k.instances = map[proc.PID]executable.Instance{}
-	k.queue = newRunQueue()
+	k.queue = newRunQueue(k.cpus)
 	k.futexes = futex.New()
 	k.tidAddresses = map[proc.PID]uint64{}
 	k.robustLists = map[proc.PID]robustList{}
@@ -2536,6 +2544,13 @@ func (c procControl) SignalAction(sig signal.Number) (signal.ActionConfig, error
 	return c.k.signals.Action(uint64(c.self), sig)
 }
 
+func (c procControl) SwapSignalAction(sig signal.Number, config signal.ActionConfig) (signal.ActionConfig, error) {
+	if c.self == 0 {
+		return signal.ActionConfig{}, errno.NoProcess
+	}
+	return c.k.signals.SwapAction(uint64(c.self), sig, config)
+}
+
 func (c procControl) SetSignalMask(how signal.MaskHow, set uint64) (uint64, error) {
 	if c.self == 0 {
 		return 0, errno.NoProcess
@@ -2814,7 +2829,10 @@ func (c procControl) ClearTidAtExit(ctx context.Context, write func(context.Cont
 	}
 	// 唤醒键按线程组(K02):等待 join 的线程与退出线程同组。
 	owner := uint64(c.self)
-	if p, err := c.k.table.Get(c.self); err == nil {
+	c.k.mu.Lock()
+	p, err := c.k.table.Get(c.self)
+	c.k.mu.Unlock()
+	if err == nil {
 		owner = uint64(p.TGID)
 	}
 	if c.k.futexes != nil {
@@ -2884,25 +2902,27 @@ func (c procControl) ResetForExec(path string, args []string, env map[string]str
 	c.k.mu.Lock()
 	delete(c.k.tidAddresses, c.self)
 	c.k.mu.Unlock()
+	c.k.mu.Lock()
 	current, err := c.k.table.Get(c.self)
 	if err != nil {
+		c.k.mu.Unlock()
 		return err
 	}
 	// execve 保留工作目录;程序名/参数/环境随新映像更新。
 	before, after, err := c.k.table.Replace(c.self, path, args, current.Dir, env)
 	if err != nil {
+		c.k.mu.Unlock()
 		return err
 	}
-	c.k.mu.Lock()
 	c.k.emitLocked(scheduler.KindExec, c.self, scheduler.ExecDetail(after.Program, after.Generation))
 	c.k.mu.Unlock()
 	if c.k.fds != nil {
 		if _, err := c.k.fds.CloseCloexec(context.Background(), uint64(c.self)); err != nil {
+			c.k.mu.Lock()
 			if _, _, rollbackErr := c.k.table.Replace(c.self, before.Program, before.Args, before.Dir, before.Env); rollbackErr != nil {
-				c.k.mu.Lock()
 				c.k.failed = true
-				c.k.mu.Unlock()
 			}
+			c.k.mu.Unlock()
 			return err
 		}
 	}
@@ -2975,6 +2995,14 @@ func (c procControl) HasChildren() bool {
 		return false
 	}
 	return c.k.HasChildren(c.self)
+}
+
+// CPUs 返回客体可见 CPU 数(拓扑/亲和性系统调用)。
+func (c procControl) CPUs() int {
+	if c.k.cpus <= 0 {
+		return 1
+	}
+	return c.k.cpus
 }
 
 func (c procControl) Usage(id proc.PID) (proc.Usage, error) {

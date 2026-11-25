@@ -108,6 +108,9 @@ func (s Syscalls) fchdir(ctx context.Context, call Call) Reply {
 	if s.Files == nil || s.Descriptors == nil {
 		return Reply{Errno: errno.NotImplemented}
 	}
+	if _, err := s.Descriptors.Get(ctx, call.Args[0]); err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
 	path := s.descriptorPath(ctx, call.Args[0])
 	if path == "" {
 		return Reply{Errno: errno.NotSupported}

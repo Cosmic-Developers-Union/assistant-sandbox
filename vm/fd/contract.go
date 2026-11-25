@@ -25,6 +25,8 @@ type Creator interface {
 
 	EventFD(pid uint64, initialValue uint64, options eventfd.Options) (uint32, error)
 
+	Memfd(pid uint64, name string) (uint32, error)
+
 	SignalFD(pid uint64, mask uint64, options signalfd.Options) (uint32, error)
 
 	// SignalFDAt 取已存在描述符上的 signalfd(更新掩码用)。

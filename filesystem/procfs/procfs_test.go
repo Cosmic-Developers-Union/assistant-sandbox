@@ -39,7 +39,7 @@ func sampleProvider() *fixedProvider {
 		self: 7,
 		entries: []Entry{
 			{ID: 1, Parent: 0, Generation: 1, Program: "init", Args: []string{"--boot"}, State: "ready", PGID: 1, SID: 1},
-			{ID: 7, Parent: 1, Generation: 3, Program: "bash", Args: []string{"-c", "echo hi"}, State: "running", PGID: 7, SID: 1, OpenFDs: []uint32{0, 1, 2}},
+			{ID: 7, Parent: 1, Generation: 3, Program: "bash", Args: []string{"-c", "echo hi"}, State: "running", PGID: 7, SID: 1, ThreadCount: 3, OpenFDs: []uint32{0, 1, 2}},
 		},
 	}
 }
@@ -123,6 +123,14 @@ func TestSelfResolvesToCaller(t *testing.T) {
 	}
 	if a, b := readFile(t, fs, "/self/status"), readFile(t, fs, "/1/status"); a != b {
 		t.Fatal("self 应解析到新的调用方")
+	}
+}
+
+func TestStatReportsThreadCount(t *testing.T) {
+	fs := newFS(t, sampleProvider())
+	fields := strings.Fields(readFile(t, fs, "/7/stat"))
+	if len(fields) < 20 || fields[19] != "3" {
+		t.Fatalf("stat 线程数字段=%v", fields)
 	}
 }
 

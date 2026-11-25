@@ -2,6 +2,8 @@ package mountfs
 
 import (
 	"context"
+	"errors"
+	"path"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 	vmfs "github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fs"
@@ -40,6 +42,20 @@ func (m *Mounts) Filesystems(ctx context.Context) ([]vmfs.Space, error) {
 		}
 		reported, err := capacity.Space(ctx, "/")
 		if err != nil {
+			// /dev 这类聚合文件系统本身没有容量语义,但可写子目录
+			// (/dev/shm)有;用 Filesystems 展开后按挂载点加前缀。
+			if errors.Is(err, errno.NotSupported) {
+				nested, nestedErr := capacity.Filesystems(ctx)
+				if nestedErr != nil {
+					return nil, nestedErr
+				}
+				for _, child := range nested {
+					child.Name = path.Join(entry.point, child.Name)
+					child.Root = path.Join(entry.point, child.Root)
+					entries = append(entries, child)
+				}
+				continue
+			}
 			return nil, err
 		}
 		space.Bytes, space.Inodes = reported.Bytes, reported.Inodes

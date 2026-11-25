@@ -281,7 +281,7 @@ func TestAddressSpaceFollowsPlan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	space, err := addressSpace(context.Background(), plan)
+	space, err := addressSpace(context.Background(), plan, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -403,7 +403,7 @@ func TestAddressSpaceRejectsOutOfRangePlan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("装载器应接受结构合法的映像: %v", err)
 	}
-	if _, err := addressSpace(context.Background(), plan); !errors.Is(err, errno.Invalid) {
+	if _, err := addressSpace(context.Background(), plan, false); !errors.Is(err, errno.Invalid) {
 		t.Fatalf("超出地址空间=%v want EINVAL", err)
 	}
 }
@@ -595,7 +595,7 @@ func heapPlan(t *testing.T) *loaderelf.Plan {
 func TestHeapGrowsAndShrinks(t *testing.T) {
 	ctx := context.Background()
 	plan := heapPlan(t)
-	space, err := addressSpace(ctx, plan)
+	space, err := addressSpace(ctx, plan, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -642,7 +642,7 @@ func TestHeapGrowsAndShrinks(t *testing.T) {
 func TestHeapRefusesGrowthBeyondStack(t *testing.T) {
 	ctx := context.Background()
 	plan := heapPlan(t)
-	space, err := addressSpace(ctx, plan)
+	space, err := addressSpace(ctx, plan, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1052,6 +1052,14 @@ func (s *sigControlStub) SetSignalAction(sig signal.Number, config signal.Action
 }
 func (s *sigControlStub) SignalAction(sig signal.Number) (signal.ActionConfig, error) {
 	return s.actions[sig], nil
+}
+func (s *sigControlStub) SwapSignalAction(sig signal.Number, config signal.ActionConfig) (signal.ActionConfig, error) {
+	if sig == signal.KILL || sig == signal.STOP {
+		return signal.ActionConfig{}, errno.Invalid
+	}
+	previous := s.actions[sig]
+	s.actions[sig] = config
+	return previous, nil
 }
 func (s *sigControlStub) SetSignalMask(how signal.MaskHow, set uint64) (uint64, error) {
 	old := s.mask

@@ -3,6 +3,14 @@
 本清单固定当前仓库 HEAD 的本地可重建产物。发布时必须先执行
 `make release`,再将 `dist/` 与本文档一起上传到稳定 Release。
 
+首个用户版本使用 `v0.1.0` 标签。发布构建必须注入标签版本，并检查
+`dist/assistant-sandbox --version` 输出与标签一致：
+
+```sh
+make release VERSION=v0.1.0
+./dist/assistant-sandbox --version
+```
+
 ## 版本与摘要
 
 | 产物 | 版本/来源 | SHA-256 |

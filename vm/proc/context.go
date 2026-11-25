@@ -284,6 +284,7 @@ type TraceRecorder interface {
 type SignalDispositionControl interface {
 	SetSignalAction(signal.Number, signal.ActionConfig) error
 	SignalAction(signal.Number) (signal.ActionConfig, error)
+	SwapSignalAction(signal.Number, signal.ActionConfig) (signal.ActionConfig, error)
 	SetSignalMask(signal.MaskHow, uint64) (uint64, error)
 	SignalMask() (uint64, error)
 }

@@ -10,6 +10,7 @@ import (
 	"path"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
@@ -52,7 +53,7 @@ func (m *Manager) SetRaise(raise tty.Raise) {
 func (m *Manager) ensure() *pair {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.pair == nil {
+	if m.pair == nil || m.pair.terminal.Closed() {
 		terminal, _ := tty.New(tty.Flags{Canonical: true, Echo: true, ISIG: true}, tty.Size{Rows: 24, Cols: 80}, 1<<20, m.raise)
 		m.pair = &pair{terminal: terminal}
 	}
@@ -71,9 +72,10 @@ func (m *Manager) OpenSlave(number uint32) (*Slave, error) {
 func (m *Manager) SlaveFS() vmfs.System { return &slaveFS{manager: m} }
 
 type Master struct {
-	pair *pair
-	mu   sync.Mutex
-	rest []byte
+	pair     *pair
+	mu       sync.Mutex
+	rest     []byte
+	nonblock atomic.Bool
 }
 
 func (m *Master) Read(buffer []byte) (int, error) {
@@ -85,6 +87,19 @@ func (m *Master) Read(buffer []byte) (int, error) {
 		return n, nil
 	}
 	m.mu.Unlock()
+	if m.nonblock.Load() {
+		data := m.pair.terminal.TryDrain()
+		if len(data) == 0 {
+			return 0, errno.WouldBlock
+		}
+		n := copy(buffer, data)
+		if n < len(data) {
+			m.mu.Lock()
+			m.rest = append(m.rest, data[n:]...)
+			m.mu.Unlock()
+		}
+		return n, nil
+	}
 	data, err := m.pair.terminal.DrainContext(context.Background())
 	if err != nil {
 		if errors.Is(err, errno.BadHandle) {
@@ -116,9 +131,34 @@ func (m *Master) SetState(state fd.TerminalState) error { return m.pair.terminal
 
 func (m *Master) PTYNumber() uint32 { return m.pair.number }
 
-type Slave struct{ pair *pair }
+func (m *Master) StatusFlags() (uint32, error) {
+	flags := uint32(2) // O_RDWR
+	if m.nonblock.Load() {
+		flags |= 0o4000
+	}
+	return flags, nil
+}
+
+func (m *Master) SetStatusFlags(flags uint32) error {
+	m.nonblock.Store(flags&0o4000 != 0)
+	return nil
+}
+
+func (m *Master) Stat() (stdfs.FileInfo, error) { return fileInfo{name: "ptmx"}, nil }
+
+func (m *Master) Ready() poll.Readiness { return m.pair.terminal.OutputReady() }
+
+func (m *Master) OnChange(fn func()) func() { return m.pair.terminal.OnChange(fn) }
+
+type Slave struct {
+	pair     *pair
+	nonblock atomic.Bool
+}
 
 func (s *Slave) Read(buffer []byte) (int, error) {
+	if s.nonblock.Load() {
+		return s.pair.terminal.Read(buffer)
+	}
 	return s.pair.terminal.ReadContext(context.Background(), buffer)
 }
 
@@ -147,6 +187,21 @@ func (s *Slave) Ready() poll.Readiness { return s.pair.terminal.Ready() }
 
 func (s *Slave) OnChange(fn func()) func() { return s.pair.terminal.OnChange(fn) }
 
+func (s *Slave) StatusFlags() (uint32, error) {
+	flags := uint32(2)
+	if s.nonblock.Load() {
+		flags |= 0o4000
+	}
+	return flags, nil
+}
+
+func (s *Slave) SetStatusFlags(flags uint32) error {
+	s.nonblock.Store(flags&0o4000 != 0)
+	return nil
+}
+
+func (s *Slave) Stat() (stdfs.FileInfo, error) { return fileInfo{name: "0"}, nil }
+
 type slaveFile struct {
 	slave *Slave
 }
@@ -158,6 +213,8 @@ func (f *slaveFile) Seek(int64, int) (int64, error) {
 	return 0, errno.Wrap(errno.NotSupported, "PTY 从端不可定位")
 }
 func (f *slaveFile) Stat() (stdfs.FileInfo, error)         { return fileInfo{name: "0"}, nil }
+func (f *slaveFile) StatusFlags() (uint32, error)          { return f.slave.StatusFlags() }
+func (f *slaveFile) SetStatusFlags(flags uint32) error     { return f.slave.SetStatusFlags(flags) }
 func (f *slaveFile) Dimensions() (uint16, uint16)          { return f.slave.Dimensions() }
 func (f *slaveFile) State() fd.TerminalState               { return f.slave.State() }
 func (f *slaveFile) SetState(state fd.TerminalState) error { return f.slave.SetState(state) }

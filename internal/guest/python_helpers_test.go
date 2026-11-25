@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	nativeshell "github.com/Cosmic-Developers-Union/assistant-sandbox/guest/native"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/instance"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fd"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/resources"
@@ -53,6 +54,9 @@ func python312GuestWith(t *testing.T, configure func(*instance.Options)) (*insta
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = machine.Close(context.Background()) })
+	if err := nativeshell.Install(t.Context(), machine.Filesystem()); err != nil {
+		t.Fatal(err)
+	}
 	extractPython312(t, machine, apk)
 	extractPython312Pyc(t, machine, pyc)
 	extractPython312Libs(t, machine, libs)

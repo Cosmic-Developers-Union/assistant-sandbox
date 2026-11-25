@@ -51,15 +51,18 @@ jobs:
           make guest
           mkdir -p dist
           cp assistant-bash.wasm.gz dist/
+          version="${GITHUB_REF_NAME}"
           for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
             output="dist/assistant-sandbox-${target%/*}-${target#*/}"
             if [[ "$target" == windows/* ]]; then output="${output}.exe"; fi
             if [[ "$target" == "linux/amd64" ]]; then
               CGO_ENABLED=1 go build -trimpath -tags netgo,osusergo \
-                -ldflags "-linkmode external -extldflags -static" \
+                -ldflags "-linkmode external -extldflags -static -X main.version=$version" \
                 -o "$output" ./cmd/assistant-sandbox
             else
-              CGO_ENABLED=0 GOOS="${target%/*}" GOARCH="${target#*/}" go build -trimpath -o "$output" ./cmd/assistant-sandbox
+              CGO_ENABLED=0 GOOS="${target%/*}" GOARCH="${target#*/}" \
+                go build -trimpath -ldflags "-X main.version=$version" \
+                -o "$output" ./cmd/assistant-sandbox
             fi
           done
           cd dist

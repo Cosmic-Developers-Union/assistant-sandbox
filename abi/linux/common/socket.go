@@ -371,6 +371,9 @@ func (s Syscalls) recvfrom(ctx context.Context, call Call) Reply {
 	}
 	buffer := make([]byte, count)
 	loaded, from, err := s.Sockets.RecvFrom(ctx, call.Args[0], buffer)
+	if errors.Is(err, io.EOF) {
+		err = nil
+	}
 	if err != nil {
 		return Reply{Errno: errnoOf(err)}
 	}

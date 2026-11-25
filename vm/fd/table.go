@@ -17,6 +17,7 @@ import (
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/eventfd"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/inotify"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/memfd"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/pipe"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/poll"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/signalfd"
@@ -480,6 +481,10 @@ func (t *Table) EventFD(pid uint64, initialValue uint64, options eventfd.Options
 	return 0, errno.Limit
 }
 
+func (t *Table) Memfd(pid uint64, name string) (uint32, error) {
+	return t.InstallNext(pid, memfd.New(name))
+}
+
 // SignalFD 创建并安装一个 signalfd,语义与 signalfd4 一致。
 // mask 是信号掩码位图(位 n-1 对应信号 n),为空由 signalfd.New 拒绝。
 func (t *Table) SignalFD(pid uint64, mask uint64, options signalfd.Options) (uint32, error) {
@@ -869,7 +874,9 @@ func (i streamInfo) ModTime() time.Time { return time.Time{} }
 func (i streamInfo) IsDir() bool        { return false }
 func (i streamInfo) Sys() any           { return nil }
 
-func (s *stream) Stat() (stdfs.FileInfo, error) { return streamInfo{name: "stream"}, nil }
+func (s *stream) Stat() (stdfs.FileInfo, error) {
+	return streamInfo{name: "stream", pipe: !s.IsTerminal()}, nil
+}
 
 func (s *stream) ReadContext(ctx context.Context, p []byte) (int, error) {
 	if blocking, ok := s.reader.(interface {

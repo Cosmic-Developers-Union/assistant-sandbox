@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"math/bits"
+	"sync/atomic"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/executor/cpu"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
@@ -28,10 +29,20 @@ type Core struct {
 	batchVersion uint64
 	batchValid   bool
 	batchAllowed bool
-	batchPages   [256]decodedInstructionPage
-	batchBases   [256]uint64
-	batchWordsAt [256]uintptr
-	batchBytesAt [256]uintptr
+	jitIdentity  uint64
+	// 512 个译码页槽覆盖约 2 MiB 代码工作集;Python/解释器/共享库
+	// 的活跃代码页远超 256 页,过小会导致每批重新译码。
+	batchPages      [512]decodedInstructionPage
+	batchBases      [512]uint64
+	batchDecodedAt  [512]uintptr
+	batchVersions   [512]uint64
+	batchStartSlots [512]uint64
+}
+
+var jitIdentityCounter atomic.Uint64
+
+func nextJITIdentity() uint64 {
+	return jitIdentityCounter.Add(1)
 }
 
 // numFPRegs 是 RISC-V 浮点寄存器堆规模。
@@ -60,9 +71,10 @@ func New(config cpu.Config) (*Core, error) {
 		return nil, err
 	}
 	core := &Core{
-		memory: config.Memory,
-		meter:  config.Meter,
-		cancel: config.Canceller,
+		memory:      config.Memory,
+		meter:       config.Meter,
+		cancel:      config.Canceller,
+		jitIdentity: nextJITIdentity(),
 	}
 	if checker, ok := config.Memory.(cpu.ExecutableChecker); ok {
 		core.exec = checker
@@ -97,10 +109,12 @@ func (c *Core) Attach(memory cpu.Memory) {
 	c.fetcher = nil
 	c.pageFetcher = nil
 	c.batchValid = false
+	c.jitIdentity = nextJITIdentity()
 	clear(c.batchPages[:])
 	clear(c.batchBases[:])
-	clear(c.batchWordsAt[:])
-	clear(c.batchBytesAt[:])
+	clear(c.batchDecodedAt[:])
+	clear(c.batchVersions[:])
+	clear(c.batchStartSlots[:])
 	if checker, ok := memory.(cpu.ExecutableChecker); ok {
 		c.exec = checker
 	}
@@ -658,8 +672,8 @@ func (c *Core) system(pc uint64, instruction uint32, funct3 uint32, rd, rs1 int)
 	}
 }
 
-// 用户态计数器子集(Zicntr):cycle/instret 只读;time 需要时钟源,未纳入配置。
-// fflags/frm/fcsr 属 F 扩展,可读写。
+// 用户态计数器子集(Zicntr):cycle/time/instret 只读，统一使用已退休
+// 指令计数作为单调时间源。fflags/frm/fcsr 属 F 扩展，可读写。
 const (
 	csrCycle   = 0xC00
 	csrTime    = 0xC01
@@ -672,7 +686,7 @@ const (
 func (c *Core) csr(pc uint64, instruction uint32, funct3 uint32, rd, rs1 int) (cpu.Outcome, *cpu.Trap, error) {
 	address := instruction >> 20
 	switch address {
-	case csrCycle, csrInstret:
+	case csrCycle, csrTime, csrInstret:
 	case csrFFlags, csrFrm, csrFCSR:
 		return c.csrFloat(pc, instruction, funct3, rd, rs1, uint64(address))
 	default:

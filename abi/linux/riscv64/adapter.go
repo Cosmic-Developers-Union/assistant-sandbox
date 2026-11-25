@@ -22,6 +22,7 @@ const (
 	numberLseek            = 62
 	numberRead             = 63
 	numberWrite            = 64
+	numberSendfile         = 71
 	numberExit             = 93
 	numberExitGroup        = 94
 	numberClockGettime     = 113
@@ -45,6 +46,8 @@ const (
 	numberPwrite64         = 68
 	numberFchmod           = 52
 	numberFchmodat         = 53
+	numberFchownat         = 54
+	numberFchown           = 55
 	numberChdir            = 49
 	numberFchdir           = 50
 	numberUname            = 160
@@ -73,6 +76,7 @@ const (
 	numberMincore          = 232
 	numberMadvise          = 233
 	numberFaccessat        = 48
+	numberMknodat          = 33
 	numberMkdirat          = 34
 	numberUnlinkat         = 35
 	numberSymlinkat        = 36
@@ -266,11 +270,12 @@ const (
 	openNoCTTY      = 0o400
 	openNonBlock    = 0o4000
 	openNoFollow    = 0o400000
+	openPath        = 0o10000000
 
 	// O_LARGEFILE 在 64 位客体 ABI 上无语义(参考 Linux riscv64 接受
 	// 并忽略),libc 的 open/openat 无条件携带,必须纳入已知掩码。
 	// O_DIRECTORY 由 opendir/readdir 携带,目录性质由文件系统判定。
-	openKnown = openAccessMask | openCreate | openExclusive | openTruncate | openAppend | openLargeFile | openCloseOnExec | openDirectory | openNoCTTY | openNonBlock | openNoFollow
+	openKnown = openAccessMask | openCreate | openExclusive | openTruncate | openAppend | openLargeFile | openCloseOnExec | openDirectory | openNoCTTY | openNonBlock | openNoFollow | openPath
 )
 
 func openFlags(raw uint64) *common.OpenFlags {
@@ -285,6 +290,8 @@ func openFlags(raw uint64) *common.OpenFlags {
 		Append:      raw&openAppend != 0,
 		CloseOnExec: raw&openCloseOnExec != 0,
 		NoFollow:    raw&openNoFollow != 0,
+		NonBlock:    raw&openNonBlock != 0,
+		PathOnly:    raw&openPath != 0,
 	}
 	return &flags
 }
@@ -339,6 +346,8 @@ func syscallOf(number uint64) common.Syscall {
 		return common.SysRead
 	case numberWrite:
 		return common.SysWrite
+	case numberSendfile:
+		return common.SysSendfile
 	case numberPread64:
 		return common.SysPread64
 	case numberPwrite64:
@@ -347,6 +356,10 @@ func syscallOf(number uint64) common.Syscall {
 		return common.SysFchmod
 	case numberFchmodat:
 		return common.SysFchmodat
+	case numberFchownat:
+		return common.SysFchownat
+	case numberFchown:
+		return common.SysFchown
 	case numberChdir:
 		return common.SysChdir
 	case numberFchdir:
@@ -399,6 +412,8 @@ func syscallOf(number uint64) common.Syscall {
 		return common.SysMincore
 	case numberFaccessat:
 		return common.SysFaccessat
+	case numberMknodat:
+		return common.SysMknodat
 	case numberMkdirat:
 		return common.SysMkdirat
 	case numberUnlinkat:

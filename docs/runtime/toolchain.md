@@ -25,6 +25,15 @@
 构建根内 musl 版本以 minirootfs 实际包含为准(摘要已随根文件系统锁定);
 musl 1.2.6 独立源码作为 ABI 行为参考与差分对拍基准。
 
+仓库内 guest 装载器 `ld-musl-riscv64.so.1` 使用该 1.2.6 源码构建,
+仅附加 `fpathconf(3)` 描述符校验补丁(关闭描述符返回 `EBADF`),
+产物 sha256 为
+`23ea7ef0c0fb58d350b0a847c75de7529a68c240af87c4fdd4a327444801b0fd`。
+补丁与可复现构建命令见
+[`internal/guest/testdata/lib/README.md`](../../internal/guest/testdata/lib/README.md)。
+该补丁属于 guest libc 兼容层,不改变内核 ABI;上游 musl 对已知
+`pathconf` 名称不校验描述符。
+
 ## 构建策略
 
 - **构建环境**:CI 在 Docker 中以 `qemu-riscv64-static` + Alpine riscv64

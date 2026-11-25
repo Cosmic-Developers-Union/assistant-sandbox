@@ -15,18 +15,19 @@ import (
 )
 
 type Entry struct {
-	ID         proc.PID
-	Parent     proc.PID
-	Generation uint64
-	Program    string
-	Args       []string
-	Dir        string
-	Env        map[string]string
-	State      string
-	ExitCode   uint8
-	ExitSignal uint8
-	PGID       proc.PID
-	SID        proc.PID
+	ID          proc.PID
+	Parent      proc.PID
+	Generation  uint64
+	Program     string
+	Args        []string
+	Dir         string
+	Env         map[string]string
+	State       string
+	ExitCode    uint8
+	ExitSignal  uint8
+	PGID        proc.PID
+	SID         proc.PID
+	ThreadCount int
 
 	// Exe 是 /proc/<pid>/exe 链接目标;为空时使用 Program。
 	Exe string
@@ -461,11 +462,11 @@ func statOf(entry Entry) string {
 		"0", "0", "0", "0", // faults
 		"0", "0", "0", "0", // times
 		"0", "0", // priority, nice
-		"1", // num_threads
-		"0", // itrealvalue
-		"0", // starttime
-		"0", // vsize
-		"0", // rss
+		itoa(uint64(max(entry.ThreadCount, 1))), // num_threads
+		"0",                                     // itrealvalue
+		"0",                                     // starttime
+		"0",                                     // vsize
+		"0",                                     // rss
 	)
 	for len(fields) < 52 {
 		fields = append(fields, "0")

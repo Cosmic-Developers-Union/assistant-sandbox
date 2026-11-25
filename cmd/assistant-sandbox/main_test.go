@@ -56,6 +56,14 @@ func TestCLIDryRunIsSideEffectFree(t *testing.T) {
 	}
 }
 
+func TestCLIVersion(t *testing.T) {
+	var output, diagnostic bytes.Buffer
+	code, err := run(t.Context(), []string{"--version"}, strings.NewReader(""), &output, &diagnostic)
+	if err != nil || code != 0 || !strings.Contains(output.String(), "assistant-sandbox") {
+		t.Fatalf("code=%d err=%v out=%q stderr=%q", code, err, output.String(), diagnostic.String())
+	}
+}
+
 // TestCLIDefaultDoesNotMountWorkingDirectory 验证安全默认:未显式指定
 // --dir 时,宿主当前目录不会成为客体 /work;写入只留在临时 VM 内。
 func TestCLIDefaultDoesNotMountWorkingDirectory(t *testing.T) {

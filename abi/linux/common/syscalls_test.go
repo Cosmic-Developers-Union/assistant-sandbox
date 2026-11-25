@@ -98,6 +98,10 @@ func (d *fakeDescriptors) EventFD(ctx context.Context, initialValue, flags uint6
 	return 33, d.eventfdErr
 }
 
+func (d *fakeDescriptors) Memfd(_ context.Context, _ string) (uint64, error) {
+	return 36, d.eventfdErr
+}
+
 func (d *fakeDescriptors) SignalFD(_ context.Context, mask, flags uint64) (uint64, error) {
 	d.signalfd = append(d.signalfd, [2]uint64{mask, flags})
 	return 34, d.signalfdErr
@@ -508,6 +512,11 @@ type fakeFiles struct {
 	setTimeCalls []setTimeCall
 	statfsInfo   StatfsInfo
 	statfsErr    error
+	fifoPath     string
+	fifoMode     stdfs.FileMode
+	chownPath    string
+	chownUID     int64
+	chownGID     int64
 }
 
 type setTimeCall struct {
@@ -531,6 +540,23 @@ func (i fakeFileInfo) IsDir() bool        { return i.dir }
 func (i fakeFileInfo) Sys() any           { return nil }
 
 func (f *fakeFiles) Mkdir(_ context.Context, path string, mode uint32) error { return f.err }
+func (f *fakeFiles) Mkfifo(_ context.Context, path string, mode stdfs.FileMode) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.fifoPath = path
+	f.fifoMode = mode
+	return nil
+}
+func (f *fakeFiles) Chown(_ context.Context, path string, uid, gid int64) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.chownPath = path
+	f.chownUID = uid
+	f.chownGID = gid
+	return nil
+}
 func (f *fakeFiles) Remove(_ context.Context, path string) error {
 	f.removeCalls = append(f.removeCalls, path)
 	return f.err
@@ -596,6 +622,47 @@ func (f *fakeFiles) Open(_ context.Context, request OpenRequest) (uint64, error)
 func writeString(memory *fakeMemory, address uint64, value string) {
 	for index, b := range []byte(value) {
 		memory.data[address+uint64(index)] = b
+	}
+}
+
+func TestMknodatCreatesFIFO(t *testing.T) {
+	space := newFakeMemory()
+	writeString(space, 0x1000, "/work/pipe")
+	files := &fakeFiles{}
+	syscalls := Syscalls{Memory: space, Files: files}
+	reply := syscalls.Handle(context.Background(), Call{
+		Syscall: SysMknodat,
+		Args:    [6]uint64{atCurrentWorkingDirectory, 0x1000, 0o010640, 0},
+	})
+	if reply.Errno != "" {
+		t.Fatalf("mknodat: %+v", reply)
+	}
+	if files.fifoPath != "/work/pipe" || files.fifoMode != stdfs.ModeNamedPipe|0o640 {
+		t.Fatalf("FIFO 创建=%q mode=%v", files.fifoPath, files.fifoMode)
+	}
+}
+
+func TestFchownatUpdatesOwnerAndRejectsUnknownFlags(t *testing.T) {
+	space := newFakeMemory()
+	writeString(space, 0x1000, "/work/file")
+	files := &fakeFiles{}
+	syscalls := Syscalls{Memory: space, Files: files}
+	reply := syscalls.Handle(context.Background(), Call{
+		Syscall: SysFchownat,
+		Args:    [6]uint64{atCurrentWorkingDirectory, 0x1000, 1234, 5678, 0},
+	})
+	if reply.Errno != "" {
+		t.Fatalf("fchownat: %+v", reply)
+	}
+	if files.chownPath != "/work/file" || files.chownUID != 1234 || files.chownGID != 5678 {
+		t.Fatalf("Chown=%q uid=%d gid=%d", files.chownPath, files.chownUID, files.chownGID)
+	}
+	reply = syscalls.Handle(context.Background(), Call{
+		Syscall: SysFchownat,
+		Args:    [6]uint64{atCurrentWorkingDirectory, 0x1000, 1234, 5678, 2},
+	})
+	if reply.Errno != errno.Invalid {
+		t.Fatalf("未知 flags: %+v want EINVAL", reply)
 	}
 }
 
@@ -1748,7 +1815,7 @@ func TestUnlinkatDistinguishesFilesAndDirectories(t *testing.T) {
 	files := &fakeFiles{}
 	handler := Syscalls{Memory: memory, Files: files}
 
-	files.statInfo = fakeFileInfo{dir: true}
+	files.lstatInfo = fakeFileInfo{dir: true}
 	if reply := handler.Handle(ctx, Call{Syscall: SysUnlinkat, Args: [6]uint64{atCurrentWorkingDirectory, 0x1000, 0}}); reply.Errno != errno.IsDirectory {
 		t.Fatalf("unlink 目录应报 EISDIR: %v", reply.Errno)
 	}
@@ -1756,7 +1823,7 @@ func TestUnlinkatDistinguishesFilesAndDirectories(t *testing.T) {
 		t.Fatalf("AT_REMOVEDIR 删目录应成功: %v", reply.Errno)
 	}
 
-	files.statInfo = fakeFileInfo{dir: false}
+	files.lstatInfo = fakeFileInfo{dir: false}
 	if reply := handler.Handle(ctx, Call{Syscall: SysUnlinkat, Args: [6]uint64{atCurrentWorkingDirectory, 0x1000, atRemovedir}}); reply.Errno != errno.NotDirectory {
 		t.Fatalf("AT_REMOVEDIR 删文件应报 ENOTDIR: %v", reply.Errno)
 	}
@@ -2730,12 +2797,23 @@ func TestAffinityAndTopologyReportConfiguredCPUs(t *testing.T) {
 	if mask := space.data[0x2000]; mask != 0x0F {
 		t.Fatalf("4 CPU 掩码=%#x want 0x0F", mask)
 	}
+	threaded := Syscalls{Memory: space, CPUs: 4, Identity: &Identity{PID: 7, TID: 9}}
+	if reply := threaded.Handle(ctx, Call{Syscall: SysGetCPU, Args: [6]uint64{0x2000, 0x2004}}); reply.Errno != "" {
+		t.Fatalf("多 CPU getcpu: %+v", reply)
+	}
+	if space.data[0x2000] != 1 || space.data[0x2004] != 0 {
+		t.Fatalf("TID 9 的 CPU/节点=%v/%v want 1/0", space.data[0x2000], space.data[0x2004])
+	}
 
-	// setaffinity:包含 CPU 0 成功,不含 EINVAL。
+	// setaffinity:与配置 CPU 有交集成功,空交集 EINVAL。
 	if reply := multi.Handle(ctx, Call{Syscall: SysSchedSetAffinity, Args: [6]uint64{0, 8, 0x2000}}); reply.Errno != "" {
 		t.Fatalf("setaffinity: %+v", reply)
 	}
-	space.data[0x2000] = 0x02 // 仅 CPU 1,客体不存在
+	space.data[0x2000] = 0x02 // 仅 CPU 1,4 CPU 配置内
+	if reply := multi.Handle(ctx, Call{Syscall: SysSchedSetAffinity, Args: [6]uint64{0, 8, 0x2000}}); reply.Errno != "" {
+		t.Fatalf("CPU 1 掩码: %+v", reply)
+	}
+	space.data[0x2000] = 0x10 // 仅 CPU 4,超出 4 CPU 配置
 	if reply := multi.Handle(ctx, Call{Syscall: SysSchedSetAffinity, Args: [6]uint64{0, 8, 0x2000}}); reply.Errno != errno.Invalid {
 		t.Fatalf("空交集: %+v want EINVAL", reply)
 	}
@@ -2910,6 +2988,58 @@ type fakeSignals struct {
 	mask    uint64
 }
 
+type fakePriorities struct {
+	pid  uint64
+	nice int
+}
+
+func (p *fakePriorities) Nice(pid uint64) (int, error) {
+	p.pid = pid
+	return p.nice, nil
+}
+
+func (p *fakePriorities) SetNice(pid uint64, nice int) error {
+	p.pid = pid
+	p.nice = nice
+	return nil
+}
+
+func TestPrioritySyscallsUseLinuxEncoding(t *testing.T) {
+	priorities := &fakePriorities{nice: 3}
+	syscalls := Syscalls{
+		Identity:   &Identity{PID: 42},
+		Priorities: priorities,
+	}
+	reply := syscalls.Handle(context.Background(), Call{
+		Syscall: SysGetpriority,
+		Args:    [6]uint64{0, 0},
+	})
+	if reply.Errno != "" || reply.Value != 17 || priorities.pid != 42 {
+		t.Fatalf("getpriority=%+v pid=%d", reply, priorities.pid)
+	}
+	reply = syscalls.Handle(context.Background(), Call{
+		Syscall: SysSetpriority,
+		Args:    [6]uint64{0, 42, 5},
+	})
+	if reply.Errno != "" || priorities.nice != 5 {
+		t.Fatalf("setpriority=%+v nice=%d", reply, priorities.nice)
+	}
+	reply = syscalls.Handle(context.Background(), Call{
+		Syscall: SysSetpriority,
+		Args:    [6]uint64{0, 42, 20},
+	})
+	if reply.Errno != errno.Invalid {
+		t.Fatalf("越界 nice=%+v want EINVAL", reply)
+	}
+	reply = syscalls.Handle(context.Background(), Call{
+		Syscall: SysGetpriority,
+		Args:    [6]uint64{1, 42},
+	})
+	if reply.Errno != errno.NotSupported {
+		t.Fatalf("PRIO_PGRP=%+v want ENOTSUP", reply)
+	}
+}
+
 func (f *fakeSignals) SetAction(sig uint64, action SignalAction) error {
 	if f.err != nil {
 		return f.err
@@ -2931,6 +3061,19 @@ func (f *fakeSignals) Action(sig uint64) (SignalAction, error) {
 		return action, nil
 	}
 	return SignalAction{}, nil
+}
+
+func (f *fakeSignals) SwapAction(sig uint64, action SignalAction) (SignalAction, error) {
+	if f.err != nil {
+		return SignalAction{}, f.err
+	}
+	if sig == 9 || sig == 19 {
+		return SignalAction{}, errno.Invalid
+	}
+	previous := f.actions[sig]
+	f.set = append(f.set, action)
+	f.actions[sig] = action
+	return previous, nil
 }
 
 func (f *fakeSignals) ApplyMask(how, set uint64) (uint64, error) {
@@ -3001,6 +3144,24 @@ func TestRtSigactionRegistersAndWritesBackOld(t *testing.T) {
 	}
 	if flags := uint32(binary.LittleEndian.Uint64(oldact[8:])); flags != 0x14000000 {
 		t.Fatalf("回写标志=%#x", flags)
+	}
+	// 同时登记新处置并查询旧处置:oldact 必须是替换前的值。
+	var replacement [32]byte
+	binary.LittleEndian.PutUint64(replacement[0:], 0x5050)
+	if err := space.Write(ctx, 0x3000, replacement[:]); err != nil {
+		t.Fatal(err)
+	}
+	if reply := syscalls.Handle(ctx, Call{Syscall: SysRtSigaction, Args: [6]uint64{10, 0x3000, 0x2000, sigsetSize}}); reply.Errno != "" {
+		t.Fatalf("登记并回写旧值: %+v", reply)
+	}
+	if err := space.Read(ctx, 0x2000, oldact[:]); err != nil {
+		t.Fatal(err)
+	}
+	if handler := binary.LittleEndian.Uint64(oldact[0:]); handler != 0x4040 {
+		t.Fatalf("替换前处理器=%#x want 0x4040", handler)
+	}
+	if handler := signals.actions[10].Handler; handler != 0x5050 {
+		t.Fatalf("替换后处理器=%#x want 0x5050", handler)
 	}
 	// act=NULL 仅查询:不改变登记项。
 	if reply := syscalls.Handle(ctx, Call{Syscall: SysRtSigaction, Args: [6]uint64{10, 0, 0x2000, sigsetSize}}); reply.Errno != "" {

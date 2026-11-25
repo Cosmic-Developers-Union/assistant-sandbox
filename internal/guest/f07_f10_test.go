@@ -25,14 +25,14 @@ import (
 //	               f10_missing);运行时装载真实 libf10.so(无此符号)
 //	               即复现缺失符号错误。
 //
-// ld-musl-riscv64.so.1 来自 Alpine musl-1.2.6-r6(riscv64)包
-// (apk sha256=727ad741…de7077a),与 A04 固定的 musl 1.2.6 同版本;
-// musl 的 libc.so 与 ld-musl 同体,测试内以同一内容安装两个路径。
+// ld-musl-riscv64.so.1 由 A04 固定的 musl 1.2.6 源码构建,附加
+// fpathconf 描述符校验补丁(见 testdata/lib/README.md);musl 的
+// libc.so 与 ld-musl 同体,测试内以同一内容安装两个路径。
 const (
 	f10ProgramDigest   = "d348c2cb92af340a87cb72202b04ef3073c37f2e81d2b7905192f6458fb3ebe2"
 	f10MissingDigest   = "23efbd1afd1440abbba5e3831eec9be513f124b1a79f02cef44c70760e863919"
 	f10LibDigest       = "0232b1ecc51e982a5efa80cf00e6bb665b315918243f682c125c8f5d2f44fcaa"
-	f10LoaderDigest    = "4fdd77eccfb6019bf4f36e3efb25e73b165a6648aeef66f2d890959198914123"
+	f10LoaderDigest    = "23ea7ef0c0fb58d350b0a847c75de7529a68c240af87c4fdd4a327444801b0fd"
 	f10HappyOutput     = "F10-OK sum=23 heap=120\n"
 	f10LoaderExitCode  = 127
 	f10MissingFragment = "f10_missing: symbol not found"

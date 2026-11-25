@@ -59,7 +59,7 @@ func runPTY(
 	}
 	args := []string{"-i"}
 	if shell == nativeshell.Bash {
-		args = []string{"--noprofile", "--norc", "--noediting", "-i"}
+		args = []string{"--noprofile", "--norc", "-i"}
 	}
 	process, err := connection.Exec(ctx, instance.ExecSpec{
 		Program: shell.Program(),
@@ -89,11 +89,6 @@ func runPTY(
 		_, _ = io.Copy(&crlfWriter{writer: stdout}, master)
 	}()
 	go func() {
-		if shell == nativeshell.Bash {
-			completer := newShellCompleter(ctx, machine, process.ID)
-			_ = bridgeInputWithCompletion(stdin, master, stdout, completer.Commands, completer.Prompt)
-			return
-		}
 		_, _ = io.Copy(master, stdin)
 	}()
 

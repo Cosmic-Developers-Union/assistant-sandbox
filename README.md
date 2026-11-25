@@ -34,14 +34,16 @@ Go 版本见 [go.mod](go.mod)。在项目根目录构建和运行：
 
 ```sh
 make build
+./assistant-sandbox --version
 ./assistant-sandbox --dir . -c 'printf hello'
 ./assistant-sandbox --dir . --shell sh -c 'printf hello'
 make install
 assistant-sandbox --dir . -c 'printf hello'
 ```
 
-Linux 上 `make build` 默认启用 C++ 批量整数执行核心，并要求宿主提供
-C++17 编译器；产物仍为静态链接。需要纯 Go 可移植构建时使用
+Linux 上 `make build` 默认启用 x86-64 页级 JIT 与 C++ 批量执行核心，
+并要求宿主提供 C++17 编译器；产物仍为静态链接。需要纯 Go 可移植
+构建时使用
 `CGO_ENABLED=0 make build`，此时功能保持一致，但 Python/Node 启动更慢。
 
 CLI 默认执行客体中的真实 Bash；`--shell sh` 切换到 BusyBox sh。
@@ -57,14 +59,40 @@ assistant-sandbox -c 'python --version; node --version; git --version; apk --ver
 
 只需要 Bash/BusyBox 时使用 `--tools=minimal`。
 
+VM 默认 2 CPU、4 GiB；`--cpus` 取 1–8，`--memory` 取 256 MiB–16 GiB，
+支持任意规范值而不是只支持 2 的幂：
+
+```sh
+assistant-sandbox --cpus 4 --memory 1.5g -c 'nproc; head -1 /proc/meminfo'
+assistant-sandbox --cpus 8 --memory 16g -c 'python -c "import os; print(len(os.sched_getaffinity(0)))"'
+```
+
+Go `linux/riscv64` ELF runtime 可直接在客体中运行，测试使用宿主 Go
+交叉编译 fixture；dev 根当前不内置客体 `go` 编译器。
+
+标准 V8 JIT 需要 guest 逻辑 RWX 页，可用实验开关运行并与 jitless
+对比；默认仍保持 W^X：
+
+```sh
+assistant-sandbox --allow-guest-rwx -c 'node app.js'
+```
+
+该开关同时让 `/usr/bin/node` 包装器改用标准 V8；直接运行
+`/usr/bin/node-bin` 也会走标准 V8。
+
+当前解释器吞吐、Python/Node/Go 端到端倍率与多核扩展见
+[性能基线](docs/runtime/performance.md);`make bench` 可重跑 CPU 核心
+基准，`make perf-languages` 可重跑 VM 三语言基线。
+版本历史见 [CHANGELOG.md](CHANGELOG.md)。
+
 单次 `-c` 执行会创建一台新 VM，开发根需要装入该 VM 的 memfs；当前
 使用并行 zstd 解包。交互 `--session` 只在启动时装入一次。
 
 在终端直接运行 `assistant-sandbox --dir .` 会进入客体 Bash 会话；
 交互会话通过 VM PTY 提供回显、`Ctrl-C`/`Ctrl-D` 与作业控制。Bash
-当前使用 `--noediting`，CLI 在宿主侧提供上下键命令历史和命令级 Tab
-补全；readline 左右编辑与参数补全暂不可用。脚本和 CI 建议使用 `-c`
-或从管道传入完整脚本。
+使用内嵌 readline 提供左右编辑、命令历史和 Tab 补全；在 Bash 中
+启动的 Python/Node REPL 也直接使用各自的 readline。脚本和 CI 建议
+使用 `-c` 或从管道传入完整脚本。
 CLI 会捕获 `SIGINT`/`SIGTERM`/`SIGHUP`/`SIGQUIT` 并恢复宿主终端；
 若终端模拟器自身崩溃或 CLI 被 `SIGKILL` 强制终止，可先执行
 `stty sane` 或 `reset`。终端兼容问题可用 `--no-pty` 退回普通管道会话。

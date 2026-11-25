@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"math"
 	"testing"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/executor/cpu"
@@ -14,6 +15,11 @@ const (
 	batchCodeBase = 0x1000
 	batchDataBase = 0x2000
 )
+
+func encodeAMO(funct5, funct3 uint32, rd, rs1, rs2 int) uint32 {
+	return funct5<<27 | uint32(rs2)<<20 | uint32(rs1)<<15 | funct3<<12 |
+		uint32(rd)<<7 | 0x2F
+}
 
 // TestStepBatchMatchesSingleStep 对 C++ 整数批量路径与既有 Go 单步
 // 语义做差分，覆盖整数 ALU、乘除、访存、分支和压缩指令。
@@ -207,6 +213,479 @@ func TestStepBatchFollowsCachedCodePages(t *testing.T) {
 	machine, _ := core.State(ctx)
 	if machine.Registers[5] != instructions {
 		t.Fatalf("x5=%d want %d", machine.Registers[5], instructions)
+	}
+}
+
+// TestStepBatchJITMatchesSingleStep 让原生翻译路径跨越多个基本块和
+// 真实数据访存,再与逐指令语义基准比较完整机器状态。
+func TestStepBatchJITMatchesSingleStep(t *testing.T) {
+	if !hotBatchSupported {
+		t.Skip("当前构建未启用 C++ 批量执行")
+	}
+	ctx := context.Background()
+	table := memory.New(0)
+	if err := table.Map(ctx, memory.Region{
+		Start: batchCodeBase, End: batchCodeBase + memory.PageSize,
+		Prot: memory.ProtRead | memory.ProtExec, Name: "code",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := table.Map(ctx, memory.Region{
+		Start: batchDataBase, End: batchDataBase + memory.PageSize,
+		Prot: memory.ProtRead | memory.ProtWrite, Name: "data",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	program := make([]byte, memory.PageSize)
+	binary.LittleEndian.PutUint32(program[0:], encodeOpImm(0x0, 5, 5, 1))
+	binary.LittleEndian.PutUint32(program[4:], encodeLoad(0x3, 6, 8, 0x148))
+	binary.LittleEndian.PutUint32(program[8:], encodeStore(0x3, 5, 8, 0x148))
+	binary.LittleEndian.PutUint32(program[12:], encodeBranch(0x1, 5, 7, -12))
+	if err := table.Load(ctx, batchCodeBase, program); err != nil {
+		t.Fatal(err)
+	}
+	clone, err := table.Clone()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := cpu.Machine{
+		PC:        batchCodeBase,
+		Registers: make([]uint64, numRegs),
+		Floats:    make([]uint64, numFPRegs),
+	}
+	state.Registers[7] = 2500
+	state.Registers[8] = batchDataBase
+	batchCore, err := New(cpu.Config{Memory: table, Entry: batchCodeBase})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stepCore, err := New(cpu.Config{Memory: clone, Entry: batchCodeBase})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := batchCore.Reset(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	if err := stepCore.Reset(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	const instructions = 10000
+	var retired uint64
+	for retired < instructions {
+		remaining := instructions - retired
+		stepCount, _, err := batchCore.StepBatch(ctx, remaining)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stepCount == 0 {
+			t.Fatal("批量执行没有推进")
+		}
+		retired += stepCount
+	}
+	if retired > instructions {
+		t.Fatalf("批量执行越界: retired=%d want %d", retired, instructions)
+	}
+	for range instructions {
+		if _, err := stepCore.Step(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	batchState, err := batchCore.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stepState, err := stepCore.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if batchState.PC != stepState.PC {
+		t.Fatalf("PC batch=%#x step=%#x", batchState.PC, stepState.PC)
+	}
+	for index := range stepState.Registers {
+		if batchState.Registers[index] != stepState.Registers[index] {
+			t.Fatalf("x%d batch=%#x step=%#x", index,
+				batchState.Registers[index], stepState.Registers[index])
+		}
+	}
+	batchData, err := readPage(ctx, table, batchDataBase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stepData, err := readPage(ctx, clone, batchDataBase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(batchData) != string(stepData) {
+		t.Fatal("批量与单步写入的内存不同")
+	}
+}
+
+// TestStepBatchJITReadsCounters 锁定 JIT/批量路径中的 cycle/time/instret
+// 读取语义:值必须等于已退休指令数,与单步 CSR 实现一致。
+func TestStepBatchJITReadsCounters(t *testing.T) {
+	if !hotBatchSupported {
+		t.Skip("当前构建未启用 C++ 批量执行")
+	}
+	ctx := context.Background()
+	table := memory.New(0)
+	if err := table.Map(ctx, memory.Region{
+		Start: batchCodeBase, End: batchCodeBase + memory.PageSize,
+		Prot: memory.ProtRead | memory.ProtExec, Name: "code",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	program := make([]byte, memory.PageSize)
+	binary.LittleEndian.PutUint32(program[0:], encodeOpImm(0x0, 5, 0, 0))
+	binary.LittleEndian.PutUint32(program[4:], encodeCSR(0x2, 6, 0, 0xC01))
+	binary.LittleEndian.PutUint32(program[8:], encodeOp(0x00, 0x0, 5, 5, 6))
+	binary.LittleEndian.PutUint32(program[12:], encodeOpImm(0x0, 7, 7, 1))
+	binary.LittleEndian.PutUint32(program[16:], encodeBranch(0x4, 7, 8, -12))
+	if err := table.Load(ctx, batchCodeBase, program); err != nil {
+		t.Fatal(err)
+	}
+	clone, err := table.Clone()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := cpu.Machine{
+		PC:        batchCodeBase,
+		Registers: make([]uint64, numRegs),
+		Floats:    make([]uint64, numFPRegs),
+	}
+	state.Registers[8] = 3000
+	batchCore, err := New(cpu.Config{Memory: table, Entry: batchCodeBase})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stepCore, err := New(cpu.Config{Memory: clone, Entry: batchCodeBase})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := batchCore.Reset(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	if err := stepCore.Reset(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	const instructions = 1 + 3000*4
+	var retired uint64
+	for retired < instructions {
+		remaining := instructions - retired
+		stepCount, _, err := batchCore.StepBatch(ctx, remaining)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stepCount == 0 {
+			t.Fatal("批量执行没有推进")
+		}
+		retired += stepCount
+	}
+	for range instructions {
+		if _, err := stepCore.Step(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	batchState, err := batchCore.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stepState, err := stepCore.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if batchState.PC != stepState.PC {
+		t.Fatalf("PC batch=%#x step=%#x", batchState.PC, stepState.PC)
+	}
+	for index := range stepState.Registers {
+		if batchState.Registers[index] != stepState.Registers[index] {
+			t.Fatalf("x%d batch=%#x step=%#x", index,
+				batchState.Registers[index], stepState.Registers[index])
+		}
+	}
+}
+
+// TestStepBatchJITIndirectBranches 锁定页内 JALR 的动态目标分派,
+// 包括返回地址与循环回边。
+func TestStepBatchJITIndirectBranches(t *testing.T) {
+	if !hotBatchSupported {
+		t.Skip("当前构建未启用 C++ 批量执行")
+	}
+	ctx := context.Background()
+	table := memory.New(0)
+	if err := table.Map(ctx, memory.Region{
+		Start: batchCodeBase, End: batchCodeBase + memory.PageSize,
+		Prot: memory.ProtRead | memory.ProtExec, Name: "code",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	program := make([]byte, memory.PageSize)
+	binary.LittleEndian.PutUint32(program[0:], encodeOpImm(0x0, 5, 5, 1))
+	binary.LittleEndian.PutUint32(program[4:], encodeJALR(1, 6, 0))
+	binary.LittleEndian.PutUint32(program[8:], encodeBranch(0x1, 5, 8, -8))
+	binary.LittleEndian.PutUint32(program[12:], encodeJALR(0, 9, -8))
+	binary.LittleEndian.PutUint32(program[16:], encodeOpImm(0x0, 7, 7, 1))
+	binary.LittleEndian.PutUint32(program[20:], encodeJALR(0, 1, 0))
+	if err := table.Load(ctx, batchCodeBase, program); err != nil {
+		t.Fatal(err)
+	}
+	clone, err := table.Clone()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := cpu.Machine{
+		PC:        batchCodeBase,
+		Registers: make([]uint64, numRegs),
+		Floats:    make([]uint64, numFPRegs),
+	}
+	state.Registers[6] = batchCodeBase + 16
+	state.Registers[8] = 1 << 20
+	state.Registers[9] = batchCodeBase + 8
+	batchCore, err := New(cpu.Config{Memory: table, Entry: batchCodeBase})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stepCore, err := New(cpu.Config{Memory: clone, Entry: batchCodeBase})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := batchCore.Reset(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	if err := stepCore.Reset(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	const instructions = 10000
+	var retired uint64
+	for retired < instructions {
+		stepCount, _, err := batchCore.StepBatch(ctx, instructions-retired)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stepCount == 0 {
+			t.Fatal("批量执行没有推进")
+		}
+		retired += stepCount
+	}
+	for range instructions {
+		if _, err := stepCore.Step(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	batchState, _ := batchCore.State(ctx)
+	stepState, _ := stepCore.State(ctx)
+	if batchState.PC != stepState.PC {
+		t.Fatalf("PC batch=%#x step=%#x", batchState.PC, stepState.PC)
+	}
+	for index := range stepState.Registers {
+		if batchState.Registers[index] != stepState.Registers[index] {
+			t.Fatalf("x%d batch=%#x step=%#x", index,
+				batchState.Registers[index], stepState.Registers[index])
+		}
+	}
+}
+
+// TestStepBatchJITFloatingPoint 覆盖 CPython 热路径使用的单精度
+// 装入、整数转换、加减除、比较与存储，并保留完整浮点状态对拍。
+func TestStepBatchJITFloatingPoint(t *testing.T) {
+	if !hotBatchSupported {
+		t.Skip("当前构建未启用 C++ 批量执行")
+	}
+	ctx := context.Background()
+	table := memory.New(0)
+	if err := table.Map(ctx, memory.Region{
+		Start: batchCodeBase, End: batchCodeBase + memory.PageSize,
+		Prot: memory.ProtRead | memory.ProtExec, Name: "code",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := table.Map(ctx, memory.Region{
+		Start: batchDataBase, End: batchDataBase + memory.PageSize,
+		Prot: memory.ProtRead | memory.ProtWrite, Name: "data",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	program := make([]byte, memory.PageSize)
+	binary.LittleEndian.PutUint32(program[0:], encodeFPLoad(0x2, 0, 20, 0))
+	binary.LittleEndian.PutUint32(program[4:], encodeFPLoad(0x2, 1, 20, 4))
+	binary.LittleEndian.PutUint32(program[8:], encodeFP3(fpFADD, 0, 2, 0, 1))
+	binary.LittleEndian.PutUint32(program[12:], encodeFP3(fpFDIV, 0, 3, 2, 0))
+	binary.LittleEndian.PutUint32(program[16:], encodeFPCvtInt(fpFCVTS, 0, 4, 5, 3))
+	binary.LittleEndian.PutUint32(program[20:], encodeFP3(0x50, 1, 6, 0, 1))
+	binary.LittleEndian.PutUint32(program[24:], encodeFPStore(0x2, 3, 20, 8))
+	binary.LittleEndian.PutUint32(program[28:], encodeFPLoad(0x3, 5, 20, 16))
+	binary.LittleEndian.PutUint32(program[32:], encodeOpImm(0x0, 5, 5, 1))
+	binary.LittleEndian.PutUint32(program[36:], encodeBranch(0x1, 5, 7, -36))
+	if err := table.Load(ctx, batchCodeBase, program); err != nil {
+		t.Fatal(err)
+	}
+	data := make([]byte, memory.PageSize)
+	binary.LittleEndian.PutUint32(data[0:], math.Float32bits(1.5))
+	binary.LittleEndian.PutUint32(data[4:], math.Float32bits(2.25))
+	binary.LittleEndian.PutUint64(data[16:], math.Float64bits(3.5))
+	if err := table.Load(ctx, batchDataBase, data); err != nil {
+		t.Fatal(err)
+	}
+	clone, err := table.Clone()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := cpu.Machine{
+		PC:        batchCodeBase,
+		Registers: make([]uint64, numRegs),
+		Floats:    make([]uint64, numFPRegs),
+	}
+	state.Registers[7] = 300
+	state.Registers[20] = batchDataBase
+	batchCore, err := New(cpu.Config{Memory: table, Entry: batchCodeBase})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stepCore, err := New(cpu.Config{Memory: clone, Entry: batchCodeBase})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := batchCore.Reset(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	if err := stepCore.Reset(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	const instructions = 3000
+	jitSteps, _, err := batchCore.StepBatch(ctx, 2048)
+	if err != nil || jitSteps == 0 {
+		t.Fatalf("JIT 浮点执行失败: steps=%d err=%v", jitSteps, err)
+	}
+	for range jitSteps {
+		if _, err := stepCore.Step(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	compareMachineState(t, batchCore, stepCore)
+	retired := jitSteps
+	for retired < instructions {
+		stepCount, _, err := batchCore.StepBatch(ctx, instructions-retired)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stepCount == 0 {
+			t.Fatal("批量执行没有推进")
+		}
+		retired += stepCount
+	}
+	for range instructions - jitSteps {
+		if _, err := stepCore.Step(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	compareMachineState(t, batchCore, stepCore)
+}
+
+func compareMachineState(t *testing.T, batchCore, stepCore *Core) {
+	t.Helper()
+	ctx := context.Background()
+	batchState, _ := batchCore.State(ctx)
+	stepState, _ := stepCore.State(ctx)
+	if batchState.PC != stepState.PC || batchState.FCSR != stepState.FCSR {
+		t.Fatalf("PC/FCSR batch=%#x/%#x step=%#x/%#x", batchState.PC, batchState.FCSR,
+			stepState.PC, stepState.FCSR)
+	}
+	for index := range stepState.Registers {
+		if batchState.Registers[index] != stepState.Registers[index] {
+			t.Fatalf("x%d batch=%#x step=%#x", index,
+				batchState.Registers[index], stepState.Registers[index])
+		}
+	}
+	for index := range stepState.Floats {
+		if batchState.Floats[index] != stepState.Floats[index] {
+			t.Fatalf("f%d batch=%#x step=%#x", index,
+				batchState.Floats[index], stepState.Floats[index])
+		}
+	}
+}
+
+// TestStepBatchJITAtomics 覆盖 AMOADD.W 与 LR/SC,确保原子访存不会
+// 在翻译路径中丢失保留集或返回旧值。
+func TestStepBatchJITAtomics(t *testing.T) {
+	if !hotBatchSupported {
+		t.Skip("当前构建未启用 C++ 批量执行")
+	}
+	ctx := context.Background()
+	table := memory.New(0)
+	if err := table.Map(ctx, memory.Region{
+		Start: batchCodeBase, End: batchCodeBase + memory.PageSize,
+		Prot: memory.ProtRead | memory.ProtExec, Name: "code",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := table.Map(ctx, memory.Region{
+		Start: batchDataBase, End: batchDataBase + memory.PageSize,
+		Prot: memory.ProtRead | memory.ProtWrite, Name: "data",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	program := make([]byte, memory.PageSize)
+	binary.LittleEndian.PutUint32(program[0:], encodeOpImm(0x0, 5, 5, 1))
+	binary.LittleEndian.PutUint32(program[4:], encodeAMO(0x00, 0x2, 6, 20, 5))
+	binary.LittleEndian.PutUint32(program[8:], encodeAMO(0x02, 0x2, 7, 20, 0))
+	binary.LittleEndian.PutUint32(program[12:], encodeAMO(0x03, 0x2, 8, 20, 5))
+	binary.LittleEndian.PutUint32(program[16:], encodeOpImm(0x0, 9, 9, 1))
+	binary.LittleEndian.PutUint32(program[20:], encodeBranch(0x1, 9, 10, -20))
+	if err := table.Load(ctx, batchCodeBase, program); err != nil {
+		t.Fatal(err)
+	}
+	clone, err := table.Clone()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := cpu.Machine{
+		PC:        batchCodeBase,
+		Registers: make([]uint64, numRegs),
+		Floats:    make([]uint64, numFPRegs),
+	}
+	state.Registers[10] = 800
+	state.Registers[20] = batchDataBase
+	batchCore, err := New(cpu.Config{Memory: table, Entry: batchCodeBase})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stepCore, err := New(cpu.Config{Memory: clone, Entry: batchCodeBase})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := batchCore.Reset(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	if err := stepCore.Reset(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	const instructions = 4000
+	var retired uint64
+	for retired < instructions {
+		stepCount, _, err := batchCore.StepBatch(ctx, instructions-retired)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stepCount == 0 {
+			t.Fatal("批量执行没有推进")
+		}
+		retired += stepCount
+	}
+	for range instructions {
+		if _, err := stepCore.Step(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	compareMachineState(t, batchCore, stepCore)
+	batchData, err := readPage(ctx, table, batchDataBase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stepData, err := readPage(ctx, clone, batchDataBase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(batchData) != string(stepData) {
+		t.Fatal("原子批量与单步写入的内存不同")
 	}
 }
 

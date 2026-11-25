@@ -199,6 +199,12 @@ func TestWindowSizeChangeRaisesWINCH(t *testing.T) {
 	if len(*signals) != 1 || (*signals)[0] != signal.WINCH {
 		t.Fatalf("signals=%v", *signals)
 	}
+	if err := term.SetSize(Size{Rows: 40, Cols: 120}); err != nil {
+		t.Fatal(err)
+	}
+	if len(*signals) != 1 {
+		t.Fatalf("尺寸未变化不应投递 WINCH: %v", *signals)
+	}
 }
 
 func TestPollReadinessAndOnChange(t *testing.T) {
@@ -424,6 +430,14 @@ func TestSetStateAppliesSizeAndRaisesWINCH(t *testing.T) {
 	if len(raised) != 1 || raised[0] != signal.WINCH {
 		t.Fatalf("WINCH = %v", raised)
 	}
+	if err := terminal.SetState(fd.TerminalState{
+		Canonical: true, Echo: true, ISIG: true, Mesg: true, Rows: 40, Columns: 120,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(raised) != 1 {
+		t.Fatalf("尺寸未变化不应投递 WINCH: %v", raised)
+	}
 
 	before := terminal.State()
 	if err := terminal.SetState(fd.TerminalState{Canonical: true, Echo: true, ISIG: true, Mesg: true}); err != nil {
@@ -516,5 +530,19 @@ func TestControlSignalsTargetOnlyForeground(t *testing.T) {
 		if entry.pgid != 42 || entry.n != want[index] {
 			t.Fatalf("signal[%d]=%+v want pgid=42 sig=%v", index, entry, want[index])
 		}
+	}
+}
+
+func TestCloseWithoutForegroundDoesNotRaiseHUP(t *testing.T) {
+	signals, raise := recorder()
+	term, err := New(Flags{Canonical: true}, Size{}, 256, raise)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := term.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if len(*signals) != 0 {
+		t.Fatalf("未设置前台进程组时不应投递 HUP: %v", *signals)
 	}
 }

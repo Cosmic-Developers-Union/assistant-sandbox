@@ -8,4 +8,5 @@ const (
 	Create    uint32 = 64
 	Exclusive uint32 = 128
 	Truncate  uint32 = 512
+	NonBlock  uint32 = 2048
 )

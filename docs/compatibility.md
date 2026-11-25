@@ -33,6 +33,12 @@ CPU 拓扑、transparent hugepage 与 clocksource）；`/proc` 继续由内核
 动态投影。
 `--tools=minimal` 只安装 Bash/BusyBox。
 
+VM 默认 2 CPU、4 GiB;配置支持 1–8 个客体 CPU 与 256 MiB–16 GiB 内存的任意规范值
+(例如 `--memory 300m`、`--memory 1.5g`)。CPU 数同时用于
+`/proc/cpuinfo`、`/sys/devices/system/cpu`、`sched_getaffinity` 和
+执行权令牌数;多于一个 CPU 时多个可运行客体进程/线程可在宿主上
+并行执行。内存数用于 `/proc/meminfo` 并作为默认会话/进程内存预算。
+
 已知问题：
 
 - Python 启动已从分钟级降到秒级。开发根改为 zstd 资产并行装入后，
@@ -41,8 +47,9 @@ CPU 拓扑、transparent hugepage 与 clocksource）；`/proc` 继续由内核
   后两项分别约 1.10 秒和 4.67 秒。同一客体二进制在 QEMU user-mode
   TCG 下 `-S -c 'print(1)'` 约 0.21 秒，因此扣除安装后的 VM 指令层
   仍约有 4.6 倍损失；计入开发根装入时整条 CLI 约为 6.5 倍。
-- Node.js 使用 `--jitless`，C++ 快速路径下
-  `node -e 'console.log(1)'` 约 11.6 秒，纯 Go 回退约 20 秒。
+- Node.js 默认使用 `--jitless`，C++ 快速路径下
+  `node -e 'console.log(1)'` 约 10.5 秒；加 `--allow-guest-rwx`
+  后 `/usr/bin/node` 切换到标准 V8，约 8.3 秒。纯 Go 回退更慢。
 - npm 已打包，但 `npm --version` 在当前解释器中需要数分钟，仍需优化。
 - pip 暂不打包；完整 pip CLI 导入超过 180 秒，不能作为可用开发工具发布。
 - 当前 `apk` 是真实 apk-tools 二进制，但包索引/仓库未预置；离线安装
@@ -53,6 +60,44 @@ CPU 拓扑、transparent hugepage 与 clocksource）；`/proc` 继续由内核
 - CLI 单次执行会创建新 VM，开发根必须进入本次 VM 的 memfs；当前
   优化是并行 zstd 解包，而不是跨进程复用 VM。交互 `--session` 只在
   启动时安装一次。
+
+## CPython 上游测试
+
+仓库内的 CPython 3.12.16 测试资产可通过独立门禁运行。测试名直接传给
+`python -m test`，例如：
+
+```sh
+make compat-python PYTHON_SUITE_TESTS="test_sys"
+make compat-python PYTHON_SUITE_TESTS="test_io test_fcntl test_mmap test_tty"
+```
+
+当前结果：
+
+- `test_sys` 通过。
+- `test.test_os` 全量通过，包括 `MemfdCreateTests`、坏描述符上的
+  `fpathconf` 返回 `EBADF`、`TestSendfile` 的 asyncio 收尾，以及
+  `ForkTests.test_fork_warns_when_non_python_thread_exists`。
+- `test.test_asyncio.test_sock_lowlevel` 通过 42 个用例（3 个用例按
+  环境跳过），覆盖 EPoll/Poll/Select 三套选择器、UDP echo、AF_UNIX、
+  1 MB HTTP 大块收发与 socket 选项。
+- `PYTHON_SUITE_TESTS=all` 会启动 492 个 test file；当前单核解释器下
+  需要数小时。完整套件仍有与本次修复无关的已知缺口，包括
+  `test_asyncio.test_base_events`（12 errors）、
+  `test_asyncio.test_events`（异步子进程信号路径超时）、
+  `test_asyncio.test_sendfile`（54 errors），以及 `setitimer`、
+  `SO_REUSEPORT`、IPv6 dual-stack 等明确的 ENOTSUP 项。
+
+`fpathconf` 的描述符校验位于 guest musl 装载器：上游 musl 对已知
+`pathconf` 名称直接返回常量表值，不检查 fd。仓库装载器附带一处
+`fcntl(fd, F_GETFD)` 校验补丁，补丁与构建摘要见
+[`internal/guest/testdata/lib/README.md`](../internal/guest/testdata/lib/README.md)。
+
+本目录的测试还修复并将以下行为锁入回归：交互式 Python 的 WINCH
+递归、`rt_sigaction` 的 oldact、`O_PATH`、`O_NONBLOCK`、FIFO
+创建/打开、`fchown/fchownat`、`getpriority/setpriority`、硬链接目录项
+与指向目录的符号链接删除、UDP `bind(…, 0)` 的临时端口回读、
+AF_UNIX `sendto/recvfrom`、`SO_SNDBUF/SO_RCVBUF/SO_REUSEADDR`，以及
+有限超时 `epoll_pwait` 的就绪唤醒。
 
 ## 外部 LTP
 

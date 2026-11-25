@@ -52,6 +52,8 @@ type Descriptors interface {
 
 	EventFD(ctx context.Context, initialValue, flags uint64) (uint64, error)
 
+	Memfd(ctx context.Context, name string) (uint64, error)
+
 	// SignalFD 创建新的 signalfd;mask 为客体信号位图(已剥离
 	// SIGKILL/SIGSTOP 位)。
 	SignalFD(ctx context.Context, mask, flags uint64) (uint64, error)
@@ -209,6 +211,8 @@ type Syscalls struct {
 
 	// Credentials 是每进程身份变更端口(O01);nil 时 setuid 等 ENOTSUP。
 	Credentials CredentialSetter
+
+	Priorities Priorities
 
 	// Gaps 是运行时启动缺口端口(Q02)。
 	Gaps GapSink
@@ -385,6 +389,12 @@ type SignalDispositions interface {
 	SetAltStack(ctx context.Context, stack SignalAltStack) error
 }
 
+// SignalSwapper 是可选的原子处置替换端口:同时查询旧值与登记新值
+// 时必须作为一个操作完成,否则并发 rt_sigaction 可能回写错误旧值。
+type SignalSwapper interface {
+	SwapAction(sig uint64, action SignalAction) (SignalAction, error)
+}
+
 // ChildState 是 wait4/waitid 观察到的子进程终态。
 type ChildState struct {
 	PID        uint64
@@ -432,6 +442,8 @@ func (s Syscalls) dispatch(ctx context.Context, call Call) Reply {
 		return Reply{Exit: true, Value: call.Args[0]}
 	case SysWrite:
 		return s.write(ctx, call)
+	case SysSendfile:
+		return s.sendfile(ctx, call)
 	case SysRead:
 		return s.read(ctx, call)
 	case SysPread64:
@@ -506,14 +518,18 @@ func (s Syscalls) dispatch(ctx context.Context, call Call) Reply {
 		return s.getrusage(ctx, call)
 	case SysGetitimer, SysSetitimer:
 		return Reply{Errno: errno.NotSupported}
-	case SysGetpriority, SysSetpriority:
-		return Reply{Errno: errno.NotSupported}
+	case SysGetpriority:
+		return s.getpriority(ctx, call)
+	case SysSetpriority:
+		return s.setpriority(ctx, call)
 	case SysMlock, SysMunlock, SysMlockall, SysMunlockall:
 		return Reply{Errno: errno.NotSupported}
 	case SysMincore:
 		return Reply{Errno: errno.NotSupported}
 	case SysFaccessat:
 		return s.faccessat(ctx, call)
+	case SysMknodat:
+		return s.mknodat(ctx, call)
 	case SysMkdirat:
 		return s.mkdirat(ctx, call)
 	case SysUnlinkat:
@@ -572,6 +588,10 @@ func (s Syscalls) dispatch(ctx context.Context, call Call) Reply {
 		return s.fchmod(ctx, call)
 	case SysFchmodat:
 		return s.fchmodat(ctx, call)
+	case SysFchownat:
+		return s.fchownat(ctx, call)
+	case SysFchown:
+		return s.fchown(ctx, call)
 	case SysChdir:
 		return s.chdir(ctx, call)
 	case SysFchdir:
@@ -580,6 +600,8 @@ func (s Syscalls) dispatch(ctx context.Context, call Call) Reply {
 		return s.pipe2(ctx, call)
 	case SysEventfd2:
 		return s.eventfd2(ctx, call)
+	case SysMemfdCreate:
+		return s.memfdCreate(ctx, call)
 	case SysSignalfd4:
 		return s.signalfd4(ctx, call)
 	case SysInotifyInit1:
@@ -713,6 +735,101 @@ func (s Syscalls) write(ctx context.Context, call Call) Reply {
 	return Reply{Value: uint64(written)}
 }
 
+// sendfile(out_fd, in_fd, offset, count):把常规文件内容发送到描述符。
+// offset 为 NULL 时使用并推进 in_fd 的游标;非 NULL 时不改变文件游标,
+// 但按实际发送字节数回写 offset。
+func (s Syscalls) sendfile(ctx context.Context, call Call) Reply {
+	if s.Descriptors == nil || s.Memory == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	outFD, inFD, offsetAddress, count := call.Args[0], call.Args[1], call.Args[2], call.Args[3]
+	if _, err := s.Descriptors.Get(ctx, outFD); err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	input, err := s.Descriptors.Get(ctx, inFD)
+	if err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	reader, ok := input.(interface {
+		Read([]byte) (int, error)
+		ReadAt([]byte, int64) (int, error)
+	})
+	if !ok {
+		return Reply{Errno: errno.Invalid}
+	}
+	seeker, hasSeeker := input.(io.Seeker)
+	var offset int64
+	if offsetAddress != 0 {
+		var raw [8]byte
+		if err := s.Memory.Read(ctx, offsetAddress, raw[:]); err != nil {
+			return Reply{Errno: errno.Fault}
+		}
+		offset = int64(binary.LittleEndian.Uint64(raw[:]))
+		if offset < 0 {
+			return Reply{Errno: errno.Invalid}
+		}
+	} else if !hasSeeker {
+		return Reply{Errno: errno.Seek}
+	}
+	if count == 0 {
+		return Reply{}
+	}
+	const maxChunk = 64 << 10
+	var sent uint64
+	for sent < count {
+		chunk := min(count-sent, maxChunk)
+		buffer := make([]byte, chunk)
+		var read int
+		var readErr error
+		if offsetAddress != 0 {
+			read, readErr = reader.ReadAt(buffer, offset)
+		} else {
+			read, readErr = reader.Read(buffer)
+		}
+		if read > 0 {
+			written, writeErr := s.Descriptors.Write(ctx, outFD, buffer[:read])
+			if offsetAddress != 0 {
+				offset += int64(written)
+			} else if written < read {
+				_, _ = seeker.Seek(-int64(read-written), int(SeekCurrent))
+			}
+			sent += uint64(written)
+			if writeErr != nil {
+				s.writeSendfileOffset(ctx, offsetAddress, offset)
+				if errors.Is(writeErr, errno.WouldBlock) && sent > 0 {
+					return Reply{Value: sent}
+				}
+				return Reply{Errno: errnoOf(writeErr)}
+			}
+			if written < read {
+				s.writeSendfileOffset(ctx, offsetAddress, offset)
+				return Reply{Value: sent}
+			}
+		}
+		if readErr != nil {
+			s.writeSendfileOffset(ctx, offsetAddress, offset)
+			if errors.Is(readErr, io.EOF) {
+				return Reply{Value: sent}
+			}
+			return Reply{Errno: errnoOf(readErr)}
+		}
+		if read == 0 {
+			break
+		}
+	}
+	s.writeSendfileOffset(ctx, offsetAddress, offset)
+	return Reply{Value: sent}
+}
+
+func (s Syscalls) writeSendfileOffset(ctx context.Context, address uint64, offset int64) {
+	if address == 0 {
+		return
+	}
+	var raw [8]byte
+	binary.LittleEndian.PutUint64(raw[:], uint64(offset))
+	_ = s.Memory.Write(ctx, address, raw[:])
+}
+
 var writeBufferPool = sync.Pool{New: func() any {
 	buffer := make([]byte, 0, 4096)
 	return &buffer
@@ -755,6 +872,59 @@ type GapSink interface {
 // CredentialSetter 是每进程 UID/GID 变更端口(O01)。
 type CredentialSetter interface {
 	SetCredentials(ctx context.Context, uid, gid uint32) error
+}
+
+type Priorities interface {
+	Nice(pid uint64) (int, error)
+
+	SetNice(pid uint64, nice int) error
+}
+
+func (s Syscalls) getpriority(ctx context.Context, call Call) Reply {
+	if s.Identity == nil || s.Priorities == nil {
+		return Reply{Errno: errno.NotSupported}
+	}
+	pid, code := s.priorityTarget(call)
+	if code != "" {
+		return Reply{Errno: code}
+	}
+	nice, err := s.Priorities.Nice(pid)
+	if err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	return Reply{Value: uint64(20 - nice)}
+}
+
+func (s Syscalls) setpriority(ctx context.Context, call Call) Reply {
+	if s.Identity == nil || s.Priorities == nil {
+		return Reply{Errno: errno.NotSupported}
+	}
+	pid, code := s.priorityTarget(call)
+	if code != "" {
+		return Reply{Errno: code}
+	}
+	nice := int(int32(uint32(call.Args[2])))
+	if nice < -20 || nice > 19 {
+		return Reply{Errno: errno.Invalid}
+	}
+	if err := s.Priorities.SetNice(pid, nice); err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	return Reply{}
+}
+
+func (s Syscalls) priorityTarget(call Call) (uint64, errno.Code) {
+	if call.Args[0] != 0 { // PRIO_PROCESS
+		return 0, errno.NotSupported
+	}
+	pid := int32(uint32(call.Args[1]))
+	if pid == 0 {
+		return s.Identity.PID, ""
+	}
+	if pid < 0 {
+		return 0, errno.Invalid
+	}
+	return uint64(pid), ""
 }
 
 func (s Syscalls) setIdentity(ctx context.Context, call Call) Reply {
@@ -2507,6 +2677,35 @@ func (s Syscalls) mkdirat(ctx context.Context, call Call) Reply {
 	return Reply{}
 }
 
+func (s Syscalls) mknodat(ctx context.Context, call Call) Reply {
+	if s.Files == nil || s.Memory == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	path, code := s.readPath(ctx, call.Args[1])
+	if code != "" {
+		return Reply{Errno: code}
+	}
+	path, code = s.resolveDirPath(ctx, call.Args[0], path)
+	if code != "" {
+		return Reply{Errno: code}
+	}
+	mode := uint32(call.Args[2])
+	if mode&0o170000 != 0o010000 {
+		return Reply{Errno: errno.NotSupported}
+	}
+	creator, ok := s.Files.(interface {
+		Mkfifo(context.Context, string, stdfs.FileMode) error
+	})
+	if !ok {
+		return Reply{Errno: errno.NotSupported}
+	}
+	if err := creator.Mkfifo(ctx, path, stdfs.ModeNamedPipe|stdfs.FileMode(mode&0o7777)); err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	s.observe(path, inotify.InCreate, 0, false)
+	return Reply{}
+}
+
 func (s Syscalls) unlinkat(ctx context.Context, call Call) Reply {
 	if s.Files == nil || s.Memory == nil {
 		return Reply{Errno: errno.NotImplemented}
@@ -2524,7 +2723,7 @@ func (s Syscalls) unlinkat(ctx context.Context, call Call) Reply {
 	if flags&^uint64(atRemovedir) != 0 {
 		return Reply{Errno: errno.Invalid}
 	}
-	info, statErr := s.Files.Stat(ctx, path)
+	info, statErr := s.Files.Lstat(ctx, path)
 	if statErr == nil && info != nil {
 		if flags&atRemovedir != 0 {
 			if !info.IsDir() {
@@ -2687,6 +2886,9 @@ func (s Syscalls) fchmod(ctx context.Context, call Call) Reply {
 	if s.Files == nil || s.Descriptors == nil {
 		return Reply{Errno: errno.NotImplemented}
 	}
+	if _, err := s.Descriptors.Get(ctx, call.Args[0]); err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
 	path := s.descriptorPath(ctx, call.Args[0])
 	if path == "" {
 		return Reply{Errno: errno.NotSupported}
@@ -2707,6 +2909,64 @@ func (s Syscalls) fchmodat(ctx context.Context, call Call) Reply {
 		return Reply{Errno: code}
 	}
 	return s.chmodPath(ctx, path, call.Args[2])
+}
+
+func (s Syscalls) fchownat(ctx context.Context, call Call) Reply {
+	if s.Files == nil || s.Memory == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	flags := call.Args[4]
+	if flags&^uint64(atSymlinkNoFollow) != 0 {
+		return Reply{Errno: errno.Invalid}
+	}
+	if flags&atSymlinkNoFollow != 0 {
+		return Reply{Errno: errno.NotSupported}
+	}
+	path, code := s.readPath(ctx, call.Args[1])
+	if code != "" {
+		return Reply{Errno: code}
+	}
+	path, code = s.resolveDirPath(ctx, call.Args[0], path)
+	if code != "" {
+		return Reply{Errno: code}
+	}
+	chowner, ok := s.Files.(interface {
+		Chown(context.Context, string, int64, int64) error
+	})
+	if !ok {
+		return Reply{Errno: errno.NotSupported}
+	}
+	uid := int64(int32(uint32(call.Args[2])))
+	gid := int64(int32(uint32(call.Args[3])))
+	if err := chowner.Chown(ctx, path, uid, gid); err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	return Reply{}
+}
+
+func (s Syscalls) fchown(ctx context.Context, call Call) Reply {
+	if s.Files == nil || s.Descriptors == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	if _, err := s.Descriptors.Get(ctx, call.Args[0]); err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	path := s.descriptorPath(ctx, call.Args[0])
+	if path == "" {
+		return Reply{Errno: errno.NotSupported}
+	}
+	chowner, ok := s.Files.(interface {
+		Chown(context.Context, string, int64, int64) error
+	})
+	if !ok {
+		return Reply{Errno: errno.NotSupported}
+	}
+	uid := int64(int32(uint32(call.Args[1])))
+	gid := int64(int32(uint32(call.Args[2])))
+	if err := chowner.Chown(ctx, path, uid, gid); err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	return Reply{}
 }
 
 func (s Syscalls) umask(ctx context.Context, call Call) Reply {
@@ -3475,31 +3735,56 @@ func (s Syscalls) rtSigaction(ctx context.Context, call Call) Reply {
 	if call.Args[3] != sigsetSize {
 		return Reply{Errno: errno.Invalid}
 	}
+	var replacement SignalAction
 	if call.Args[1] != 0 {
 		var raw [sigactionSize]byte
 		if err := s.Memory.Read(ctx, call.Args[1], raw[:]); err != nil {
 			return Reply{Errno: errno.Fault}
 		}
-		action := SignalAction{
+		replacement = SignalAction{
 			Handler:  binary.LittleEndian.Uint64(raw[sigactionHandler:]),
 			Mask:     binary.LittleEndian.Uint64(raw[sigactionMask:]),
 			Flags:    binary.LittleEndian.Uint32(raw[sigactionFlags:]),
 			Restorer: binary.LittleEndian.Uint64(raw[sigactionRestorer:]),
 		}
-		if err := s.Signals.SetAction(sig, action); err != nil {
-			return Reply{Errno: errnoOf(err)}
-		}
 	}
-	if call.Args[2] != 0 {
-		current, err := s.Signals.Action(sig)
+
+	var previous SignalAction
+	switch {
+	case call.Args[1] != 0 && call.Args[2] != 0:
+		if swapper, ok := s.Signals.(SignalSwapper); ok {
+			old, err := swapper.SwapAction(sig, replacement)
+			if err != nil {
+				return Reply{Errno: errnoOf(err)}
+			}
+			previous = old
+			break
+		}
+		old, err := s.Signals.Action(sig)
 		if err != nil {
 			return Reply{Errno: errnoOf(err)}
 		}
+		if err := s.Signals.SetAction(sig, replacement); err != nil {
+			return Reply{Errno: errnoOf(err)}
+		}
+		previous = old
+	case call.Args[1] != 0:
+		if err := s.Signals.SetAction(sig, replacement); err != nil {
+			return Reply{Errno: errnoOf(err)}
+		}
+	case call.Args[2] != 0:
+		old, err := s.Signals.Action(sig)
+		if err != nil {
+			return Reply{Errno: errnoOf(err)}
+		}
+		previous = old
+	}
+	if call.Args[2] != 0 {
 		var encoded [sigactionSize]byte
-		binary.LittleEndian.PutUint64(encoded[sigactionHandler:], current.Handler)
-		binary.LittleEndian.PutUint64(encoded[sigactionFlags:], uint64(current.Flags))
-		binary.LittleEndian.PutUint64(encoded[sigactionMask:], current.Mask)
-		binary.LittleEndian.PutUint64(encoded[sigactionRestorer:], current.Restorer)
+		binary.LittleEndian.PutUint64(encoded[sigactionHandler:], previous.Handler)
+		binary.LittleEndian.PutUint64(encoded[sigactionFlags:], uint64(previous.Flags))
+		binary.LittleEndian.PutUint64(encoded[sigactionMask:], previous.Mask)
+		binary.LittleEndian.PutUint64(encoded[sigactionRestorer:], previous.Restorer)
 		if err := s.Memory.Write(ctx, call.Args[2], encoded[:]); err != nil {
 			return Reply{Errno: errno.Fault}
 		}
@@ -3999,8 +4284,8 @@ func (s Syscalls) schedGetAffinity(ctx context.Context, call Call) Reply {
 	return Reply{Value: uint64(len(mask))}
 }
 
-// sched_setaffinity 单 CPU 客体只接受包含 CPU 0 的掩码(空操作成功),
-// 其余掩码 EINVAL;调用受同样的进程边界约束。
+// sched_setaffinity 接受与配置 CPU 集合有交集的掩码(空操作成功),
+// 超出范围的位按 Linux 语义忽略;空交集 EINVAL。
 func (s Syscalls) schedSetAffinity(ctx context.Context, call Call) Reply {
 	if s.Memory == nil {
 		return Reply{Errno: errno.NotImplemented}
@@ -4015,26 +4300,35 @@ func (s Syscalls) schedSetAffinity(ctx context.Context, call Call) Reply {
 	if err := s.Memory.Read(ctx, call.Args[2], mask[:]); err != nil {
 		return Reply{Errno: errno.Fault}
 	}
-	if mask[0]&1 == 0 {
+	requested := binary.LittleEndian.Uint64(mask[:])
+	cpus := s.cpuCount()
+	valid := ^uint64(0)
+	if cpus < 64 {
+		valid = (uint64(1) << cpus) - 1
+	}
+	if requested&valid == 0 {
 		return Reply{Errno: errno.Invalid}
 	}
 	return Reply{}
 }
 
-// getcpu(cpu, node, tcache) 报告客体拓扑:单 CPU 单节点。
+// getcpu(cpu, node, tcache) 报告客体拓扑:CPU 按调用 TID 稳定
+// 映射到配置范围,节点固定为 0。
 func (s Syscalls) getcpu(ctx context.Context, call Call) Reply {
 	if s.Memory == nil {
 		return Reply{Errno: errno.NotImplemented}
 	}
+	cpu := uint32(s.identityTID() % s.cpuCount())
 	var encoded [4]byte
-	binary.LittleEndian.PutUint32(encoded[0:], 0)
+	binary.LittleEndian.PutUint32(encoded[0:], cpu)
+	var node [4]byte
 	if call.Args[0] != 0 {
 		if err := s.Memory.Write(ctx, call.Args[0], encoded[:4]); err != nil {
 			return Reply{Errno: errno.Fault}
 		}
 	}
 	if call.Args[1] != 0 {
-		if err := s.Memory.Write(ctx, call.Args[1], encoded[:4]); err != nil {
+		if err := s.Memory.Write(ctx, call.Args[1], node[:]); err != nil {
 			return Reply{Errno: errno.Fault}
 		}
 	}
@@ -4264,6 +4558,35 @@ func (s Syscalls) eventfd2(ctx context.Context, call Call) Reply {
 	descriptor, err := s.Descriptors.EventFD(ctx, call.Args[0], call.Args[1])
 	if err != nil {
 		return Reply{Errno: errnoOf(err)}
+	}
+	return Reply{Value: descriptor}
+}
+
+func (s Syscalls) memfdCreate(ctx context.Context, call Call) Reply {
+	if s.Descriptors == nil || s.Memory == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	const (
+		mfdCloexec      = 0x1
+		mfdAllowSealing = 0x2
+	)
+	flags := call.Args[1]
+	if flags&^(mfdCloexec|mfdAllowSealing) != 0 {
+		return Reply{Errno: errno.Invalid}
+	}
+	name, code := s.readPath(ctx, call.Args[0])
+	if code != "" {
+		return Reply{Errno: code}
+	}
+	descriptor, err := s.Descriptors.Memfd(ctx, name)
+	if err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	if flags&mfdCloexec != 0 {
+		if _, err := s.Descriptors.Fcntl(ctx, descriptor, fSetFD, 1); err != nil {
+			_ = s.Descriptors.Close(ctx, descriptor)
+			return Reply{Errno: errnoOf(err)}
+		}
 	}
 	return Reply{Value: descriptor}
 }

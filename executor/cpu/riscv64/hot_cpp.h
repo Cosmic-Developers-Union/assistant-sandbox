@@ -10,13 +10,15 @@ extern "C" {
 #endif
 
 uint64_t rv64_hot_run(uint64_t *registers, uint64_t *pc, uint64_t page_base,
-                      uint32_t max_steps,
+                      uint64_t jit_identity, uint32_t max_steps, uint64_t retired_base,
                       const uint64_t *regions, uint32_t region_count,
                       const uint64_t *page_numbers, const uint64_t *page_addresses,
                       uint32_t page_count, uint64_t page_size,
-                      const uint64_t *code_bases, const uint64_t *code_words,
-                      const uint64_t *code_lengths, uint32_t code_page_count,
-                      uint64_t instruction_page_size);
+                      const uint64_t *code_bases, const uint64_t *code_decoded,
+                      const uint64_t *code_versions, const uint64_t *code_start_slots,
+                      uint32_t code_page_count,
+                      uint64_t instruction_page_size, uint64_t *reservation,
+                      uint64_t *floats, uint64_t *fcsr);
 
 #ifdef __cplusplus
 }

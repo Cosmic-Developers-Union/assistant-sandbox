@@ -3,6 +3,7 @@ package elf
 import (
 	"context"
 	"io"
+	stdfs "io/fs"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 	vfd "github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fd"
@@ -27,6 +28,8 @@ type netlinkEndpoint struct{}
 func (netlinkEndpoint) Read([]byte) (int, error)    { return 0, io.EOF }
 func (netlinkEndpoint) Write(p []byte) (int, error) { return len(p), nil }
 func (netlinkEndpoint) Close() error                { return nil }
+
+func (netlinkEndpoint) Stat() (stdfs.FileInfo, error) { return net.SocketStat("netlink"), nil }
 
 func (p processSockets) lookup(ctx context.Context, fd uint64) (any, error) {
 	return p.descriptors(ctx, fd)
@@ -200,6 +203,13 @@ func (p processSockets) SendTo(ctx context.Context, fd uint64, data []byte, to *
 		return len(data), nil
 	case *net.INETSocket:
 		return socket.Send(ctx, data, to)
+	case *net.UnixSocket:
+		// 已连接的 AF_UNIX 流套接字:send(2) 由 musl 经 sendto 下发,
+		// 目标地址为空;带目标地址的流式发送在 Linux 上报 EISCONN。
+		if to != nil {
+			return 0, errno.IsConn
+		}
+		return socket.WriteContext(ctx, data)
 	default:
 		return 0, errno.NotSock
 	}
@@ -215,6 +225,11 @@ func (p processSockets) RecvFrom(ctx context.Context, fd uint64, buffer []byte) 
 		return 0, net.Addr{Domain: net.AFNetlink}, nil
 	case *net.INETSocket:
 		return socket.Recv(ctx, buffer)
+	case *net.UnixSocket:
+		// 已连接流套接字没有报文来源地址;recvfrom 回写空的 AF_UNIX
+		// 地址(对端未命名)。
+		loaded, err := socket.ReadContext(ctx, buffer)
+		return loaded, net.Addr{Domain: net.AFUnix}, err
 	default:
 		return 0, net.Addr{}, errno.NotSock
 	}
@@ -398,6 +413,8 @@ const (
 	soReuseAddr = 2
 	soType      = 3
 	soError     = 4
+	soSndBuf    = 7
+	soRcvBuf    = 8
 	soKeepAlive = 9
 	tcpNoDelay  = 1
 )
@@ -423,6 +440,9 @@ func (p processSockets) GetOption(fd uint64, level, name uint64) (uint64, error)
 			}
 		case soError:
 			return 0, nil // 未排队错误(回环立即失败语义)
+		case soSndBuf, soRcvBuf:
+			// 发送/接收缓冲由 VM 内核固定管理,报告一个可用值。
+			return 64 << 10, nil
 		case soKeepAlive:
 			if socket, ok := handle.(*net.INETSocket); ok {
 				if socket.KeepAlive() {
@@ -450,17 +470,33 @@ func (p processSockets) SetOption(fd uint64, level, name, value uint64) error {
 		}
 		switch name {
 		case soReuseAddr:
-			if socket, ok := handle.(*net.INETSocket); ok {
+			switch socket := handle.(type) {
+			case *net.INETSocket:
 				socket.SetReuseAddr(value != 0)
 				return nil
+			case *net.UnixSocket:
+				// AF_UNIX 接受该选项;命名空间模型无 TIME_WAIT。
+				return nil
+			default:
+				return errno.NotSock
 			}
-			return errno.NotSock
 		case soKeepAlive:
-			if socket, ok := handle.(*net.INETSocket); ok {
+			switch socket := handle.(type) {
+			case *net.INETSocket:
 				socket.SetKeepAlive(value != 0)
 				return nil
+			case *net.UnixSocket:
+				return nil
+			default:
+				return errno.NotSock
 			}
-			return errno.NotSock
+		case soSndBuf, soRcvBuf:
+			switch handle.(type) {
+			case *net.INETSocket, *net.UnixSocket:
+				return nil
+			default:
+				return errno.NotSock
+			}
 		default:
 			return errno.NotSupported
 		}

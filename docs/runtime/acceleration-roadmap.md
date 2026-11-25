@@ -1,0 +1,74 @@
+# 加速路线与 3× 可行性
+
+状态:2026-11-25。测量环境为 AMD Ryzen 7 5700G，x86-64 宿主，
+客体为 linux/riscv64。当前执行后端为页级 x86-64 JIT，宿主代码缓存
+严格 W^X。
+
+## 当前差距
+
+`make perf-languages` 的分进程基线:
+
+| 运行时 | VM | 宿主 | 差距 |
+| --- | ---: | ---: | ---: |
+| Go 10M 整数循环 | 63 ms | 7 ms | 约 9× |
+| Python 1M 整数循环 | 7.2 s | 66 ms | 约 110× |
+| Node 22 jitless, 100k 循环 | 10.6 s | 28 ms | 约 380× |
+| Node 22 标准 V8 JIT, 100k 循环 | 8.6 s | 28 ms | 约 305× |
+
+标准 V8 JIT 比 jitless 略快，但 V8 生成的仍是 RISC-V 机器码，
+还要经过 RISC-V→x86 翻译，因此不能达到宿主原生 Node 的性能。
+
+## 为什么 Python 的 3× 不能靠页 JIT 达到
+
+CPython 3.12 的 1M 次整数循环在客体中约退休 1.5×10^9 条 RISC-V
+指令。若目标是宿主耗时的 3×，即约 200 ms，需要约 7.5 GIPS 的
+**退休客体指令吞吐**，高于 3.8 GHz 宿主时钟的单发射上限。即使
+把每条客体指令压到接近一个宿主周期，也不够；必须减少实际执行的
+客体指令数。
+
+因此 Python 3× 只有两类可行方向:
+
+1. 宿主原生 Python 后端。不是 RISC-V ELF 兼容执行，不能在现有
+   A02 架构内宣称等价。
+2. CPython 专用语义加速。不修改 CPython 源码，但识别
+   `_PyEval_EvalFrameDefault`/字节码热点，把多组客体指令折叠成宿主
+   辅助操作。工作量和维护风险最高。
+
+## 可实施的通用加速
+
+按收益排序:
+
+1. **Trace/Superblock JIT + 跨块寄存器分配**
+   - 8–12 个 guest GPR 常驻宿主寄存器。
+   - 融合比较+分支、地址计算+访存。
+   - 块直接链接，减少页入口和 step 计数。
+   - 预期整数负载 2–4×。
+
+2. **Guest 影地址空间**
+   - 用宿主虚拟地址承载 guest 页，消除大部分软件 TLB 查询。
+   - 对 Python/Node 内存密集代码预期 1.2–1.4×。
+
+3. **间接跳转 inline cache**
+   - 缓存 JALR/computed-goto 目标并直接链到目标块。
+   - 主要收益在 CPython 解释器循环，预期 1.1–1.3×。
+
+4. **持久化/JIT 代码缓存**
+   - 按 ELF build ID + 页摘要跨进程复用翻译块。
+   - 改善 Node/Python 反复启动，不改变单进程稳态上限。
+
+5. **标准 V8 JIT / 受控可执行页**
+   - 需要 `--allow-guest-rwx` 实验模式或更完整的 guest W^X 切换。
+   - 当前只带来约 1.2×，因为 V8 生成的 RISC-V 代码仍要二次翻译。
+
+6. **原生 libc/syscall 快路径**
+   - memcpy/memmove/strlen/futex/clock 等宿主实现。
+   - 对启动和 I/O 有效，对纯解释器循环收益有限。
+
+## 决策边界
+
+- 若坚持“真实 RISC-V ELF、用户态 Linux ABI”：短期内合理目标是
+  Go/C 接近 10×，Python/Node 仍显著高于 10×；3× 需要 CPython
+  专用语义 JIT。
+- 若 3× 是硬性产品要求：应增加显式的“宿主原生运行时”后端，
+  Python/Node/Go 直接运行宿主二进制，使用 namespace/seccomp/挂载
+  提供隔离；代价是放弃 RISC-V ELF 兼容承诺，必须新增 ADR。

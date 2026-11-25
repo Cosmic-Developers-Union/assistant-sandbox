@@ -6,6 +6,7 @@ import (
 	stdfs "io/fs"
 	"testing"
 
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/filesystem/memfs"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/filesystem/readonly"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 	vmfs "github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fs"
@@ -107,6 +108,43 @@ func TestFilesystemsHonorsCancel(t *testing.T) {
 	cancel()
 	if _, err := capacityOf(t, mounts).Filesystems(ctx); !errors.Is(err, context.Canceled) {
 		t.Fatalf("取消应上报: %v", err)
+	}
+}
+
+// aggregateFS 模拟 /dev:自身没有容量语义,但内部可写子目录有。
+type aggregateFS struct{ *memfs.FS }
+
+func (aggregateFS) Space(context.Context, string) (vmfs.Space, error) {
+	return vmfs.Space{}, errno.Wrap(errno.NotSupported, "聚合文件系统没有自身容量")
+}
+
+func (aggregateFS) Filesystems(ctx context.Context) ([]vmfs.Space, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return []vmfs.Space{{
+		Name: "/shm", Root: "/shm",
+		Bytes:  vmfs.Quota{Declared: true, Total: 4096, Used: 12, Free: 4084},
+		Inodes: vmfs.Quota{Declared: true, Total: 16, Used: 1, Free: 15},
+	}}, nil
+}
+
+// TestFilesystemsExpandsAggregateMounts 验证挂载点自身不报告容量时,
+// 仍展开其可写子目录(/dev/shm),而不是让整个存储快照失败。
+func TestFilesystemsExpandsAggregateMounts(t *testing.T) {
+	mounts := &Mounts{}
+	if err := mounts.Mount("/dev", aggregateFS{newFS(t)}); err != nil {
+		t.Fatal(err)
+	}
+	list, err := capacityOf(t, mounts).Filesystems(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].Name != "/dev/shm" || list[0].Root != "/dev/shm" {
+		t.Fatalf("聚合挂载应展开子目录: %+v", list)
+	}
+	if !list[0].Bytes.Declared || list[0].Bytes.Used != 12 {
+		t.Fatalf("子目录容量应保留: %+v", list[0])
 	}
 }
 

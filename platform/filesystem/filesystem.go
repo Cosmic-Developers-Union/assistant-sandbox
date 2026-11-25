@@ -63,6 +63,8 @@ type randomFile struct {
 	vmfs.File
 	readable bool
 	writable bool
+	append   bool
+	nonBlock bool
 }
 
 func wrapRandomFile(file vmfs.File, flags uint32) vmfs.File {
@@ -71,6 +73,8 @@ func wrapRandomFile(file vmfs.File, flags uint32) vmfs.File {
 		File:     file,
 		readable: access != vmfs.WriteOnly,
 		writable: access != vmfs.ReadOnly,
+		append:   flags&vmfs.Append != 0,
+		nonBlock: flags&vmfs.NonBlock != 0,
 	}
 }
 
@@ -83,6 +87,15 @@ func (f *randomFile) ReadAt(buffer []byte, offset int64) (int, error) {
 		return 0, errno.Seek
 	}
 	return reader.ReadAt(buffer, offset)
+}
+
+func (f *randomFile) Write(buffer []byte) (int, error) {
+	if f.append {
+		if _, err := f.Seek(0, io.SeekEnd); err != nil {
+			return 0, err
+		}
+	}
+	return f.File.Write(buffer)
 }
 
 func (f *randomFile) WriteAt(buffer []byte, offset int64) (int, error) {
@@ -113,19 +126,31 @@ func (f *randomFile) Sync(bool) error {
 }
 
 func (f *randomFile) StatusFlags() (uint32, error) {
-	flagger, ok := f.File.(interface{ StatusFlags() (uint32, error) })
-	if !ok {
-		return 0, errno.NotSupported
+	flags := f.accessMode()
+	if f.append {
+		flags |= 0o2000
 	}
-	return flagger.StatusFlags()
+	if f.nonBlock {
+		flags |= 0o4000
+	}
+	return flags, nil
 }
 
 func (f *randomFile) SetStatusFlags(flags uint32) error {
-	setter, ok := f.File.(interface{ SetStatusFlags(flags uint32) error })
-	if !ok {
-		return errno.NotSupported
+	f.append = flags&0o2000 != 0
+	f.nonBlock = flags&0o4000 != 0
+	return nil
+}
+
+func (f *randomFile) accessMode() uint32 {
+	switch {
+	case f.readable && f.writable:
+		return 2
+	case f.writable:
+		return 1
+	default:
+		return 0
 	}
-	return setter.SetStatusFlags(flags)
 }
 
 func (f *randomFile) Space(ctx context.Context) (vmfs.Space, error) {
