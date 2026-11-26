@@ -125,6 +125,7 @@ const (
 	SysFtruncate
 
 	SysFcntl
+	SysFlock
 
 	SysPipe
 	SysPipe2
@@ -388,6 +389,8 @@ func (s Syscall) String() string {
 		return "ftruncate"
 	case SysFcntl:
 		return "fcntl"
+	case SysFlock:
+		return "flock"
 	case SysFchmod:
 		return "fchmod"
 	case SysFchmodat:

@@ -62,6 +62,8 @@ type Budget interface {
 type Table struct {
 	mu      sync.Mutex
 	entries map[uint64]map[uint32]*entry
+	flocks  map[*reference]uint32
+	flockCh chan struct{}
 
 	// timeSource 是 timerfd(L10)的时钟端口:内核装配;未装配时
 	// timerfd 创建报 ENOSYS。
@@ -71,7 +73,13 @@ type Table struct {
 	budget Budget
 }
 
-func New() *Table { return &Table{entries: map[uint64]map[uint32]*entry{}} }
+func New() *Table {
+	return &Table{
+		entries: map[uint64]map[uint32]*entry{},
+		flocks:  map[*reference]uint32{},
+		flockCh: make(chan struct{}),
+	}
+}
 
 // SetBudget 装配共享描述符预算(内核构造时调用一次)。
 func (t *Table) SetBudget(budget Budget) {
@@ -185,7 +193,7 @@ func (t *Table) Detach(pid uint64) error {
 	}
 	var closeErr error
 	for _, e := range table {
-		closeErr = errors.Join(closeErr, e.ref.release())
+		closeErr = errors.Join(closeErr, t.releaseEntryLocked(e))
 	}
 	t.releaseLocked(pid, len(table))
 	delete(t.entries, pid)
@@ -226,7 +234,7 @@ func (t *Table) Dup(ctx context.Context, pid uint64, from, to uint32) error {
 		return nil
 	}
 	if target := table[to]; target != nil {
-		closeErr := target.ref.release()
+		closeErr := t.releaseEntryLocked(target)
 		delete(table, to)
 		t.releaseLocked(pid, 1)
 		if err := t.chargeLocked(pid, 1); err != nil {
@@ -696,7 +704,7 @@ func (t *Table) Close(ctx context.Context, pid uint64, id uint32) error {
 	}
 	delete(table, id)
 	t.releaseLocked(pid, 1)
-	return e.ref.release()
+	return t.releaseEntryLocked(e)
 }
 
 func (t *Table) Cloexec(pid uint64, id uint32) (bool, error) {
@@ -742,7 +750,7 @@ func (t *Table) CloseCloexec(ctx context.Context, pid uint64) ([]uint32, error) 
 	for _, id := range closed {
 		e := table[id]
 		delete(table, id)
-		closeErr = errors.Join(closeErr, e.ref.release())
+		closeErr = errors.Join(closeErr, t.releaseEntryLocked(e))
 	}
 	return closed, closeErr
 }

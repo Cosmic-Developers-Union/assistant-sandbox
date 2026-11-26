@@ -33,7 +33,7 @@ syslog、pivot_root、perf_event_open、pidfd_open、pidfd_getfd、
 close_range、fadvise64、fallocate、userfaultfd、accept4)固定登记为
 ENOSYS 清单,归 L/I/H 组后续任务。
 
-### 已交付语义(103 项)
+### 已交付语义(104 项)
 
 | 调用 | 语义来源(任务/测试) |
 | --- | --- |
@@ -60,6 +60,7 @@ ENOSYS 清单,归 L/I/H 组后续任务。
 | chdir / fchdir | I01 工作目录;Q12 venv、`TestChdir*` |
 | faccessat | G 组;`TestFaccessat*` |
 | fcntl / dup / dup3 | F_DUPFD、F_DUPFD_CLOEXEC、F_GETFL、F_SETFL;I05;`TestDupAndFcntlFlags*` |
+| flock | 打开文件描述级共享/独占锁,LOCK_NB 与 LOCK_UN;I14;`TestFlock*` |
 | ioctl | 终端属性/窗口大小与 PTY 控制子集(TCGETS/TCSETS/TIOCGWINSZ/TIOCSWINSZ/TIOCGPTN/TIOCSPTLCK,P08);`TestTerminalIoctl*`、`TestGuestPTYMasterSlave` |
 | pipe2 | I15;EOF/EPIPE/SIGPIPE/PIPE_BUF 原子写/O_NONBLOCK;vm/pipe、`TestPipeProbeSemanticsMatchLinux`、`TestPipeNonBlockingModeViaFcntl` |
 | poll / ppoll | L05;`TestPoll*`、`TestPpoll*` |
@@ -116,6 +117,9 @@ ENOSYS 清单,归 L/I/H 组后续任务。
   mprotect 含 W^X 拒绝(E06)、brk(E07)、mremap/madvise 子集(E11/E12)、
   fork 克隆(E10)。**文件映射 ENOTSUP**(E08/E09);栈保护页(E13)未配置。
 - 挂载:同 VM 统一挂载表,只读层与写时复制(I16);跨挂载 rename EXDEV。
+- namespace/cgroup 视图:`/proc/<pid>/ns/{cgroup,ipc,mnt,net,pid,pid_for_children,time,user,uts}`
+  提供每 VM 的只读身份,`/proc/<pid>/cgroup` 与 `/sys/fs/cgroup/*`
+  提供 cgroup v2 只读视图;`unshare`/`setns` 切换不在本版配置。
 - 持久化:memfs 为内存介质;崩溃恢复(I17)与文件锁(I14)不在本版配置。
 
 ## 4. 进程、信号与时间

@@ -35,6 +35,11 @@ type Entry struct {
 	Maps string
 
 	OpenFDs []uint32
+
+	// Namespaces 是 /proc/<pid>/ns 的只读视图;键为 namespace 名称。
+	Namespaces map[string]string
+	// Cgroup 是 /proc/<pid>/cgroup 的内容(cgroup v2 格式)。
+	Cgroup string
 }
 
 type Provider interface {
@@ -70,6 +75,8 @@ const (
 	cwdLink     = "cwd"
 	mapsName    = "maps"
 	statName    = "stat"
+	cgroupName  = "cgroup"
+	nsDir       = "ns"
 )
 
 func isProcPath(path string) bool { return true }
@@ -223,6 +230,15 @@ func (f *FS) stat(ctx context.Context, path string, follow bool) (stdfs.FileInfo
 		return info{name: statName, mode: 0o444, size: int64(len(content))}, nil
 	case name == mapsName && len(rest) == 1:
 		return info{name: mapsName, mode: 0o444, size: int64(len(entry.Maps))}, nil
+	case name == cgroupName && len(rest) == 1:
+		return info{name: cgroupName, mode: 0o444, size: int64(len(entry.Cgroup))}, nil
+	case name == nsDir && len(rest) == 1:
+		return info{name: nsDir, mode: stdfs.ModeDir | 0o555}, nil
+	case name == nsDir && len(rest) == 2:
+		if _, ok := entry.Namespaces[rest[1]]; !ok {
+			return nil, errno.Wrap(errno.NotFound, "namespace 不存在: "+rest[1])
+		}
+		return info{name: rest[1], mode: stdfs.ModeSymlink | 0o777}, nil
 	case name == exeLink && len(rest) == 1:
 		return info{name: exeLink, mode: stdfs.ModeSymlink | 0o777}, nil
 	case name == cwdLink && len(rest) == 1:
@@ -275,6 +291,8 @@ func (f *FS) ReadDir(ctx context.Context, path string) ([]stdfs.DirEntry, error)
 			dirEntry{name: statusName, mode: 0o444},
 			dirEntry{name: statName, mode: 0o444},
 			dirEntry{name: mapsName, mode: 0o444},
+			dirEntry{name: cgroupName, mode: 0o444},
+			dirEntry{name: nsDir, mode: stdfs.ModeDir | 0o555},
 			dirEntry{name: exeLink, mode: stdfs.ModeSymlink | 0o777},
 			dirEntry{name: cwdLink, mode: stdfs.ModeSymlink | 0o777},
 		}
@@ -284,6 +302,13 @@ func (f *FS) ReadDir(ctx context.Context, path string) ([]stdfs.DirEntry, error)
 		out := make([]stdfs.DirEntry, 0, len(entry.OpenFDs))
 		for _, descriptor := range entry.OpenFDs {
 			out = append(out, dirEntry{name: itoa(uint64(descriptor)), mode: stdfs.ModeSymlink | 0o777})
+		}
+		sortEntries(out)
+		return out, nil
+	case len(rest) == 1 && rest[0] == nsDir:
+		out := make([]stdfs.DirEntry, 0, len(entry.Namespaces))
+		for name := range entry.Namespaces {
+			out = append(out, dirEntry{name: name, mode: stdfs.ModeSymlink | 0o777})
 		}
 		sortEntries(out)
 		return out, nil
@@ -314,6 +339,13 @@ func (f *FS) Readlink(ctx context.Context, path string) (string, error) {
 		}
 
 		return "fd:" + rest[1], nil
+	}
+	if len(rest) == 2 && rest[0] == nsDir {
+		target, ok := entry.Namespaces[rest[1]]
+		if !ok {
+			return "", errno.Wrap(errno.NotFound, "namespace 不存在: "+rest[1])
+		}
+		return target, nil
 	}
 	if len(rest) == 1 && rest[0] == exeLink {
 		if entry.Exe != "" {
@@ -399,6 +431,13 @@ func (f *FS) Open(ctx context.Context, path string, flags uint32, mode stdfs.Fil
 			return nil, errno.Wrap(errno.NotFound, "没有该条目: "+path)
 		}
 		return newFile(mapsName, []byte(entry.Maps)), nil
+	case cgroupName:
+		if len(rest) != 1 {
+			return nil, errno.Wrap(errno.NotFound, "没有该条目: "+path)
+		}
+		return newFile(cgroupName, []byte(entry.Cgroup)), nil
+	case nsDir:
+		return nil, errno.Wrap(errno.IsDirectory, "namespace 目录: "+path)
 	case exeLink, cwdLink:
 		return nil, errno.Wrap(errno.IsDirectory, "符号链接不能直接打开: "+path)
 	default:

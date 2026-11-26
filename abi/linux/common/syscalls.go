@@ -588,6 +588,8 @@ func (s Syscalls) dispatch(ctx context.Context, call Call) Reply {
 		return s.fstatfs(ctx, call)
 	case SysFcntl:
 		return s.fcntl(ctx, call)
+	case SysFlock:
+		return s.flock(ctx, call)
 	case SysFchmod:
 		return s.fchmod(ctx, call)
 	case SysFchmodat:
@@ -4402,6 +4404,24 @@ func (s Syscalls) fcntl(ctx context.Context, call Call) Reply {
 		return Reply{Errno: errnoOf(err)}
 	}
 	return Reply{Value: value}
+}
+
+// flock(2):LOCK_SH/LOCK_EX 以打开文件描述为锁对象,LOCK_NB 非阻塞,
+// LOCK_UN 释放。锁表由描述符端口提供;未装配时保持 ENOSYS。
+func (s Syscalls) flock(ctx context.Context, call Call) Reply {
+	if s.Descriptors == nil {
+		return Reply{Errno: errno.NotImplemented}
+	}
+	flocker, ok := s.Descriptors.(interface {
+		Flock(context.Context, uint64, uint64) error
+	})
+	if !ok {
+		return Reply{Errno: errno.NotSupported}
+	}
+	if err := flocker.Flock(ctx, call.Args[0], call.Args[1]); err != nil {
+		return Reply{Errno: errnoOf(err)}
+	}
+	return Reply{}
 }
 
 // fcntl 文件锁命令(F_GETLK=5/F_SETLK=6/F_SETLKW=7)与锁类型。

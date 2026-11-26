@@ -239,6 +239,14 @@ jobs:
           go-version-file: go.mod
       - name: Built-in S4 development contract
         run: make compat-s4
+      - name: External Alpine init, namespace, cgroup and repository
+        shell: bash
+        run: |
+          image="$RUNNER_TEMP/alpine-minirootfs-3.22.8-riscv64.tar.gz"
+          curl -fsSL https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/riscv64/alpine-minirootfs-3.22.8-riscv64.tar.gz -o "$image"
+          echo "6741018065885b1dba66fb122e0ef0a8c73ff5ac6f24c351fb46398973f88b9b  $image" | sha256sum -c -
+          COMPAT_S4_IMAGE="$image" COMPAT_S4_REPO=testdata/s4repo \
+            go test ./internal/guest -run '^TestCompatibilityS4DevelopmentImageExternal$' -count=1 -v -timeout 15m
       - name: Sandbox in sandbox smoke test
         run: make sandbox-in-sandbox
 

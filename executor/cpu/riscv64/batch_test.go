@@ -580,6 +580,89 @@ func TestStepBatchJITFloatingPoint(t *testing.T) {
 	compareMachineState(t, batchCore, stepCore)
 }
 
+// TestStepBatchJITDoubleFloatingPoint 覆盖 C++ 批量路径的双精度装入、
+// 算术、比较与存储。Python/Node 热路径大量使用双精度运算。
+func TestStepBatchJITDoubleFloatingPoint(t *testing.T) {
+	if !hotBatchSupported {
+		t.Skip("当前构建未启用 C++ 批量执行")
+	}
+	ctx := context.Background()
+	table := memory.New(0)
+	if err := table.Map(ctx, memory.Region{
+		Start: batchCodeBase, End: batchCodeBase + memory.PageSize,
+		Prot: memory.ProtRead | memory.ProtExec, Name: "code",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := table.Map(ctx, memory.Region{
+		Start: batchDataBase, End: batchDataBase + memory.PageSize,
+		Prot: memory.ProtRead | memory.ProtWrite, Name: "data",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	program := make([]byte, memory.PageSize)
+	binary.LittleEndian.PutUint32(program[0:], encodeFPLoad(0x3, 0, 20, 0))
+	binary.LittleEndian.PutUint32(program[4:], encodeFPLoad(0x3, 1, 20, 8))
+	binary.LittleEndian.PutUint32(program[8:], encodeFP3(0x01, 0, 2, 0, 1))
+	binary.LittleEndian.PutUint32(program[12:], encodeFP3(0x09, 0, 3, 2, 0))
+	binary.LittleEndian.PutUint32(program[16:], encodeFP3(0x51, 0, 6, 2, 1))
+	binary.LittleEndian.PutUint32(program[20:], encodeFPStore(0x3, 3, 20, 16))
+	if err := table.Load(ctx, batchCodeBase, program); err != nil {
+		t.Fatal(err)
+	}
+	data := make([]byte, memory.PageSize)
+	binary.LittleEndian.PutUint64(data[0:], math.Float64bits(1.5))
+	binary.LittleEndian.PutUint64(data[8:], math.Float64bits(2.25))
+	if err := table.Load(ctx, batchDataBase, data); err != nil {
+		t.Fatal(err)
+	}
+	clone, err := table.Clone()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := cpu.Machine{
+		PC:        batchCodeBase,
+		Registers: make([]uint64, numRegs),
+		Floats:    make([]uint64, numFPRegs),
+	}
+	state.Registers[20] = batchDataBase
+	batchCore, err := New(cpu.Config{Memory: table, Entry: batchCodeBase})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stepCore, err := New(cpu.Config{Memory: clone, Entry: batchCodeBase})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := batchCore.Reset(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	if err := stepCore.Reset(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	steps, _, err := batchCore.StepBatch(ctx, 6)
+	if err != nil || steps != 6 {
+		t.Fatalf("双精度批量执行: steps=%d err=%v", steps, err)
+	}
+	for range steps {
+		if _, err := stepCore.Step(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	compareMachineState(t, batchCore, stepCore)
+	batchData, err := readPage(ctx, table, batchDataBase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stepData, err := readPage(ctx, clone, batchDataBase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(batchData) != string(stepData) {
+		t.Fatal("双精度批量与单步写入的内存不同")
+	}
+}
+
 func compareMachineState(t *testing.T, batchCore, stepCore *Core) {
 	t.Helper()
 	ctx := context.Background()

@@ -49,9 +49,6 @@ static bool fp_execute(uint64_t *registers, uint64_t *floats, uint64_t *fcsr,
 	const bool single = ((encoded >> 23) & 1) != 0;
 	const uint32_t rm = static_cast<uint32_t>((encoded >> 24) & 0x7);
 	const uint32_t selector = static_cast<uint32_t>((encoded >> 27) & 0x3);
-	if (!single) {
-		return false;
-	}
 	if (!fp_rounding_supported(rm, fcsr)) {
 		return false;
 	}

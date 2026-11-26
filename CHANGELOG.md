@@ -7,6 +7,8 @@
 - 内置 S4 开发合同门禁 `make compat-s4`。
 - 初步嵌套验证 `make sandbox-in-sandbox`：外层 VM 中运行 riscv64 CLI，
   再启动内层 BusyBox sh。
+- S4 外部 Alpine 镜像验证 init、`/proc/self/ns`、`/proc/self/cgroup`
+  与本地 APK 仓库；内置合同使用固定的 APK 仓库夹具。
 
 ### 移除
 
@@ -20,6 +22,13 @@
 - 批量 FP 比较把 FLE/FLT/FEQ 的 funct3 映射错位的问题。
 - `/dev/null` 等静态设备缺少 `F_GETFL`/`F_SETFL` 状态标志的问题。
 - CLI 内存值解析改用整数有理数，避免嵌套运行时误判合法值。
+- 实现 `flock(2)`，支持打开文件描述级共享/独占锁，打通 apk 数据库锁。
+
+### 优化
+
+- C++ 批量执行路径启用双精度浮点算术、比较与转换。本机
+  `make perf-languages`：Python 7.13 s、Node jitless 10.19 s、
+  标准 V8 7.67 s、Go 61 ms。
 
 ## [0.1.0] - 2026-11-25
 

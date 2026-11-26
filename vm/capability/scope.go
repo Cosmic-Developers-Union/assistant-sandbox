@@ -166,6 +166,17 @@ func (s scopedFDs) Close(ctx context.Context, _ uint64, id uint32) error {
 	return s.base.Close(ctx, s.pid, id)
 }
 
+// Flock 实现 flock(2) 端口:锁归属作用域绑定的进程。
+func (s scopedFDs) Flock(ctx context.Context, _ uint64, id uint32, operation uint64) error {
+	flocker, ok := s.base.(interface {
+		Flock(context.Context, uint64, uint32, uint64) error
+	})
+	if !ok {
+		return errno.Wrap(errno.NotSupported, "描述符表不支持 flock")
+	}
+	return flocker.Flock(ctx, s.pid, id, operation)
+}
+
 func (s scopedFDs) Terminal(ctx context.Context, _ uint64, id uint32) (fd.Terminal, error) {
 	return s.base.Terminal(ctx, s.pid, id)
 }
@@ -279,6 +290,10 @@ type scopedInstaller struct {
 	scopedFDs
 	installer fd.Installer
 }
+
+var _ interface {
+	Flock(context.Context, uint64, uint32, uint64) error
+} = scopedInstaller{}
 
 func (s scopedInstaller) InstallNext(_ uint64, handle fd.Stream) (uint32, error) {
 	return s.installer.InstallNext(s.pid, handle)

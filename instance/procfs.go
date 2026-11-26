@@ -111,10 +111,26 @@ func (p kernelProcfs) Processes(ctx context.Context) ([]procfs.Entry, error) {
 			PGID: item.PGID, SID: item.SID,
 			ThreadCount: threadCounts[item.TGID],
 			Exe:         item.Program, Maps: p.maps(ctx, item.ID),
-			OpenFDs: descriptors,
+			OpenFDs:    descriptors,
+			Namespaces: namespaceView(),
+			Cgroup:     "0::/assistant-sandbox\n",
 		})
 	}
 	return out, nil
+}
+
+func namespaceView() map[string]string {
+	return map[string]string{
+		"cgroup":           "cgroup:[4026531835]",
+		"ipc":              "ipc:[4026531839]",
+		"mnt":              "mnt:[4026531840]",
+		"net":              "net:[4026531992]",
+		"pid":              "pid:[4026531836]",
+		"pid_for_children": "pid:[4026531836]",
+		"time":             "time:[4026531834]",
+		"user":             "user:[4026531837]",
+		"uts":              "uts:[4026531838]",
+	}
 }
 
 func (p kernelProcfs) Self(ctx context.Context) (proc.PID, error) {

@@ -41,10 +41,10 @@ JIT 相对 Go 单步约快 38–43 倍。页级 JIT 的执行上限由宿主代�
 | --- | ---: | ---: | --- |
 | C 100M 次整数循环(TCC `-O0`) | 1.31–1.71 s | 0.06–0.07 s | 含约 0.57 s CLI 启动 |
 | Python 3.12 启动 | 1.53–1.61 s | 约 0.009 s | 含 CLI/开发根初始化 |
-| Python 1M 次整数循环 | 7.71 s | 0.063 s | 2026-11-25 `make perf-languages` |
-| Node.js 22 jitless, 100k 次循环 | 11.17 s | 0.035 s | 主要成本是 Node 启动 |
-| Node.js 22 标准 V8 JIT, 100k 次循环 | 9.42 s | 0.032 s | 需 `--allow-guest-rwx` 实验开关 |
-| Go 10M 次整数循环 | 0.060–0.061 s | 约 0.007 s | 已启动 VM 内的 Go runtime |
+| Python 1M 次整数循环 | 7.13 s | 0.056 s | 2026-11-25 `make perf-languages`，双精度批量路径 |
+| Node.js 22 jitless, 100k 次循环 | 10.19 s | 0.026 s | 双精度批量路径后 |
+| Node.js 22 标准 V8 JIT, 100k 次循环 | 7.67 s | 0.025 s | 需 `--allow-guest-rwx` 实验开关 |
+| Go 10M 次整数循环 | 0.061 s | 约 0.007 s | 已启动 VM 内的 Go runtime |
 | CPython `test_os` | 171.7 s | n/a | 完整上游模块 |
 | S3 开发工作流 | 88.9 s | n/a | Bash/Python/Node/TCC/git/apk |
 

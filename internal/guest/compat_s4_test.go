@@ -25,9 +25,12 @@ func TestCompatibilityS4DevelopmentWorkflow(t *testing.T) {
 	script := `set -eu
 test -x /sbin/init
 test -r /proc/self/status
+test -r /proc/self/cgroup
 test -r /sys/kernel/osrelease
 test -r /sys/devices/system/cpu/online
 test -r /sys/class/net/lo/address
+test -r /sys/fs/cgroup/cgroup.controllers
+test -L /proc/self/ns/mnt
 command -v apk >/dev/null
 command -v git >/dev/null
 command -v cc >/dev/null
@@ -49,6 +52,19 @@ printf 's4-ok\n'`
 		}, 300*time.Second)
 	if code != 0 || output != "s4-ok\n" {
 		t.Fatalf("S4 exit=%d stdout=%q stderr=%q", code, output, diagnostic)
+	}
+	copyGuestTree(t, machine, "testdata/s4repo", "/work/s4repo/riscv64")
+	repoScript := `/sbin/apk add --simulate --allow-untrusted --logfile=no \
+		--repository /work/s4repo --repositories-file /dev/null \
+		--no-scripts --force-non-repository git-init-template`
+	output, diagnostic, code = runGuestProgram(t, connection,
+		"/bin/bash", []string{"--noprofile", "--norc", "-c", repoScript},
+		map[string]string{
+			"HOME": "/work", "PATH": "/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+			"LANG": "C.UTF-8",
+		}, 300*time.Second)
+	if code != 0 || !strings.Contains(output, "OK:") {
+		t.Fatalf("S4 包仓库 exit=%d stdout=%q stderr=%q", code, output, diagnostic)
 	}
 }
 

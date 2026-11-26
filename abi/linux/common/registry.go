@@ -25,6 +25,7 @@ var handled = map[Syscall]bool{
 	SysExitGroup:        true,
 	SysFaccessat:        true,
 	SysFcntl:            true,
+	SysFlock:            true,
 	SysFdatasync:        true,
 	SysFstat:            true,
 	SysFstatfs:          true,

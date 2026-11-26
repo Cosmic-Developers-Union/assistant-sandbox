@@ -9,7 +9,7 @@
 | S1 | POSIX、coreutils、管道、信号、PTY | 通过已覆盖子集 |
 | S2 | CPython、Node.js、标准库、子进程 | 通过已覆盖子集 |
 | S3 | 同一 VM 的 shell、Python、Node、C 编译链和子进程开发流 | 通过，CLI `--tools=dev` 默认提供 |
-| S4 | 发行版镜像、`apk`、`git`、`cc`、`/proc`、`/sys`、init | 内置 S4 合同通过；外部发行版镜像仍可单独提供 |
+| S4 | 发行版镜像、`apk`、`git`、`cc`、`/proc`、`/sys`、init | 内置合同通过；Alpine 外部镜像的 init、namespace/cgroup 与本地包仓库通过 |
 
 ## S3
 
@@ -120,7 +120,9 @@ make compat-s4
 ```
 
 该门禁使用内置开发根验证 `/sbin/init`、`apk`、`git`、`cc`、Python、
-Node、`/proc/self/status`、`/sys/kernel`、CPU 拓扑与 `lo` 网络属性。
+Node、`/proc/self/status`、`/proc/self/cgroup`、`/proc/self/ns/*`、
+`/sys/kernel`、`/sys/fs/cgroup`、CPU 拓扑与 `lo` 网络属性，并用固定
+APK 仓库索引执行 `apk add --simulate`。
 随后用以下命令验证外层 VM 内可以再启动一台 sandbox：
 
 ```sh
@@ -135,22 +137,25 @@ make sandbox-in-sandbox
 
 ```sh
 COMPAT_S4_IMAGE=/path/to/development-rootfs.tar.gz \
+COMPAT_S4_REPO=/path/to/apk-repository \
 make compat-s4
 ```
 
-S4 门禁检查：
+外部镜像门禁检查：
 
 - `/sbin/init`
+- `/etc/inittab` 与可用 `/bin/sh`
 - `apk`
-- `git`
-- `cc`
 - `/proc/self/status`
-- `/sys`
+- `/proc/self/cgroup` 与 `/proc/self/ns/*`
+- `/sys/kernel` 与 `/sys/fs/cgroup`
+- 可选本地 APK 仓库的 `apk add --simulate`
 
-默认 CLI 已提供 S4 合同中的 `git`、`apk`、`cc`、Python、Node、
-`/proc/self/status`、`/sys/kernel` 基础视图与 BusyBox `/sbin/init`
-applet。发行版 init 启动流程、完整 sysfs/设备枚举、namespace/cgroup
-与外部包仓库仍属于后续扩展，不阻塞内置开发合同。
+CI 使用固定 Alpine minirootfs 3.22.8 与仓库测试夹具验证上述合同。
+仓库夹具只验证索引读取、包选择与依赖求解，不执行安装脚本或写盘。
+这些 namespace/cgroup 是每 VM 的只读身份视图；`unshare`/`setns` 等
+命名空间切换仍未接入。完整 sysfs/设备枚举与外部包仓库的真实安装
+脚本仍属于后续扩展。
 
 ## 参考与差分
 

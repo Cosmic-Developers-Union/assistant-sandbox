@@ -63,6 +63,23 @@ func (p ProcessDescriptors) Close(ctx context.Context, descriptor uint64) error 
 	return p.Table.Close(ctx, p.PID, uint32(descriptor))
 }
 
+// Flock 转发 flock(2) 的打开文件描述锁。
+func (p ProcessDescriptors) Flock(ctx context.Context, descriptor, operation uint64) error {
+	if p.Table == nil {
+		return errno.Wrap(errno.NotImplemented, "描述符端口未装配")
+	}
+	if descriptor > math.MaxUint32 {
+		return errno.Wrap(errno.BadHandle, "描述符编号超出表示范围")
+	}
+	flocker, ok := p.Table.(interface {
+		Flock(context.Context, uint64, uint32, uint64) error
+	})
+	if !ok {
+		return errno.Wrap(errno.NotSupported, "描述符端口不支持 flock")
+	}
+	return flocker.Flock(ctx, p.PID, uint32(descriptor), operation)
+}
+
 // Terminal 返回描述符的终端视图(P08);非终端返回 TTY=false。
 func (p ProcessDescriptors) Terminal(ctx context.Context, descriptor uint64) (fd.Terminal, error) {
 	if p.Table == nil {

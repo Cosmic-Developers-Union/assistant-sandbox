@@ -39,6 +39,18 @@ func buildSysfs(ctx context.Context, machine *VM) (vmfs.System, error) {
 		{"/sys/class/net/lo/address", "00:00:00:00:00:00\n"},
 		{"/sys/class/net/lo/type", "772\n"},
 		{"/sys/class/net/lo/operstate", "unknown\n"},
+		{"/sys/fs/cgroup/cgroup.controllers", "cpu memory pids io\n"},
+		{"/sys/fs/cgroup/cgroup.subtree_control", "cpu memory pids\n"},
+		{"/sys/fs/cgroup/cgroup.type", "domain\n"},
+		{"/sys/fs/cgroup/cgroup.events", "populated 1\nfrozen 0\n"},
+		{"/sys/fs/cgroup/cgroup.freeze", "0\n"},
+		{"/sys/fs/cgroup/cgroup.procs", "\n"},
+		{"/sys/fs/cgroup/cpu.max", "max 100000\n"},
+		{"/sys/fs/cgroup/cpu.stat", "usage_usec 0\nuser_usec 0\nsystem_usec 0\n"},
+		{"/sys/fs/cgroup/memory.current", "0\n"},
+		{"/sys/fs/cgroup/memory.max", fmt.Sprintf("%d\n", machine.memoryBytes)},
+		{"/sys/fs/cgroup/pids.current", "0\n"},
+		{"/sys/fs/cgroup/pids.max", "max\n"},
 	}
 	cpus := cpuRange(machine.cpus)
 	files = append(files,
