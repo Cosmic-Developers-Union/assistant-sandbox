@@ -1,0 +1,11 @@
+进入交互会话；输入命令后回车，Ctrl-D 退出
+sandbox:/work# node
+Warning: disabling flag --expose_wasm due to conflicting flags
+Welcome to Node.js v22.23.5.
+Type ".help" for more information.
+[1G[0J> [3Gconsole.log(process.version, process.arch, 6 * 7)
+v22.23.5 riscv64 [33m42[39m
+[90mundefined[39m
+[1G[0J> [3G.exit
+sandbox:/work# exit
+exit
