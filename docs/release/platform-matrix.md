@@ -36,3 +36,13 @@ Release 先创建 draft，使用 `gh release download` 下载到空目录，然�
 3. 在特权容器中以 `PATH=/nonexistent` 运行下载的默认 CLI，通过真实
    PTY 的 X11 验收，不传后端参数、不依赖宿主 Node/Python；
 4. 全部通过后才取消 draft。
+
+## 验收记录
+
+2026-11-27，提交 `5163cd5089d7948d0bb890d66f03a6ddfa7719ef` 的
+[Test 工作流](https://github.com/Cosmic-Developers-Union/assistant-sandbox/actions/runs/46073818033)
+全部通过：`native-amd64` 在固定特权容器内完成隔离、资源、网络、PTY、
+语言扩展、五轮 REPL/六场景性能、五平台候选产物和空目录默认 CLI 复验；
+amd64 与 arm64 的 RISC-V integration 和 differential 同时通过。原始
+`native-x12-performance.json`、逐轮 PTY、超阈值结果、SBOM 与 SHA256SUMS
+保存在该运行的 `native-amd64-evidence` 工件中。

@@ -1,7 +1,7 @@
 # 版本化能力报告(U11)
 
-报告版本:2026-11-22,对应 TODO 当前 HEAD。所有“通过”项均在真实
-RISC-V Linux 客体执行器中运行,不以宿主 Python/Node/gcc 代替。
+报告版本:2026-11-27,对应 TODO 当前 HEAD。所有“通过”项均在真实
+Linux 客体执行路径中运行,不以宿主 Python/Node/gcc 代替客体运行时。
 
 | 能力域 | 状态 | 实现与验收证据 |
 | --- | --- | --- |
@@ -11,7 +11,8 @@ RISC-V Linux 客体执行器中运行,不以宿主 Python/Node/gcc 代替。
 | Node.js | 通过 | Node 22.23.5 jitless、模块/事件循环/worker/子进程/HTTP/TLS、N-API、npm 离线与受控 registry、上游分片、node-gyp;证据见 Q15–Q30、U06–U07 |
 | JIT / 可执行页 | 阶段一通过 | A05 当前选择 jitless;已验证语言执行、Wasm 不可用和映射无 RWX。受控 JIT 不声明为已启用,按 A05 的后续阶段门禁保留。 |
 | 网络 | 通过 | 受策略限制的 TCP/UDP、DNS、TLS;受控 pip/npm 下载与错误证书拒绝;证据见 M09–M11、Q13、Q22、Q26、Q31 |
-| 发布与集成 | 通过 | U12 生成本地 CLI/客体摘要与 SBOM;U13 使用发布产物执行 Bash/Python/Node、断开重连与退出;R07 assistant 已发布模块和缓存镜像集成测试通过。 |
+| 发布与集成 | 通过 | U12 生成本地 CLI/客体摘要与 SBOM;U13 使用发布产物执行 Bash/Python/Node、断开重连与退出;R07 assistant 已发布模块和缓存镜像集成测试通过。X13 增加五平台下载摘要/架构/SBOM 与无宿主解释器 PATH 的默认 CLI PTY 复验。 |
+| linux/amd64 原生后端 | 通过 | X01–X13:user/mount/PID/net/IPC/UTS/cgroup namespace、pivot_root、seccomp、授权挂载、真实 PTY/model 契约、固定 x86-64 Node/Python 扩展、自动 CLI 选择、五轮 REPL 与六场景 3× 性能门禁;证据见 `docs/adr/native-amd64-backend.md` 与 `docs/release/platform-matrix.md` |
 
 ## 可复现命令
 
@@ -22,4 +23,5 @@ go test ./internal/metadata/ -count=1
 ```
 
 能力报告不把 JIT 阶段一伪装成完整 V8 JIT;版本、摘要和许可信息的发布
-清单见 `docs/release/manifest.md`。
+清单见 `docs/release/manifest.md`。T12 的 CPU 执行核心完整 C++ 迁移按
+2026-11-26 的显式决策延后，不在本报告中声明为已完成。

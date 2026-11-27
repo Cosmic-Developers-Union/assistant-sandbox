@@ -16,12 +16,12 @@
 
 | 阶段 | 任务范围 | 发布门禁(CI/命令) | 状态 |
 | --- | --- | --- | --- |
-| 0:范围与基线 | A、B | `go test ./internal/metadata/`(勾选纪律)+ `make toolchain` + 构建可重复性测试;B08 拆分后逐任务独立门禁 | A 组完成;B05/B07–B10 待做 |
-| 1:真实程序执行基础 | C、D、E、F、G、N 基础项 | ISA 回归门禁(`go test ./executor/cpu/...`)+ `go test ./loader/... ./vm/memory/` + 差分探针对拍(B08 后为独立 differential 任务) | 进行中 |
-| 2:Linux 执行环境 | H–O;P 控制台基础 | `go test ./vm/... ./abi/... ./filesystem/...` + 差分矩阵扩充 | 进行中 |
-| 3:真实语言运行时 | Q + 探针 | Q02 缺口追踪产出物 + 客体运行时测试(A04 固定的版本与摘要) | 未开始 |
-| 4:产品入口与可用性 | P、R、T | `model` 契约套件(P15 接真实工厂)+ 基准(T08–T10) | 契约套件已迁入(A06/A07) |
-| 5:发布 | U | U01–U14 全部勾选 + SBOM/许可清单(B10) | 未开始 |
+| 0:范围与基线 | A、B | `go test ./internal/metadata/`(勾选纪律)+ `make toolchain` + 构建可重复性测试;B08 拆分后逐任务独立门禁 | 完成 |
+| 1:真实程序执行基础 | C、D、E、F、G、N 基础项 | ISA 回归门禁(`go test ./executor/cpu/...`)+ `go test ./loader/... ./vm/memory/` + 差分探针对拍(B08 后为独立 differential 任务) | 完成 |
+| 2:Linux 执行环境 | H–O;P 控制台基础 | `go test ./vm/... ./abi/... ./filesystem/...` + 差分矩阵扩充 | 完成 |
+| 3:真实语言运行时 | Q + 探针 | Q02 缺口追踪产出物 + 客体运行时测试(A04 固定的版本与摘要) | 完成 |
+| 4:产品入口与可用性 | P、R、T、X | `model` 契约套件(P15 接真实工厂)+ 基准(T08–T10)+ linux/amd64 原生隔离/PTY/语言/性能门禁(X01–X13) | X01–X13 完成;T12 按 2026-11-26 决策延后 |
+| 5:发布 | U | U01–U14 全部勾选 + SBOM/许可清单(B10)+ 五平台下载复验(X13) | 完成 |
 
 ## 未解决决策
 
@@ -52,13 +52,14 @@ ENOTSUP 表(33 项)、声明语义表(6 项)、ENOSYS 清单(34 项)与
 | 进程、执行与回收 | H01–H14 | `vm/kernel_integration_test`、真实 ELF 测试 |
 | 文件系统与描述符 | I01–I20 | `filesystem/...` 语义矩阵 |
 | 信号与客体异常 | J01–J09 | 真实 ELF 信号投递测试 |
-| 线程与同步 | K01–K10 | pthread 真实程序(待 F08/H02) |
+| 线程与同步 | K01–K10 | pthread 真实程序、线程定向信号与共享 futex 回归 |
 | 时间、随机与事件 | L01–L12 | 虚拟时钟/熵源测试 |
-| 网络与 socket | M01–M13 | 差分矩阵(未开始) |
+| 网络与 socket | M01–M13 | 真实 ELF TCP/UDP/UNIX 探针与参考 Linux 差分矩阵 |
 | 根镜像与设备 | N01–N12 | 镜像清单与 devfs 测试 |
 | 身份与隔离 | O01–O10 | 双 VM 隔离与故障注入测试 |
 | Console/Terminal/Bash | P01–P15 | `model` 契约套件六场景(A07) |
 | CPython/Node 客体运行 | Q01–Q31 | A04 固定版本 + Q02 缺口追踪 |
 | SDK/CLI/集成 | R01–R09 | 公开 API 示例 + CLI/VM 测试 |
-| 可观测性与性能 | T01–T11 | 快照/重放测试 + 基准 |
-| 最终验收与发布 | U01–U14 | 阶段 5 门禁聚合 |
+| 可观测性与性能 | T01–T15、X12 | 快照/重放测试 + CPU/JIT/语言基准 + 原生 amd64 五轮 REPL 与六场景 3× 门禁;T12 完整 C++ 核心迁移按显式决策延后 |
+| 原生 amd64 后端 | X01–X13 | namespace/cgroup/seccomp 隔离、授权挂载、PTY/model 契约、Node/Python 原生扩展、默认 CLI、性能与下载产物 CI |
+| 最终验收与发布 | U01–U14、X13 | 阶段 5 门禁聚合 + 五平台架构/摘要/SBOM/默认 CLI 下载复验 |
