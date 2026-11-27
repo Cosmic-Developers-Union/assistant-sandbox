@@ -160,6 +160,22 @@ cat "$probe/cgroup.procs"
 探测会用临时子进程完成同样的创建/移动/删除检查，避免把控制进程留在
 测试 cgroup 中。
 
+## 后端选择入口（X02）
+
+`instance.Open(ctx, Options)` 是后端选择与生命周期入口，返回
+`Selection{Backend, Instance}`。`Options.Backend` 支持：
+
+- 零值：在 linux/amd64 且原生工厂已注册、全部能力探测通过时自动选择原生；
+  否则回退 RISC-V。
+- `riscv64`：跳过原生探测，直接创建现有 RV64 VM。
+- `linux/amd64`：要求原生工厂已注册且宿主能力齐全，否则返回
+  `ErrNativeArchitecture`、`ErrNativeCapability` 或 `ErrBackendUnavailable`。
+
+能力探测在临时子进程中实际创建 user/mount/PID/net/IPC/UTS/cgroup
+namespace，并检查 seccomp 状态与可写 cgroup v2 委派。探测不执行客体
+程序。工厂返回 error 且携带已分配实例时，选择层会在 5 秒清理上下文内
+调用 `Close`，避免初始化半途失败泄漏资源。
+
 ## 原型边界与后续任务
 
 仓库与 `/home/ge/Projects`、`/tmp/opencode` 中未找到 TODO 所述独立 x86

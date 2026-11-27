@@ -69,6 +69,8 @@ var (
 
 // Options 是 VM 的构造参数。
 type Options struct {
+	// Backend 选择执行后端；零值自动选择，显式 riscv64 保持兼容。
+	Backend Backend
 	// MaxProcesses 是进程表上限;非正时使用默认值。
 	MaxProcesses int
 

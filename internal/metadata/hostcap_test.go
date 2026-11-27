@@ -21,6 +21,7 @@ var hostImportAllowlist = map[string]map[string]bool{
 		"cmd/assistant-sandbox/signals_windows.go":   true,
 		"filesystem/persistent/store.go":             true,
 		"internal/diff/diff.go":                      true,
+		"instance/native_probe_linux.go":             true,
 		"platform/filesystem/filesystem_native.go":   true,
 		"platform/filesystem/filesystem_wasi.go":     true,
 		"platform/filesystem/modes_native.go":        true,
@@ -37,6 +38,7 @@ var hostImportAllowlist = map[string]map[string]bool{
 	},
 	"syscall": {
 		"cmd/assistant-sandbox/signals_unix.go":        true,
+		"instance/native_probe_linux.go":               true,
 		"platform/filesystem/accesstime_linux.go":      true,
 		"platform/filesystem/accesstime_wasi.go":       true,
 		"platform/filesystem/fifo_linux.go":            true,
@@ -61,6 +63,7 @@ var hostImportAllowlist = map[string]map[string]bool{
 
 var processLaunchAllowlist = map[string]bool{
 	"internal/diff/diff.go":                  true,
+	"instance/native_probe_linux.go":         true,
 	"userland/toolcompat/goawk/interp/io.go": true, "userland/toolcompat/goawk/interp/iostream.go": true,
 }
 

@@ -20,7 +20,7 @@ console.time('bench'); let s = 0; for (let i = 0; i < 1e8; i++) s += Math.sqrt(i
 
 X01 在 V03 发布后开始。每项提交须在本行补充实现路径、可从干净检出执行的验证命令、实测输出或 CI 链接及提交 SHA。需 Linux 隔离能力的用例安排在具备相应能力的 runner 上，记录宿主内核与后端版本。每个未勾选项均可单独审查。
 
-- [ ] X01 确定执行与信任边界（依赖 V03）。补充 A02 的后端 ADR，说明 linux/amd64 宿主、amd64 客体镜像、命名空间与系统调用限制、预算执行方及 SDK 可见差异；用现有命名空间原型验证所选机制。验收：提供成功运行最小 x86 ELF 的记录，以及缺少必需内核能力时的错误记录；列出两条探测命令和输出。
+- [x] X01 确定执行与信任边界（依赖 V03）。补充 A02 的后端 ADR，说明 linux/amd64 宿主、amd64 客体镜像、命名空间与系统调用限制、预算执行方及 SDK 可见差异；用现有命名空间原型验证所选机制。验收：提供成功运行最小 x86 ELF 的记录，以及缺少必需内核能力时的错误记录；列出两条探测命令和输出。 证据：提交 `744738e5757d9d4155378b097f0e3f5b5371036c`，docs/adr/native-amd64-backend.md、docs/adr/vm-architecture.md、testdata/hostnative/namespace-probe.sh 与 namespace_probe.c；内核 `7.0.0-43-generic`，静态 ELF64/x86-64 在新 user/mount/PID/net/IPC/UTS/cgroup namespace 内以 PID 1 运行；`unshare --net true` 返回 `Operation not permitted`。 测试：`sh -n testdata/hostnative/namespace-probe.sh`、`cc -static -Wall -Wextra -Werror ...`、`testdata/hostnative/namespace-probe.sh`。 CI：<https://github.com/Cosmic-Developers-Union/assistant-sandbox/actions/runs/46051061670>。
 - [ ] X02 提取后端选择与生命周期入口（依赖 X01）。在现有 VM 构造路径接入能力探测、创建与关闭，先接回 RISC-V 实现。验收：表驱动测试覆盖 amd64 能力可用、能力缺失、其他架构及显式选定 RISC-V；每例断言选中的后端或具名错误，创建失败释放已分配资源。运行既有 `go test ./instance ./deployment/native ./model`。
 - [ ] X03 构建固定的 amd64 客体根文件系统（依赖 X01）。打包 shell、动态加载器、Python、Node 及所需共享库，记录版本、来源、摘要和许可证。验收：两次干净构建的镜像摘要一致；用 `readelf -h` 核对运行时为 ELF64/X86-64，核对动态加载器和共享库均来自镜像；测试损坏镜像时启动失败。
 - [ ] X04 启动隔离进程（依赖 X02、X03）。从镜像启动最小客体程序，配置身份、PID、挂载、网络和 IPC 隔离，清理继承的环境、文件描述符与权限。验收：进程报告 x86_64；测试在宿主创建临时哨兵文件、环境变量和打开的描述符，客体逐项验证不可见；宿主和客体的命名空间标识按 ADR 区分。隔离初始化失败时不得在宿主直接启动解释器。
