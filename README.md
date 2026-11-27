@@ -14,7 +14,8 @@ VM、运行 shell/Python/Node 与关闭的完整命令
 内置 S4 开发合同用 `make compat-s4` 验证；初步嵌套启动用
 `make sandbox-in-sandbox` 验证。
 设置 `COMPAT_S4_IMAGE` 和 `COMPAT_S4_REPO` 可复验外部 Alpine 的
-init、namespace/cgroup 与本地包仓库。
+发行版 init 作为 PID 1、namespace/cgroup 视图与本地 APK 仓库的真实
+安装/卸载（含签名校验）。
 
 SDK 的公开执行入口为 `instance` 和 `model` 包。RISC-V Linux ABI VM
 不依赖外部 WASM 客体。
@@ -30,9 +31,9 @@ make install
 assistant-sandbox --dir . -c 'printf hello'
 ```
 
-Linux 上 `make build` 默认启用 x86-64 页级 JIT 与 C++ 批量执行核心，
-并要求宿主提供 C++17 编译器；产物仍为静态链接。需要纯 Go 可移植
-构建时使用
+Linux 上 `make build` 默认启用 x86-64 页级 JIT、跨页块链接与 C++
+批量执行核心，并要求宿主提供 C++17 编译器；产物仍为静态链接。
+需要纯 Go 可移植构建时使用
 `CGO_ENABLED=0 make build`，此时功能保持一致，但 Python/Node 启动更慢。
 
 CLI 默认执行客体中的真实 Bash；`--shell sh` 切换到 BusyBox sh。
