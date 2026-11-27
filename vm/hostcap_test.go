@@ -53,12 +53,14 @@ func TestVMProductionCodeHasNoAmbientHostImports(t *testing.T) {
 		// 原生客体根文件系统只解包到调用方提供的临时目录。
 		"guest/hostroot/image.go": {"os": true, "path/filepath": true},
 		// init 在客体 rootfs 内 pivot_root、清 capabilities 并安装 seccomp。
-		"guest/hostroot/init/main.go": {"os": true, "path/filepath": true, "unsafe": true},
+		"guest/hostroot/init/main.go":     {"os": true, "path/filepath": true, "unsafe": true},
+		"guest/hostroot/init/netproxy.go": {"net": true, "os": true, "syscall": true},
 
 		// 后端选择与原生宿主能力探测属于部署控制面，不进入客体核心。
-		"instance/backend.go":            {"time": true},
-		"instance/native_probe_linux.go": {"os": true, "path/filepath": true, "syscall": true},
-		"instance/native_linux_amd64.go": {"os": true, "path/filepath": true, "syscall": true, "time": true},
+		"instance/backend.go":                   {"time": true},
+		"instance/native_probe_linux.go":        {"os": true, "path/filepath": true, "syscall": true},
+		"instance/native_linux_amd64.go":        {"os": true, "path/filepath": true, "syscall": true, "time": true},
+		"instance/native_egress_linux_amd64.go": {"net": true, "os": true, "path/filepath": true},
 
 		// cgroupfs 的 FileInfo 只返回零值 ModTime;内容来自 VM 进程表。
 		"instance/cgroupfs.go": {"time": true},

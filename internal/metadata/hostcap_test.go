@@ -22,8 +22,10 @@ var hostImportAllowlist = map[string]map[string]bool{
 		"filesystem/persistent/store.go":             true,
 		"guest/hostroot/image.go":                    true,
 		"guest/hostroot/init/main.go":                true,
+		"guest/hostroot/init/netproxy.go":            true,
 		"internal/diff/diff.go":                      true,
 		"instance/native_probe_linux.go":             true,
+		"instance/native_egress_linux_amd64.go":      true,
 		"instance/native_linux_amd64.go":             true,
 		"platform/filesystem/filesystem_native.go":   true,
 		"platform/filesystem/filesystem_wasi.go":     true,
@@ -41,6 +43,7 @@ var hostImportAllowlist = map[string]map[string]bool{
 	},
 	"syscall": {
 		"cmd/assistant-sandbox/signals_unix.go":        true,
+		"guest/hostroot/init/netproxy.go":              true,
 		"instance/native_probe_linux.go":               true,
 		"instance/native_linux_amd64.go":               true,
 		"platform/filesystem/accesstime_linux.go":      true,
@@ -62,7 +65,9 @@ var hostImportAllowlist = map[string]map[string]bool{
 		"vm/memory/table.go": true,
 	},
 	"net": {
-		"platform/network/network.go": true,
+		"platform/network/network.go":           true,
+		"instance/native_egress_linux_amd64.go": true,
+		"guest/hostroot/init/netproxy.go":       true,
 	},
 }
 
@@ -70,6 +75,7 @@ var processLaunchAllowlist = map[string]bool{
 	"internal/diff/diff.go":                  true,
 	"instance/native_probe_linux.go":         true,
 	"instance/native_linux_amd64.go":         true,
+	"guest/hostroot/init/netproxy.go":        true,
 	"userland/toolcompat/goawk/interp/io.go": true, "userland/toolcompat/goawk/interp/iostream.go": true,
 }
 

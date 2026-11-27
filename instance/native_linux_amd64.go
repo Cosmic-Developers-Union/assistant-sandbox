@@ -45,6 +45,7 @@ type NativeVM struct {
 	cgroupParent   string
 	cgroup         string
 	processTimeout time.Duration
+	egress         *nativeEgress
 
 	mu        sync.Mutex
 	closed    bool
@@ -92,10 +93,19 @@ func newNativeVM(ctx context.Context, opts Options) (*NativeVM, error) {
 		cleanupCgroup()
 		return nil, fmt.Errorf("extract native root filesystem: %w", err)
 	}
+	var egress *nativeEgress
+	if opts.HostNetwork != nil || opts.Egress != nil {
+		egress, err = startNativeEgress(root, opts.HostNetwork, opts.Egress)
+		if err != nil {
+			_ = os.RemoveAll(root)
+			cleanupCgroup()
+			return nil, err
+		}
+	}
 	return &NativeVM{
 		root: root, cgroupParent: parent, cgroup: leaf,
 		processTimeout: time.Duration(opts.ProcessTimeout), //nolint:gosec // checked against MaxInt64 above
-		processes:      map[int]*NativeProcess{}, mounts: map[string]string{},
+		processes:      map[int]*NativeProcess{}, mounts: map[string]string{}, egress: egress,
 	}, nil
 }
 
@@ -349,6 +359,12 @@ func (v *NativeVM) Exec(ctx context.Context, spec NativeExecSpec) (*NativeProces
 	for name, value := range spec.Env {
 		environment[name] = value
 	}
+	if v.egress != nil {
+		for name, value := range v.egress.environment() {
+			environment[name] = value
+		}
+		environment["ASSISTANT_SANDBOX_EGRESS_PROXY"] = "1"
+	}
 	attributes := &os.ProcAttr{
 		Dir:   "/",
 		Env:   nativeEnvironment(environment),
@@ -531,6 +547,9 @@ func (v *NativeVM) Close(ctx context.Context) error {
 
 func (v *NativeVM) cleanup() error {
 	var cleanupErr error
+	if v.egress != nil {
+		cleanupErr = errors.Join(cleanupErr, v.egress.Close())
+	}
 	if v.cgroup != "" {
 		if err := os.WriteFile(filepath.Join(v.cgroup, "cgroup.kill"), []byte("1"), 0o600); err != nil && !errors.Is(err, os.ErrNotExist) { //nolint:gosec // cgroup is the per-VM control directory
 			cleanupErr = errors.Join(cleanupErr, err)

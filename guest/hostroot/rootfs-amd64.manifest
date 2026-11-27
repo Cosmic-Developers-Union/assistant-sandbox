@@ -1,8 +1,8 @@
 format=assistant-hostroot-v1
 base=alpine@sha256:9db2934886712d877c932e07249c75a59e6ca27adfbccc05261987a17bef2d63
-archive_sha256=2640c9d5eadae2563fbcae255c7fb8a5719d73df6a535e0d8444f681af464959
-archive_bytes=43408873
-init_sha256=fa8ef3c4bf32b61294c48a497542d72ecce33fce34778f0ed6e4037d67054dc7
+archive_sha256=965b25f48f1cc3d8449e19c029bed6e26f8245aa853cd92c708f5ce7728de9b6
+archive_bytes=43698134
+init_sha256=0e0277eadbc9e06dd613fafd11f083bddd15e4ed6fdecd59053ec1a5a5e7b0fa
 node=22.23.5-r0
 python=3.12.16-r0
 bash=5.2.37-r0

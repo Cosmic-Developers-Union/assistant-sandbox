@@ -5,6 +5,11 @@ package instance
 import (
 	"context"
 	"errors"
+	"io"
+	stdnet "net"
+	"net/http"
+	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -13,6 +18,8 @@ import (
 	"testing"
 	"time"
 
+	platformnet "github.com/Cosmic-Developers-Union/assistant-sandbox/platform/network"
+	vmnet "github.com/Cosmic-Developers-Union/assistant-sandbox/vm/net"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/resources"
 )
 
@@ -296,6 +303,150 @@ func waitForNativeFile(t *testing.T, name, want string) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("file %s did not contain %q", name, want)
+}
+
+func TestNativeLoopbackIsolationAndDeniedEgress(t *testing.T) {
+	machine, _ := newNativeVMForTest(t, Options{})
+	defer func() { _ = machine.Close(t.Context()) }()
+	server := `const net = require('node:net');
+const server = net.createServer(socket => {
+  socket.end('native-loopback', () => { if (process.env.SERVER_LONG !== '1') server.close(); });
+});
+server.listen(39081, '127.0.0.1', () => {
+  if (process.env.SERVER_LONG !== '1') console.log('listening');
+});`
+	client := `const net = require('node:net');
+const socket = net.connect(Number(process.argv[2]), '127.0.0.1');
+let data = '';
+socket.on('data', chunk => data += chunk);
+socket.on('end', () => { console.log(data); socket.end(); });
+socket.on('error', error => { console.error(error.message); process.exit(1); });`
+	if err := os.WriteFile(filepath.Join(machine.Root(), "work", "server.js"), []byte(server), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(machine.Root(), "work", "client.js"), []byte(client), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	output, err := os.CreateTemp(t.TempDir(), "loopback-output")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = output.Close() }()
+	state, err := machine.Run(t.Context(), NativeExecSpec{
+		Program: "/bin/sh",
+		Args: []string{"-c", `node /work/server.js & server=$!
+i=0
+until node /work/client.js 39081; do
+  i=$((i + 1)); [ "$i" -lt 30 ] || exit 1; sleep 0.1
+done
+wait "$server"`},
+		Dir:    "/work",
+		Stdout: output,
+		Stderr: output,
+	})
+	if err != nil || state.Code != 0 {
+		t.Fatalf("loopback exchange state=%+v err=%v", state, err)
+	}
+	if data, err := os.ReadFile(output.Name()); err != nil || !strings.Contains(string(data), "native-loopback") {
+		t.Fatalf("loopback output=%q err=%v", data, err)
+	}
+
+	other, _ := newNativeVMForTest(t, Options{})
+	defer func() { _ = other.Close(t.Context()) }()
+	longServer, err := machine.Exec(t.Context(), NativeExecSpec{
+		Program: "/usr/bin/node", Args: []string{"/work/server.js"}, Dir: "/work",
+		Env: map[string]string{"SERVER_LONG": "1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = longServer.Cancel() }()
+	time.Sleep(300 * time.Millisecond)
+	state, err = other.Run(t.Context(), NativeExecSpec{
+		Program: "/bin/sh", Args: []string{"-c", `if node /work/client.js 39081; then exit 1; fi`}, Dir: "/work",
+	})
+	if err != nil || state.Code != 0 {
+		t.Fatalf("cross-VM loopback was reachable: state=%+v err=%v", state, err)
+	}
+
+	hostListener, err := stdnet.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = hostListener.Close() }()
+	port := hostListener.Addr().(*stdnet.TCPAddr).Port
+	state, err = machine.Run(t.Context(), NativeExecSpec{
+		Program: "/bin/sh", Args: []string{"-c", `if node /work/client.js "$1"; then exit 1; fi`, "sh", strconv.Itoa(port)}, Dir: "/work",
+	})
+	if err != nil || state.Code != 0 {
+		t.Fatalf("default egress was not denied: state=%+v err=%v", state, err)
+	}
+}
+
+func nativeLoopbackTestServer(t *testing.T, handler http.Handler) *httptest.Server {
+	t.Helper()
+	server := httptest.NewUnstartedServer(handler)
+	listener, err := stdnet.Listen("tcp", "127.0.0.2:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = server.Listener.Close()
+	server.Listener = listener
+	server.Start()
+	t.Cleanup(server.Close)
+	return server
+}
+
+func TestNativeAuthorizedEgressProxy(t *testing.T) {
+	allowed := nativeLoopbackTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "allowed")
+	}))
+	denied := nativeLoopbackTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "must-not-be-reachable")
+	}))
+	allowedPort := uint16(allowed.Listener.Addr().(*stdnet.TCPAddr).Port) //nolint:gosec // TCP listener ports are 16-bit
+	policy := vmnet.NewEgressPolicy(vmnet.EgressRule{
+		Protocol: vmnet.ProtocolTCP,
+		Prefix:   netip.MustParsePrefix("127.0.0.0/8"),
+		PortMin:  allowedPort,
+		PortMax:  allowedPort,
+	})
+	machine, _ := newNativeVMForTest(t, Options{
+		HostNetwork: platformnet.Dialer{}, Egress: policy,
+	})
+	defer func() { _ = machine.Close(t.Context()) }()
+	deniedPort := denied.Listener.Addr().(*stdnet.TCPAddr).Port
+	output, err := os.CreateTemp(t.TempDir(), "egress-output")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = output.Close() }()
+	script := `import sys
+import urllib.request
+import urllib.error
+allowed = urllib.request.urlopen("http://127.0.0.2:%s/" % sys.argv[1]).read().decode()
+print(allowed)
+try:
+    urllib.request.urlopen("http://127.0.0.2:%s/" % sys.argv[2])
+except urllib.error.HTTPError as error:
+    print("DENIED", error.code)
+else:
+    raise SystemExit("denied egress succeeded")`
+	state, err := machine.Run(t.Context(), NativeExecSpec{
+		Program: "/usr/bin/python3.12",
+		Args:    []string{"-c", script, strconv.Itoa(int(allowedPort)), strconv.Itoa(deniedPort)},
+		Dir:     "/work",
+		Stdout:  output,
+		Stderr:  output,
+	})
+	if err != nil || state.Code != 0 {
+		data, _ := os.ReadFile(output.Name())
+		t.Fatalf("egress state=%+v err=%v output=%q", state, err, data)
+	}
+	data, err := os.ReadFile(output.Name())
+	if err != nil || !strings.Contains(string(data), "allowed") || !strings.Contains(string(data), "DENIED 502") {
+		t.Fatalf("egress output=%q err=%v", data, err)
+	}
 }
 
 func TestNativeResourceLimitsAndStatus(t *testing.T) {

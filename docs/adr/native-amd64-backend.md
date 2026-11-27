@@ -160,6 +160,19 @@ cat "$probe/cgroup.procs"
 探测会用临时子进程完成同样的创建/移动/删除检查，避免把控制进程留在
 测试 cgroup 中。
 
+## 网络策略（X08）
+
+每个客体 Exec 使用独立 network namespace，init 在清除 capabilities 前
+启用回环接口；同一 Exec 内的服务端/客户端可交换数据，另一 VM 无法访问
+该回环端口。默认没有宿主路由，非回环目标直接失败。
+
+配置 `HostNetwork` 与 `EgressPolicy` 时，父进程在私有根目录创建 Unix
+socket，客体 init 启动仅监听 `127.0.0.1:18080` 的 HTTP 代理并注入
+`HTTP_PROXY`/`HTTPS_PROXY`。代理把目标交给父进程，父进程按现有
+`EgressPolicy.Target` 逐地址/端口裁决后才调用 `HostNetwork.Dial`；拒绝
+目标返回 502，不触发宿主连接。该代理是显式 SDK 可见边界，不声称提供
+透明 TCP NAT。
+
 ## 资源限制与计量（X07）
 
 每台 VM 在可写 cgroup v2 委派目录下创建独立父/叶两层 cgroup，启用

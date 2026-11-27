@@ -19,6 +19,9 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "netproxy" {
+		os.Exit(runNetProxy(os.Args[2:]))
+	}
 	code, err := run()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "assistant-init: %v\n", err)
@@ -64,11 +67,19 @@ func run() (int, error) {
 	if err := unix.Sethostname([]byte("sandbox")); err != nil {
 		return fail(fmt.Errorf("set guest hostname: %w", err))
 	}
+	if err := bringUpLoopback(); err != nil {
+		return fail(err)
+	}
 	if err := dropCapabilities(); err != nil {
 		return fail(err)
 	}
 	if err := installSeccomp(); err != nil {
 		return fail(err)
+	}
+	if os.Getenv("ASSISTANT_SANDBOX_EGRESS_PROXY") == "1" {
+		if err := startEgressProxy(); err != nil {
+			return fail(err)
+		}
 	}
 	if _, err := fmt.Fprintf(control, "READY %d\n", os.Getpid()); err != nil {
 		return fail(fmt.Errorf("signal readiness: %w", err))
@@ -229,6 +240,30 @@ func applyMounts(rootfs string, mounts map[string]string) error {
 func withinRoot(root, target string) bool {
 	relative, err := filepath.Rel(root, target)
 	return err == nil && relative != ".." && !strings.HasPrefix(relative, "../")
+}
+
+type interfaceFlags struct {
+	name  [16]byte
+	flags uint16
+	pad   [22]byte
+}
+
+func bringUpLoopback() error {
+	socket, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		return fmt.Errorf("open network control socket: %w", err)
+	}
+	defer func() { _ = unix.Close(socket) }()
+	request := interfaceFlags{}
+	copy(request.name[:], "lo")
+	if _, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(socket), unix.SIOCGIFFLAGS, uintptr(unsafe.Pointer(&request))); errno != 0 { //nolint:gosec // ioctl requires the kernel ABI ifreq pointer
+		return fmt.Errorf("read loopback flags: %w", errno)
+	}
+	request.flags |= unix.IFF_UP
+	if _, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(socket), unix.SIOCSIFFLAGS, uintptr(unsafe.Pointer(&request))); errno != 0 { //nolint:gosec // ioctl requires the kernel ABI ifreq pointer
+		return fmt.Errorf("bring up loopback: %w", errno)
+	}
+	return nil
 }
 
 func dropCapabilities() error {
