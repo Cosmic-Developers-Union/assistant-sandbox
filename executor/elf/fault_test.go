@@ -86,7 +86,7 @@ func TestRealELFFaultDiesBySignal(t *testing.T) {
 				t.Fatalf("err=%v want executable.Death", runErr)
 			}
 			if death.Signal != entry.wantSignal {
-				t.Fatalf("signal=%v want %v", death.Signal, entry.wantSignal)
+				t.Fatalf("signal=%v want %v (detail=%q diagnostic=%+v)", death.Signal, entry.wantSignal, death.Detail, death.Diagnostic)
 			}
 		})
 	}

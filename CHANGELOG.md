@@ -28,6 +28,8 @@ RISC-V 修复版：默认开发 CLI 可直接进入真实 Node REPL，并修复�
 
 ### 修复
 
+- 修复批量浮点 CSR 译码把 `EBREAK` 的立即数 `1` 误认为 `fflags`
+  CSR 的问题；断点现在回退单步并正确产生 `SIGTRAP`。
 - 开发 CLI 默认启用标准 V8；无参数 `node` 使用前台编译与垃圾回收，
   可直接进入 REPL，粘贴长循环后仍能读回顶层变量并正常退出。
 - `--allow-guest-rwx=false` 明确启用严格客体 W^X 与 jitless Node；

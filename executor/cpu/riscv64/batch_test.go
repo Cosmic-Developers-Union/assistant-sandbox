@@ -1214,6 +1214,44 @@ func readPage(ctx context.Context, table *memory.Table, address uint64) ([]byte,
 	return buffer, nil
 }
 
+func TestStepBatchEBREAKFallsBackToTrap(t *testing.T) {
+	const instruction = uint32(0x00100073)
+	if decoded := decodeBatchInstruction(instruction, 4); decoded.op != batchOpUnsupported {
+		t.Fatalf("EBREAK decoded as %v, want unsupported fallback", decoded.op)
+	}
+	ctx := t.Context()
+	table := memory.New(0)
+	if err := table.Map(ctx, memory.Region{Start: batchCodeBase, End: batchCodeBase + memory.PageSize,
+		Prot: memory.ProtRead | memory.ProtExec}); err != nil {
+		t.Fatal(err)
+	}
+	program := make([]byte, memory.PageSize)
+	binary.LittleEndian.PutUint32(program, instruction)
+	if err := table.Load(ctx, batchCodeBase, program); err != nil {
+		t.Fatal(err)
+	}
+	core, err := New(cpu.Config{Memory: table, Entry: batchCodeBase})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := core.Reset(ctx, cpu.Machine{PC: batchCodeBase}); err != nil {
+		t.Fatal(err)
+	}
+	_, outcome, err := core.StepBatch(ctx, 65536)
+	var trap cpu.Trap
+	if outcome != cpu.Trapped || !errors.As(err, &trap) || trap.Kind != cpu.TrapBreakpoint {
+		t.Fatalf("outcome=%v trap=%+v err=%v, want breakpoint trap", outcome, trap, err)
+	}
+	state, err := core.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if trap.Address != batchCodeBase || state.PC != batchCodeBase+4 {
+		t.Fatalf("trap address=%#x PC=%#x, want faulting address %#x and next PC %#x",
+			trap.Address, state.PC, batchCodeBase, batchCodeBase+4)
+	}
+}
+
 func TestStepBatchSqrtReduction(t *testing.T) {
 	if !hotBatchSupported {
 		t.Skip("requires the native batch executor")

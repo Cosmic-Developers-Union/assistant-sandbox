@@ -568,7 +568,9 @@ static bool fp_execute_csr(uint64_t *registers, uint64_t *fcsr, uint32_t raw) {
 	const uint32_t funct3 = (raw >> 12) & 0x7;
 	const uint32_t rd = (raw >> 7) & 0x1F;
 	const uint32_t rs1 = (raw >> 15) & 0x1F;
-	if (csr != 0x001 && csr != 0x002 && csr != 0x003) {
+	if ((funct3 != 0x1 && funct3 != 0x2 && funct3 != 0x3 &&
+	     funct3 != 0x5 && funct3 != 0x6 && funct3 != 0x7) ||
+	    (csr != 0x001 && csr != 0x002 && csr != 0x003)) {
 		return false;
 	}
 	const uint64_t source = funct3 < 0x5 ? registers[rs1] : rs1;

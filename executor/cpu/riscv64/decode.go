@@ -402,7 +402,11 @@ func decodeBatchInstruction(instruction uint32, length uint8) decodedBatchInstru
 		}
 	case 0x73: // SYSTEM
 		csr := instruction >> 20
-		if csr == 0x001 || csr == 0x002 || csr == 0x003 {
+		// EBREAK 的立即数 1 与 fflags CSR 号相同；只有 CSR 指令编码
+		// 才能进入浮点 CSR 批量路径，SYSTEM/EBREAK 必须回退单步。
+		if (funct3 == 0x1 || funct3 == 0x2 || funct3 == 0x3 ||
+			funct3 == 0x5 || funct3 == 0x6 || funct3 == 0x7) &&
+			(csr == 0x001 || csr == 0x002 || csr == 0x003) {
 			decoded.op = batchOpFPCSR
 			decoded.imm = int32(instruction)
 			break
