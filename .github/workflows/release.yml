@@ -77,6 +77,12 @@ jobs:
             -v "$RUNNER_TEMP/release-pty":/out \
             python:3.12.16-slim-bookworm@sha256:44cf1793efa7c7a476bb0f2cff81443f4a072c90c1cb127e2924933daa3e8c64 \
             sh -c 'PATH=/nonexistent /usr/local/bin/python3 /scripts/pty-node-check.py /download/assistant-sandbox-linux-amd64 /out/native-x11.pty.log --expect-backend linux/amd64 --expect-arch x64'
+      - name: Make release PTY evidence readable
+        if: always()
+        run: |
+          if [ -d "$RUNNER_TEMP/release-pty" ]; then
+            sudo chmod -R a+rX "$RUNNER_TEMP/release-pty"
+          fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:
