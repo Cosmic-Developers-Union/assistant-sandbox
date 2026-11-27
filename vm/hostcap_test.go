@@ -53,7 +53,7 @@ func TestVMProductionCodeHasNoAmbientHostImports(t *testing.T) {
 		// 原生客体根文件系统只解包到调用方提供的临时目录。
 		"guest/hostroot/image.go": {"os": true, "path/filepath": true},
 		// init 在客体 rootfs 内 pivot_root、清 capabilities 并安装 seccomp。
-		"guest/hostroot/init/main.go": {"os": true, "unsafe": true},
+		"guest/hostroot/init/main.go": {"os": true, "path/filepath": true, "unsafe": true},
 
 		// 后端选择与原生宿主能力探测属于部署控制面，不进入客体核心。
 		"instance/backend.go":            {"time": true},

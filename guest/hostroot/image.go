@@ -20,7 +20,7 @@ import (
 
 const (
 	// ArchiveSHA256 锁定 rootfs-amd64.tar.gz 的内容。
-	ArchiveSHA256   = "a5313c4be478b40912facd245b50cde43395eb49e96dc689d0538613d3549b01"
+	ArchiveSHA256   = "059f061f2d5a8ce3f33e4f4f14d427d45588a276c4cf59db8f29967fb4d42093"
 	maxArchiveBytes = 512 << 20
 	maxFileBytes    = 128 << 20
 )

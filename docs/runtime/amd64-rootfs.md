@@ -14,8 +14,8 @@
 | Bash | `5.2.37-r0`，APK sha256 `8218982214f1b51f520d282b0c81d654846e974ce009e758acc6187bd64fe228` |
 | musl | `1.2.5-r13`，APK sha256 `359890bc7c4dc5fee7a85192de60a471c987e4664767288578beca60a44db2c8` |
 | BusyBox | `1.37.0-r20`，APK sha256 `7cc34c2dda2520b456ab4a55abc37fe245ac90f98ab9f1c7a9be3aec035df48e` |
-| `assistant-init` | 静态 Go linux/amd64 helper，sha256 `f8921ffaeed29e1d761d23538dbb718863fbd52a6b47a8b1d8625c08e7b691e9` |
-| 根文件系统归档 | sha256 `a5313c4be478b40912facd245b50cde43395eb49e96dc689d0538613d3549b01`，43,378,843 字节 |
+| `assistant-init` | 静态 Go linux/amd64 helper，sha256 `e9bb1b67a4cdf1865d7c3dfb6392515eb6a5eda547ad2466d4d0b5b7e21206ff` |
+| 根文件系统归档 | sha256 `059f061f2d5a8ce3f33e4f4f14d427d45588a276c4cf59db8f29967fb4d42093`，43,394,839 字节 |
 
 所有 APK 来自固定仓库
 `https://dl-cdn.alpinelinux.org/alpine/v3.22/main/x86_64/`；完整 38 项直接/
@@ -34,8 +34,8 @@ cmp /tmp/opencode/hostroot-a.tar.gz /tmp/opencode/hostroot-b.tar.gz
 两次独立构建实测：
 
 ```text
-a5313c4be478b40912facd245b50cde43395eb49e96dc689d0538613d3549b01  hostroot-a.tar.gz
-a5313c4be478b40912facd245b50cde43395eb49e96dc689d0538613d3549b01  hostroot-b.tar.gz
+059f061f2d5a8ce3f33e4f4f14d427d45588a276c4cf59db8f29967fb4d42093  hostroot-a.tar.gz
+059f061f2d5a8ce3f33e4f4f14d427d45588a276c4cf59db8f29967fb4d42093  hostroot-b.tar.gz
 ```
 
 脚本固定 Docker 镜像摘要、APK 文件、`/etc/hostname`、`/etc/hosts`、

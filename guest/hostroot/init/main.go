@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"unsafe"
@@ -27,7 +29,7 @@ func main() {
 }
 
 func run() (int, error) {
-	rootfs, controlFD, directory, program, err := parseArguments(os.Args[1:])
+	rootfs, controlFD, directory, mounts, program, err := parseArguments(os.Args[1:])
 	if err != nil {
 		return 125, err
 	}
@@ -41,7 +43,7 @@ func run() (int, error) {
 		return 125, err
 	}
 
-	if err := isolateRoot(rootfs); err != nil {
+	if err := isolateRoot(rootfs, mounts); err != nil {
 		return fail(err)
 	}
 	if err := os.Chdir(directory); err != nil {
@@ -68,19 +70,32 @@ func run() (int, error) {
 	return 0, nil
 }
 
-func parseArguments(arguments []string) (string, int, string, []string, error) {
+func parseArguments(arguments []string) (string, int, string, map[string]string, []string, error) {
 	if len(arguments) < 8 || arguments[0] != "--rootfs" || arguments[2] != "--control-fd" ||
-		arguments[4] != "--chdir" || arguments[6] != "--" {
-		return "", 0, "", nil, errors.New("usage: assistant-init --rootfs PATH --control-fd N --chdir DIR -- PROGRAM [ARG...]")
+		arguments[4] != "--chdir" {
+		return "", 0, "", nil, nil, errors.New("usage: assistant-init --rootfs PATH --control-fd N --chdir DIR [--mount GUEST=HOST ...] -- PROGRAM [ARG...]")
 	}
 	descriptor, err := strconv.Atoi(arguments[3])
 	if err != nil || descriptor < 3 {
-		return "", 0, "", nil, errors.New("invalid control descriptor")
+		return "", 0, "", nil, nil, errors.New("invalid control descriptor")
 	}
-	return arguments[1], descriptor, arguments[5], arguments[7:], nil
+	mounts := map[string]string{}
+	position := 6
+	for position+1 < len(arguments) && arguments[position] == "--mount" {
+		guest, host, ok := strings.Cut(arguments[position+1], "=")
+		if !ok || !filepath.IsAbs(guest) || !filepath.IsAbs(host) {
+			return "", 0, "", nil, nil, errors.New("mount must use absolute GUEST=HOST paths")
+		}
+		mounts[filepath.Clean(guest)] = filepath.Clean(host)
+		position += 2
+	}
+	if position >= len(arguments) || arguments[position] != "--" || position+1 >= len(arguments) {
+		return "", 0, "", nil, nil, errors.New("missing guest program")
+	}
+	return arguments[1], descriptor, arguments[5], mounts, arguments[position+1:], nil
 }
 
-func isolateRoot(rootfs string) error {
+func isolateRoot(rootfs string, mounts map[string]string) error {
 	if err := unix.Mount("", "/", "", unix.MS_REC|unix.MS_PRIVATE, ""); err != nil {
 		return fmt.Errorf("make mounts private: %w", err)
 	}
@@ -88,6 +103,9 @@ func isolateRoot(rootfs string) error {
 	// host root to remain the caller's current root.
 	if err := unix.Mount(rootfs, rootfs, "", unix.MS_BIND|unix.MS_REC, ""); err != nil {
 		return fmt.Errorf("bind guest root: %w", err)
+	}
+	if err := applyMounts(rootfs, mounts); err != nil {
+		return err
 	}
 	if err := unix.Mount("proc", path.Join(rootfs, "proc"), "proc", unix.MS_NOSUID|unix.MS_NODEV|unix.MS_NOEXEC, ""); err != nil {
 		return fmt.Errorf("mount guest proc: %w", err)
@@ -109,6 +127,32 @@ func isolateRoot(rootfs string) error {
 		return fmt.Errorf("remove pivot directory: %w", err)
 	}
 	return nil
+}
+
+func applyMounts(rootfs string, mounts map[string]string) error {
+	guestPaths := make([]string, 0, len(mounts))
+	for guest := range mounts {
+		guestPaths = append(guestPaths, guest)
+	}
+	slices.Sort(guestPaths)
+	for _, guest := range guestPaths {
+		target := filepath.Join(rootfs, filepath.Clean(guest))
+		if !withinRoot(rootfs, target) {
+			return fmt.Errorf("mount target escapes guest root: %s", guest)
+		}
+		if err := os.MkdirAll(target, 0o750); err != nil { //nolint:gosec // target is cleaned and checked to remain under the private rootfs
+			return fmt.Errorf("create mount target %s: %w", guest, err)
+		}
+		if err := unix.Mount(mounts[guest], target, "", unix.MS_BIND|unix.MS_REC, ""); err != nil {
+			return fmt.Errorf("bind mount %s: %w", guest, err)
+		}
+	}
+	return nil
+}
+
+func withinRoot(root, target string) bool {
+	relative, err := filepath.Rel(root, target)
+	return err == nil && relative != ".." && !strings.HasPrefix(relative, "../")
 }
 
 func dropCapabilities() error {

@@ -160,6 +160,18 @@ cat "$probe/cgroup.procs"
 探测会用临时子进程完成同样的创建/移动/删除检查，避免把控制进程留在
 测试 cgroup 中。
 
+## 文件系统与授权挂载（X05）
+
+每台 `NativeVM` 在创建时解包独立根目录，默认 `/work` 与 `/tmp` 都是
+该 VM 私有状态；同一 VM 的多次 Exec 共享它，不同 VM 互不可见。
+`NativeVM.Mount(host, guest)` 在父进程解析宿主符号链接、验证目录并
+登记授权关系；init 在 pivot_root 前按客体路径顺序 bind mount。客体
+进程退出后 mount namespace 销毁，宿主授权目录改动保持可见。
+
+挂载目标经清理并限制在客体根内；客体侧绝对符号链接仍解析到客体根，
+相对符号链接的 `..` 在 bind mount 根被截断，不能访问宿主授权目录的
+父目录。未登记目录、宿主环境和其他 fd 都不会进入客体。
+
 ## 隔离进程启动（X04）
 
 `instance.NativeVM` 为每台 VM 解包一份私有根目录，并用
