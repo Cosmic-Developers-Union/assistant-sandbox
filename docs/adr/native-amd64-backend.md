@@ -173,6 +173,19 @@ socket，客体 init 启动仅监听 `127.0.0.1:18080` 的 HTTP 代理并注入
 目标返回 502，不触发宿主连接。该代理是显式 SDK 可见边界，不声称提供
 透明 TCP NAT。
 
+## 终端与会话（X09）
+
+`NativeVM.StartSession` 在父进程创建真实 PTY，并把 slave 作为客体
+Bash 的标准输入/输出/错误。init 在 `setsid` 后通过 `TIOCSCTTY` 获取
+控制终端，因此 Ctrl-C 经终端行规程投递到前台进程组，Ctrl-D 产生 EOF。
+`/dev/tty` 指向 `/proc/self/fd/0`，不再 bind 宿主 `/dev/tty`。
+
+`NativeModelVM` 用持久 Console 会话与独立 Connect 会话实现现有
+`model.VM`/Console/Terminal/Bash/Filesystem` 契约。Bash 脚本在私有
+`/work` 临时文件中 source，目录、变量与函数保留；不可见 OSC marker
+隔离前台输出和退出码，后台输出仍进入屏幕。窗口 resize 同时更新
+内核 PTY 与屏幕模型。
+
 ## 资源限制与计量（X07）
 
 每台 VM 在可写 cgroup v2 委派目录下创建独立父/叶两层 cgroup，启用

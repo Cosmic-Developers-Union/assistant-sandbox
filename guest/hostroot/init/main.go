@@ -64,6 +64,9 @@ func run() (int, error) {
 	if err := os.Chdir(directory); err != nil {
 		return fail(fmt.Errorf("enter guest working directory: %w", err))
 	}
+	if err := acquireControllingTTY(); err != nil {
+		return fail(err)
+	}
 	if err := unix.Sethostname([]byte("sandbox")); err != nil {
 		return fail(fmt.Errorf("set guest hostname: %w", err))
 	}
@@ -120,6 +123,13 @@ func parseArguments(arguments []string) (string, int, int, string, map[string]st
 		return "", 0, 0, "", nil, nil, errors.New("missing guest program")
 	}
 	return arguments[1], descriptor, gateDescriptor, arguments[5], mounts, arguments[position+1:], nil
+}
+
+func acquireControllingTTY() error {
+	if _, _, errno := unix.Syscall(unix.SYS_IOCTL, os.Stdin.Fd(), unix.TIOCSCTTY, 0); errno != 0 && errno != unix.ENOTTY {
+		return fmt.Errorf("acquire controlling terminal: %w", errno)
+	}
+	return nil
 }
 
 func ensurePrivateMounts() error {
@@ -195,7 +205,7 @@ func isolateRoot(rootfs string, mounts map[string]string) error {
 }
 
 func applyDevices(rootfs string) error {
-	for _, name := range []string{"null", "zero", "full", "random", "urandom", "tty"} {
+	for _, name := range []string{"null", "zero", "full", "random", "urandom"} {
 		source := filepath.Join("/dev", name)
 		if _, err := os.Stat(source); errors.Is(err, os.ErrNotExist) {
 			continue
@@ -212,6 +222,9 @@ func applyDevices(rootfs string) error {
 		if err := unix.Mount(source, target, "", unix.MS_BIND, ""); err != nil {
 			return fmt.Errorf("bind guest device %s: %w", name, err)
 		}
+	}
+	if err := os.Symlink("/proc/self/fd/0", filepath.Join(rootfs, "dev", "tty")); err != nil && !errors.Is(err, os.ErrExist) {
+		return fmt.Errorf("link guest controlling terminal: %w", err)
 	}
 	return nil
 }

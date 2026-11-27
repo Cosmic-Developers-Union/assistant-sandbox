@@ -60,6 +60,8 @@ func TestVMProductionCodeHasNoAmbientHostImports(t *testing.T) {
 		"instance/backend.go":                   {"time": true},
 		"instance/native_probe_linux.go":        {"os": true, "path/filepath": true, "syscall": true},
 		"instance/native_linux_amd64.go":        {"os": true, "path/filepath": true, "syscall": true, "time": true},
+		"instance/native_model_linux_amd64.go":  {"os": true},
+		"instance/native_pty_linux_amd64.go":    {"os": true, "path/filepath": true, "crypto/rand": true, "unsafe": true, "time": true},
 		"instance/native_egress_linux_amd64.go": {"net": true, "os": true, "path/filepath": true},
 
 		// cgroupfs 的 FileInfo 只返回零值 ModTime;内容来自 VM 进程表。

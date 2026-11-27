@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
@@ -50,6 +51,7 @@ type NativeVM struct {
 	mu        sync.Mutex
 	closed    bool
 	processes map[int]*NativeProcess
+	sessions  map[*NativeSession]struct{}
 	mounts    map[string]string
 }
 
@@ -105,7 +107,7 @@ func newNativeVM(ctx context.Context, opts Options) (*NativeVM, error) {
 	return &NativeVM{
 		root: root, cgroupParent: parent, cgroup: leaf,
 		processTimeout: time.Duration(opts.ProcessTimeout), //nolint:gosec // checked against MaxInt64 above
-		processes:      map[int]*NativeProcess{}, mounts: map[string]string{}, egress: egress,
+		processes:      map[int]*NativeProcess{}, sessions: map[*NativeSession]struct{}{}, mounts: map[string]string{}, egress: egress,
 	}, nil
 }
 
@@ -281,11 +283,7 @@ func (v *NativeVM) Mount(host, guest string) error {
 func (v *NativeVM) Mounts() map[string]string {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	mounts := make(map[string]string, len(v.mounts))
-	for guest, host := range v.mounts {
-		mounts[guest] = host
-	}
-	return mounts
+	return maps.Clone(v.mounts)
 }
 
 // Exec 在隔离 namespace 中启动客体程序，并在 init 完成 pivot_root、
@@ -516,7 +514,7 @@ func (p *NativeProcess) Cancel() error {
 // Shutdown 是 Close 的生命周期别名。
 func (v *NativeVM) Shutdown(ctx context.Context) error { return v.Close(ctx) }
 
-// Close 幂等关闭 VM：杀死全部活动进程并删除私有根目录。
+// Close 幂等关闭 VM：杀死全部活动进程与会话并删除私有根目录。
 func (v *NativeVM) Close(ctx context.Context) error {
 	v.mu.Lock()
 	if v.closed {
@@ -528,7 +526,12 @@ func (v *NativeVM) Close(ctx context.Context) error {
 	for _, process := range v.processes {
 		processes = append(processes, process)
 	}
+	sessions := make([]*NativeSession, 0, len(v.sessions))
+	for session := range v.sessions {
+		sessions = append(sessions, session)
+	}
 	v.processes = map[int]*NativeProcess{}
+	v.sessions = map[*NativeSession]struct{}{}
 	v.mu.Unlock()
 	for _, process := range processes {
 		_ = process.process.Kill()
@@ -539,8 +542,12 @@ func (v *NativeVM) Close(ctx context.Context) error {
 		select {
 		case <-process.done:
 		case <-deadline.C:
-			return errors.Join(ctx.Err(), v.cleanup())
 		}
+	}
+	sessionCtx, cancelSessions := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancelSessions()
+	for _, session := range sessions {
+		_ = session.Close(sessionCtx)
 	}
 	return errors.Join(ctx.Err(), v.cleanup())
 }

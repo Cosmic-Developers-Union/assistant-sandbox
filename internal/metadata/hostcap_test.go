@@ -27,6 +27,8 @@ var hostImportAllowlist = map[string]map[string]bool{
 		"instance/native_probe_linux.go":             true,
 		"instance/native_egress_linux_amd64.go":      true,
 		"instance/native_linux_amd64.go":             true,
+		"instance/native_model_linux_amd64.go":       true,
+		"instance/native_pty_linux_amd64.go":         true,
 		"platform/filesystem/filesystem_native.go":   true,
 		"platform/filesystem/filesystem_wasi.go":     true,
 		"platform/filesystem/modes_native.go":        true,
@@ -56,10 +58,12 @@ var hostImportAllowlist = map[string]map[string]bool{
 	"crypto/rand": {
 		"platform/entropy/entropy_native.go": true,
 		"platform/entropy/entropy_wasi.go":   true,
+		"instance/native_pty_linux_amd64.go": true,
 	},
 	"unsafe": {
-		"platform/modules/modules_wasi.go": true,
-		"guest/hostroot/init/main.go":      true,
+		"platform/modules/modules_wasi.go":   true,
+		"guest/hostroot/init/main.go":        true,
+		"instance/native_pty_linux_amd64.go": true,
 		// 原生批量执行:只传递持锁页/译码切片地址,不是宿主资源入口。
 		"executor/cpu/riscv64/batch.go": true, "executor/cpu/riscv64/hot_cgo.go": true,
 		"vm/memory/table.go": true,
