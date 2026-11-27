@@ -3,6 +3,10 @@
 状态:已采纳(2026-10-24)。取代本决策须新增 ADR 并同步 TODO.md 的 S 组适用性与
 阶段 1 出口条件。
 
+2026-11-27 的原生执行后端补充见
+[linux/amd64 原生隔离后端 ADR](native-amd64-backend.md)：该后端与上述
+RV64GC Linux ABI VM 并存，不改变“不启动原版 Linux 内核”的决策。
+
 ## 决策
 
 1. **VM 类型:Linux ABI 虚拟机(用户态)**。VM 直接实现 Linux 应用 ABI
