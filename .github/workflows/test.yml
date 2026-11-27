@@ -50,6 +50,9 @@ jobs:
     env:
       GOFLAGS: -p=1
       GOMEMLIMIT: 768MiB
+      # 限制同时进入 cgo 的 OS 线程数，避免 arm64 runner 在重客体
+      # 并发用例中触发 pthread_create/EAGAIN；不减少测试覆盖。
+      GOMAXPROCS: 2
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

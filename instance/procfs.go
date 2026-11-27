@@ -2,12 +2,14 @@ package instance
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync/atomic"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/filesystem/procfs"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/memory"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/proc"
 )
@@ -127,7 +129,15 @@ func (p kernelProcfs) Processes(ctx context.Context) ([]procfs.Entry, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	processes := p.kernel.Processes()
+	return p.entries(ctx, p.kernel.Processes())
+}
+
+// entries 从一次进程表快照构建 /proc 条目。快照后的进程退出只影响其
+// 自身条目，不使稳定进程（例如 PID 1）的查询失败。
+func (p kernelProcfs) entries(ctx context.Context, processes []proc.Proc) ([]procfs.Entry, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	threadCounts := make(map[proc.PID]int, len(processes))
 	for _, item := range processes {
 		threadCounts[item.TGID]++
@@ -136,6 +146,12 @@ func (p kernelProcfs) Processes(ctx context.Context) ([]procfs.Entry, error) {
 	for _, item := range processes {
 		descriptors, err := p.kernel.OpenFDs(item.ID)
 		if err != nil {
+			// Processes 与 OpenFDs 是两次独立快照；respawn/退出的子进程
+			// 可能在两者之间消失。跳过该瞬时条目，不能让整个 /proc
+			// 视图（包括稳定 PID 1）因此返回 ESRCH。
+			if errors.Is(err, errno.NoProcess) {
+				continue
+			}
 			return nil, err
 		}
 		out = append(out, procfs.Entry{

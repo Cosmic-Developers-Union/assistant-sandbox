@@ -28,6 +28,8 @@ RISC-V 修复版：默认开发 CLI 可直接进入真实 Node REPL，并修复�
 
 ### 修复
 
+- `/proc` 生成进程快照后，若 respawn 子进程恰好退出，不再让稳定
+  进程的 namespace 查询误报 ESRCH。
 - 修复批量浮点 CSR 译码把 `EBREAK` 的立即数 `1` 误认为 `fflags`
   CSR 的问题；断点现在回退单步并正确产生 `SIGTRAP`。
 - 开发 CLI 默认启用标准 V8；无参数 `node` 使用前台编译与垃圾回收，

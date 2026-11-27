@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/internal/guest"
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/errno"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fd"
 	vmfs "github.com/Cosmic-Developers-Union/assistant-sandbox/vm/fs"
@@ -114,6 +115,38 @@ func TestProcfsReflectsLiveProcessesPerVM(t *testing.T) {
 			t.Fatalf("回收后 /proc 条目仍存在: %v", err)
 		}
 		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestProcfsSnapshotSkipsProcessesReapedAfterList(t *testing.T) {
+	machine := newTestVM(t)
+	var initProcess proc.Proc
+	for _, candidate := range machine.Kernel().Processes() {
+		if candidate.ID == machine.Kernel().Init() {
+			initProcess = candidate
+			break
+		}
+	}
+	if initProcess.ID == 0 {
+		t.Fatal("missing init process")
+	}
+	child, err := machine.Kernel().Begin(initProcess.ID, "/bin/true", nil, "/work", nil, fd.Streams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := machine.Kernel().Finish(initProcess.ID, child.ID, vm.ExitStatus{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := machine.Kernel().Reap(child.ID); err != nil {
+		t.Fatal(err)
+	}
+	provider := kernelProcfs{kernel: machine.Kernel(), machine: machine}
+	entries, err := provider.entries(t.Context(), []proc.Proc{initProcess, child})
+	if err != nil {
+		t.Fatalf("stale process snapshot failed: %v", err)
+	}
+	if len(entries) != 1 || entries[0].ID != initProcess.ID {
+		t.Fatalf("entries=%+v, want only PID %d", entries, initProcess.ID)
 	}
 }
 
