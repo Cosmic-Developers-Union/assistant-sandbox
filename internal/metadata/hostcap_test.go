@@ -21,8 +21,10 @@ var hostImportAllowlist = map[string]map[string]bool{
 		"cmd/assistant-sandbox/signals_windows.go":   true,
 		"filesystem/persistent/store.go":             true,
 		"guest/hostroot/image.go":                    true,
+		"guest/hostroot/init/main.go":                true,
 		"internal/diff/diff.go":                      true,
 		"instance/native_probe_linux.go":             true,
+		"instance/native_linux_amd64.go":             true,
 		"platform/filesystem/filesystem_native.go":   true,
 		"platform/filesystem/filesystem_wasi.go":     true,
 		"platform/filesystem/modes_native.go":        true,
@@ -40,6 +42,7 @@ var hostImportAllowlist = map[string]map[string]bool{
 	"syscall": {
 		"cmd/assistant-sandbox/signals_unix.go":        true,
 		"instance/native_probe_linux.go":               true,
+		"instance/native_linux_amd64.go":               true,
 		"platform/filesystem/accesstime_linux.go":      true,
 		"platform/filesystem/accesstime_wasi.go":       true,
 		"platform/filesystem/fifo_linux.go":            true,
@@ -53,6 +56,7 @@ var hostImportAllowlist = map[string]map[string]bool{
 	},
 	"unsafe": {
 		"platform/modules/modules_wasi.go": true,
+		"guest/hostroot/init/main.go":      true,
 		// 原生批量执行:只传递持锁页/译码切片地址,不是宿主资源入口。
 		"executor/cpu/riscv64/batch.go": true, "executor/cpu/riscv64/hot_cgo.go": true,
 		"vm/memory/table.go": true,
@@ -65,6 +69,7 @@ var hostImportAllowlist = map[string]map[string]bool{
 var processLaunchAllowlist = map[string]bool{
 	"internal/diff/diff.go":                  true,
 	"instance/native_probe_linux.go":         true,
+	"instance/native_linux_amd64.go":         true,
 	"userland/toolcompat/goawk/interp/io.go": true, "userland/toolcompat/goawk/interp/iostream.go": true,
 }
 

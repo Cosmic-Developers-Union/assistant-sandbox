@@ -71,11 +71,14 @@ func (s *Selection) Close(ctx context.Context) error {
 	return s.Instance.Close(ctx)
 }
 
-// Open 按 Options.Backend 选择后端并创建实例。生产注册表当前只包含
-// RISC-V；X03 之后注册 amd64 工厂，自动选择才会在能力齐全时启用它。
+// Open 按 Options.Backend 选择后端并创建实例。linux/amd64 注册原生工厂；
+// 自动选择只在全部能力探测通过时启用它，否则回退 RISC-V。
 func Open(ctx context.Context, opts Options) (*Selection, error) {
 	factories := map[Backend]BackendFactory{
 		BackendRISC64: riscvBackendFactory{},
+	}
+	if native := registeredNativeFactory(); native != nil {
+		factories[BackendNativeAMD64] = native
 	}
 	return selectBackend(ctx, opts, probeNativeBackend, backendEnvironment{runtime.GOOS, runtime.GOARCH}, factories)
 }

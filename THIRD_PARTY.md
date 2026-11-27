@@ -89,7 +89,7 @@ Zstandard 1.5.7-r0(BSD-3-Clause OR GPL-2.0-or-later)。许可
 sha256=a9a452dc…199d5。
 
 X03 linux/amd64 原生客体根文件系统（固定归档
-`guest/hostroot/rootfs-amd64.tar.gz`，sha256=`79d49d64…f388f1f`）：
+`guest/hostroot/rootfs-amd64.tar.gz`，sha256=`a5313c4b…49b01`）：
 
 - Alpine 3.22.8 linux/amd64 基线，manifest
   `sha256:9db2934886712d877c932e07249c75a59e6ca27adfbccc05261987a17bef2d63`。

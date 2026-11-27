@@ -25,7 +25,7 @@ func TestEmbeddedArchiveDigestAndELF(t *testing.T) {
 	if err := Extract(t.Context(), archive, root); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"usr/bin/node", "usr/bin/python3.12", "lib/ld-musl-x86_64.so.1"} {
+	for _, name := range []string{"usr/bin/node", "usr/bin/python3.12", "usr/bin/assistant-init", "lib/ld-musl-x86_64.so.1"} {
 		file, err := elf.Open(filepath.Join(root, name))
 		if err != nil {
 			t.Fatal(err)

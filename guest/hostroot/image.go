@@ -20,7 +20,7 @@ import (
 
 const (
 	// ArchiveSHA256 锁定 rootfs-amd64.tar.gz 的内容。
-	ArchiveSHA256   = "79d49d645dcd26e0477b0ce05d15020b694a161e20bcd928db86e7ee5d388f1f"
+	ArchiveSHA256   = "a5313c4be478b40912facd245b50cde43395eb49e96dc689d0538613d3549b01"
 	maxArchiveBytes = 512 << 20
 	maxFileBytes    = 128 << 20
 )
@@ -45,6 +45,7 @@ func Verify(archive []byte) error {
 	required := map[string]bool{
 		"bin/bash": false, "bin/sh": false,
 		"usr/bin/node": false, "usr/bin/python3.12": false,
+		"usr/bin/assistant-init":  false,
 		"lib/ld-musl-x86_64.so.1": false,
 	}
 	var total int64

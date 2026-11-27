@@ -160,6 +160,20 @@ cat "$probe/cgroup.procs"
 探测会用临时子进程完成同样的创建/移动/删除检查，避免把控制进程留在
 测试 cgroup 中。
 
+## 隔离进程启动（X04）
+
+`instance.NativeVM` 为每台 VM 解包一份私有根目录，并用
+`os.StartProcess` 一次性创建 user/mount/PID/net/IPC/UTS/cgroup namespace。
+子进程只获得显式 stdin/stdout/stderr 与 fd 3 控制管道，环境由固定最小
+集合加调用方显式 `Env` 组成，不继承宿主环境或其他打开描述符。
+
+镜像内静态 `assistant-init` 接收私有根目录路径，先设置 mount 传播、
+bind/pivot_root、脱离旧根、挂载新 PID namespace 的 `/proc`，再设置
+hostname、`no_new_privs`、清空 bounding/effective capabilities 并安装
+seccomp denylist。只有控制管道返回 `READY` 后父进程才登记进程；任何
+pivot、挂载、权限或 seccomp 失败都返回具名初始化错误并杀死子进程，
+没有宿主解释器回退路径。
+
 ## 后端选择入口（X02）
 
 `instance.Open(ctx, Options)` 是后端选择与生命周期入口，返回

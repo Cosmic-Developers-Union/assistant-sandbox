@@ -14,7 +14,8 @@
 | Bash | `5.2.37-r0`，APK sha256 `8218982214f1b51f520d282b0c81d654846e974ce009e758acc6187bd64fe228` |
 | musl | `1.2.5-r13`，APK sha256 `359890bc7c4dc5fee7a85192de60a471c987e4664767288578beca60a44db2c8` |
 | BusyBox | `1.37.0-r20`，APK sha256 `7cc34c2dda2520b456ab4a55abc37fe245ac90f98ab9f1c7a9be3aec035df48e` |
-| 根文件系统归档 | sha256 `79d49d645dcd26e0477b0ce05d15020b694a161e20bcd928db86e7ee5d388f1f`，42,625,273 字节 |
+| `assistant-init` | 静态 Go linux/amd64 helper，sha256 `f8921ffaeed29e1d761d23538dbb718863fbd52a6b47a8b1d8625c08e7b691e9` |
+| 根文件系统归档 | sha256 `a5313c4be478b40912facd245b50cde43395eb49e96dc689d0538613d3549b01`，43,378,843 字节 |
 
 所有 APK 来自固定仓库
 `https://dl-cdn.alpinelinux.org/alpine/v3.22/main/x86_64/`；完整 38 项直接/
@@ -33,8 +34,8 @@ cmp /tmp/opencode/hostroot-a.tar.gz /tmp/opencode/hostroot-b.tar.gz
 两次独立构建实测：
 
 ```text
-79d49d645dcd26e0477b0ce05d15020b694a161e20bcd928db86e7ee5d388f1f  hostroot-a.tar.gz
-79d49d645dcd26e0477b0ce05d15020b694a161e20bcd928db86e7ee5d388f1f  hostroot-b.tar.gz
+a5313c4be478b40912facd245b50cde43395eb49e96dc689d0538613d3549b01  hostroot-a.tar.gz
+a5313c4be478b40912facd245b50cde43395eb49e96dc689d0538613d3549b01  hostroot-b.tar.gz
 ```
 
 脚本固定 Docker 镜像摘要、APK 文件、`/etc/hostname`、`/etc/hosts`、
@@ -70,6 +71,15 @@ Python 3.12.16
 $ chroot rootfs /bin/bash --noprofile --norc -c 'printf "%s\n" shell-ok'
 shell-ok
 ```
+
+## 隔离 init
+
+镜像内 `/usr/bin/assistant-init` 由 `guest/hostroot/init/main.go` 以
+`CGO_ENABLED=0 GOOS=linux GOARCH=amd64 -trimpath -ldflags '-s -w -buildid='`
+静态构建。父进程创建 namespace 后启动该 helper；helper 在受信控制面
+完成 bind mount、`pivot_root`、旧根脱离、`/proc` 挂载、guest hostname、
+`no_new_privs`、bounding/effective capabilities 清除和 seccomp denylist，
+再通过控制管道报告 READY 并关闭管道，最后 `execve` 客体程序。
 
 ## 损坏镜像
 

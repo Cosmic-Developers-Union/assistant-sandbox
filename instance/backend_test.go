@@ -3,6 +3,7 @@ package instance
 import (
 	"context"
 	"errors"
+	"fmt"
 	"runtime"
 	"testing"
 )
@@ -158,16 +159,22 @@ func TestNativeBackendProbe(t *testing.T) {
 	}
 }
 
-func TestOpenDefaultsToRISC64UntilNativeFactoryIsRegistered(t *testing.T) {
+func TestOpenSelectsAvailableBackend(t *testing.T) {
 	selection, err := Open(t.Context(), Options{Deterministic: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = selection.Close(t.Context()) }()
-	if selection.Backend != BackendRISC64 {
-		t.Fatalf("backend=%s want %s", selection.Backend, BackendRISC64)
-	}
-	if _, ok := selection.Instance.(*VM); !ok {
-		t.Fatalf("instance type=%T want *instance.VM", selection.Instance)
+	switch selection.Backend {
+	case BackendRISC64:
+		if _, ok := selection.Instance.(*VM); !ok {
+			t.Fatalf("instance type=%T want *instance.VM", selection.Instance)
+		}
+	case BackendNativeAMD64:
+		if fmt.Sprintf("%T", selection.Instance) != "*instance.NativeVM" {
+			t.Fatalf("instance type=%T want *instance.NativeVM", selection.Instance)
+		}
+	default:
+		t.Fatalf("unexpected backend %s", selection.Backend)
 	}
 }
