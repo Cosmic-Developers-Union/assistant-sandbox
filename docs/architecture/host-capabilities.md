@@ -18,7 +18,7 @@
 | 宿主网络 | `vm/net.Network`、`platform/network`，默认 `Denied` | M09 出口策略在 vm/net 逐地址/端口/协议裁决；未配置时非回环目标 ENETUNREACH；guest socket 回环仍在 VM 命名空间内 |
 | 宿主进程 | `internal/diff` | 仅用于差分参考执行；客体执行路径不可达 |
 | 原生后端控制面 | `instance/native_linux_amd64.go`、`instance/native_probe_linux.go` | linux/amd64 创建 user/mount/PID/net/IPC/UTS/cgroup namespace，只传递显式 stdio/控制管道并启动镜像内 init；不读取宿主 PATH、环境或任意描述符 |
-| 原生客体根文件系统 | `guest/hostroot` | 只在 linux/amd64 嵌入固定归档；解包目标由部署层提供，路径经根边界校验；镜像内 `assistant-init` 完成 pivot_root、capabilities 清除与 seccomp，不访问宿主 PATH 或解释器 |
+| 原生客体根文件系统 | `guest/hostroot` | 只在 linux/amd64 嵌入固定归档；解包目标由部署层提供，路径经根边界校验；镜像内 `assistant-init` 完成 pivot_root、标准字符设备 bind、capabilities 清除与 seccomp，不访问宿主 PATH 或解释器 |
 | CLI 终端 | `cmd/assistant-sandbox/pty.go`、`signals_*.go` | 仅把宿主 stdin/stdout 桥接到 VM PTY；使用 `term` 切换 raw 模式，并捕获终止信号恢复终端，不读取宿主文件 |
 | 扩展模块 | `vm/bridge.Bridge`、`capability.Set.Bridge` | 扩展调用必须经能力端口，不能取得宿主引用 |
 | 原生批量执行（受控 unsafe） | `executor/cpu/riscv64/batch.go`、`hot_cgo.go`、`vm/memory/table.go` | 仅把持锁期间的页数据/译码指令切片地址传给同进程批量解释器；调用期间锁覆盖生命周期，不读取宿主文件、网络、时钟或进程能力 |

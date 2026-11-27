@@ -160,6 +160,18 @@ cat "$probe/cgroup.procs"
 探测会用临时子进程完成同样的创建/移动/删除检查，避免把控制进程留在
 测试 cgroup 中。
 
+## 进程、信号与清理（X06）
+
+`NativeVM.Exec` 返回 `NativeProcess`，提供 `Wait`、`Signal` 与显式
+`Cancel`；等待上下文到期只取消等待，不隐式杀掉进程。正常退出、非零
+退出与 SIGKILL 分别记录退出码/信号。PID namespace init 收到 SIGTERM
+时遵循 Linux PID 1 语义，客体 shell 可通过 trap 处理并返回约定退出码。
+
+`Shutdown`/`Close` 幂等杀死全部活动 init 并等待宿主句柄，Linux 在 PID
+namespace init 退出时清理全部后代；随后删除私有根目录。授权 bind
+mount 只存在于子进程 mount namespace，随进程树退出释放。回归用例用
+后台孙进程持续写授权目录的心跳，确认关闭后心跳不再变化。
+
 ## 文件系统与授权挂载（X05）
 
 每台 `NativeVM` 在创建时解包独立根目录，默认 `/work` 与 `/tmp` 都是

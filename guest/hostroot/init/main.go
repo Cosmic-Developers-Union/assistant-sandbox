@@ -61,10 +61,10 @@ func run() (int, error) {
 	if _, err := fmt.Fprintf(control, "READY %d\n", os.Getpid()); err != nil {
 		return fail(fmt.Errorf("signal readiness: %w", err))
 	}
-	if err := control.Close(); err != nil {
-		return 125, fmt.Errorf("close control descriptor: %w", err)
-	}
+	unix.CloseOnExec(controlFD)
 	if err := unix.Exec(program[0], program, minimalEnvironment()); err != nil {
+		_, _ = fmt.Fprintf(control, "ERROR exec guest program %s: %v\n", program[0], err)
+		_ = control.Close()
 		return 127, fmt.Errorf("exec guest program %s: %w", program[0], err)
 	}
 	return 0, nil
@@ -95,14 +95,52 @@ func parseArguments(arguments []string) (string, int, string, map[string]string,
 	return arguments[1], descriptor, arguments[5], mounts, arguments[position+1:], nil
 }
 
+func ensurePrivateMounts() error {
+	data, err := os.ReadFile("/proc/self/mountinfo")
+	if err != nil {
+		return fmt.Errorf("read mount propagation: %w", err)
+	}
+	for line := range strings.SplitSeq(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 7 || fields[4] != "/" {
+			continue
+		}
+		separator := -1
+		for index := 6; index < len(fields); index++ {
+			if fields[index] == "-" {
+				separator = index
+				break
+			}
+		}
+		if separator < 0 {
+			continue
+		}
+		for _, option := range fields[6:separator] {
+			if strings.HasPrefix(option, "shared:") {
+				if err := unix.Mount("", "/", "", unix.MS_REC|unix.MS_PRIVATE, ""); err != nil {
+					return fmt.Errorf("make shared mounts private: %w", err)
+				}
+				return nil
+			}
+		}
+		// Private and slave mounts do not propagate our bind mounts to
+		// the host; locked runner roots may reject changing them.
+		return nil
+	}
+	return fmt.Errorf("root mount missing from mountinfo")
+}
+
 func isolateRoot(rootfs string, mounts map[string]string) error {
-	if err := unix.Mount("", "/", "", unix.MS_REC|unix.MS_PRIVATE, ""); err != nil {
-		return fmt.Errorf("make mounts private: %w", err)
+	if err := ensurePrivateMounts(); err != nil {
+		return err
 	}
 	// Bind before changing the process root; pivot_root requires the old
 	// host root to remain the caller's current root.
 	if err := unix.Mount(rootfs, rootfs, "", unix.MS_BIND|unix.MS_REC, ""); err != nil {
 		return fmt.Errorf("bind guest root: %w", err)
+	}
+	if err := applyDevices(rootfs); err != nil {
+		return err
 	}
 	if err := applyMounts(rootfs, mounts); err != nil {
 		return err
@@ -125,6 +163,28 @@ func isolateRoot(rootfs string, mounts map[string]string) error {
 	}
 	if err := os.Remove("/.old-root"); err != nil {
 		return fmt.Errorf("remove pivot directory: %w", err)
+	}
+	return nil
+}
+
+func applyDevices(rootfs string) error {
+	for _, name := range []string{"null", "zero", "full", "random", "urandom", "tty"} {
+		source := filepath.Join("/dev", name)
+		if _, err := os.Stat(source); errors.Is(err, os.ErrNotExist) {
+			continue
+		} else if err != nil {
+			return fmt.Errorf("stat host device %s: %w", source, err)
+		}
+		target := filepath.Join(rootfs, "dev", name)
+		if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil { //nolint:gosec // target is the fixed private rootfs plus a constant device name
+			return fmt.Errorf("create guest device directory: %w", err)
+		}
+		if err := os.WriteFile(target, nil, 0o600); err != nil && !errors.Is(err, os.ErrExist) { //nolint:gosec // target is the fixed private rootfs plus a constant device name
+			return fmt.Errorf("create guest device mountpoint %s: %w", name, err)
+		}
+		if err := unix.Mount(source, target, "", unix.MS_BIND, ""); err != nil {
+			return fmt.Errorf("bind guest device %s: %w", name, err)
+		}
 	}
 	return nil
 }

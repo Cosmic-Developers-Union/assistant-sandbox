@@ -3,10 +3,10 @@
 package instance
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path"
 	"path/filepath"
@@ -295,6 +295,15 @@ func (p *NativeProcess) Signal(signal syscall.Signal) error {
 	return p.process.Signal(signal)
 }
 
+// Cancel 强制终止当前客体进程；PID namespace init 退出时内核会清理
+// 该命名空间内的全部后代。
+func (p *NativeProcess) Cancel() error {
+	return p.process.Kill()
+}
+
+// Shutdown 是 Close 的生命周期别名。
+func (v *NativeVM) Shutdown(ctx context.Context) error { return v.Close(ctx) }
+
 // Close 幂等关闭 VM：杀死全部活动进程并删除私有根目录。
 func (v *NativeVM) Close(ctx context.Context) error {
 	v.mu.Lock()
@@ -368,8 +377,12 @@ func awaitNativeReady(ctx context.Context, control *os.File, process *NativeProc
 	}
 	result := make(chan ready, 1)
 	go func() {
-		line, err := bufio.NewReader(control).ReadString('\n')
-		result <- ready{line: strings.TrimSpace(line), err: err}
+		data, err := io.ReadAll(io.LimitReader(control, 4096))
+		response := strings.TrimSpace(string(data))
+		if err == nil && strings.HasPrefix(response, "READY ") && !strings.Contains(response, "\n") {
+			response = "READY"
+		}
+		result <- ready{line: response, err: err}
 	}()
 	select {
 	case <-ctx.Done():
@@ -378,11 +391,11 @@ func awaitNativeReady(ctx context.Context, control *os.File, process *NativeProc
 		if response.err != nil {
 			return fmt.Errorf("read native init status: %w", response.err)
 		}
-		if strings.HasPrefix(response.line, "READY ") {
-			return nil
+		if strings.Contains(response.line, "ERROR ") {
+			return fmt.Errorf("native init failed: %s", response.line[strings.Index(response.line, "ERROR ")+len("ERROR "):])
 		}
-		if strings.HasPrefix(response.line, "ERROR ") {
-			return fmt.Errorf("native init failed: %s", strings.TrimPrefix(response.line, "ERROR "))
+		if response.line == "READY" || strings.HasPrefix(response.line, "READY ") {
+			return nil
 		}
 		return fmt.Errorf("invalid native init response %q", response.line)
 	}

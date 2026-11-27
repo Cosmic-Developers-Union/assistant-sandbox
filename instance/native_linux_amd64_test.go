@@ -3,11 +3,15 @@
 package instance
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func TestNativeVMIsolatesProcessAndResources(t *testing.T) {
@@ -158,6 +162,126 @@ func runNativeShell(t *testing.T, machine *NativeVM, script string, args []strin
 	if state.Code != 0 || state.Signal != 0 {
 		t.Fatalf("guest exit=%+v script=%s", state, script)
 	}
+}
+
+func TestNativeProcessExitWaitCancelAndSignal(t *testing.T) {
+	machine, err := newNativeVM(t.Context(), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = machine.Close(t.Context()) }()
+	for _, code := range []int{0, 7} {
+		state, err := machine.Run(t.Context(), NativeExecSpec{
+			Program: "/bin/sh", Args: []string{"-c", "exit " + strconv.Itoa(code)}, Dir: "/work",
+		})
+		if err != nil || state.Code != code || state.Signal != 0 {
+			t.Fatalf("exit %d: state=%+v err=%v", code, state, err)
+		}
+	}
+
+	process, err := machine.Exec(t.Context(), NativeExecSpec{Program: "/bin/sleep", Args: []string{"30"}, Dir: "/work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitCtx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancel()
+	if _, err := process.Wait(waitCtx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("cancelled wait error=%v", err)
+	}
+	if err := process.Cancel(); err != nil {
+		t.Fatal(err)
+	}
+	state, err := process.Wait(t.Context())
+	if err != nil || state.Signal != syscall.SIGKILL || state.Code != 128+int(syscall.SIGKILL) {
+		t.Fatalf("cancelled process state=%+v err=%v", state, err)
+	}
+
+	signaled, err := machine.Exec(t.Context(), NativeExecSpec{
+		Program: "/bin/sh",
+		Args:    []string{"-c", `trap "exit 42" TERM; printf ready > /work/signal-ready; while :; do sleep 1; done`},
+		Dir:     "/work",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForNativeFile(t, filepath.Join(machine.Root(), "work", "signal-ready"), "ready")
+	if err := signaled.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	state, err = signaled.Wait(t.Context())
+	if err != nil || state.Code != 42 || state.Signal != 0 {
+		t.Fatalf("signaled process state=%+v err=%v", state, err)
+	}
+}
+
+func TestNativeShutdownKillsProcessTreeAndReleasesRoot(t *testing.T) {
+	machine, err := newNativeVM(t.Context(), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := machine.Root()
+	hostDir := t.TempDir()
+	if err := machine.Mount(hostDir, "/work/host"); err != nil {
+		t.Fatal(err)
+	}
+	_, err = machine.Exec(t.Context(), NativeExecSpec{
+		Program: "/bin/sh",
+		Args: []string{"-c", `while :; do echo tick > /work/host/heartbeat; sleep 1; done &
+printf ready > /work/host/ready
+wait`},
+		Dir: "/work",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForNativeFile(t, filepath.Join(hostDir, "ready"), "ready")
+	waitForNativePath(t, filepath.Join(hostDir, "heartbeat"))
+	before, err := os.ReadFile(filepath.Join(hostDir, "heartbeat"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := machine.Shutdown(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(root); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("private root still exists: %v", err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	after, err := os.ReadFile(filepath.Join(hostDir, "heartbeat"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("background process tree still running: heartbeat %q -> %q", before, after)
+	}
+	if err := machine.Shutdown(t.Context()); err != nil {
+		t.Fatalf("repeated shutdown: %v", err)
+	}
+}
+
+func waitForNativePath(t *testing.T, name string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(name); err == nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("path %s was not created", name)
+}
+
+func waitForNativeFile(t *testing.T, name, want string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(name)
+		if err == nil && ((want == "" && len(data) > 0) || strings.TrimSpace(string(data)) == want) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("file %s did not contain %q", name, want)
 }
 
 func TestNativeInitFailureDoesNotFallbackToHost(t *testing.T) {
