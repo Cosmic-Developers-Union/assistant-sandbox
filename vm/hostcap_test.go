@@ -50,6 +50,10 @@ func TestVMProductionCodeHasNoAmbientHostImports(t *testing.T) {
 		"vm/net/stat.go": {"time": true},
 		// 管道 fstat 视图只返回零值 ModTime。
 		"vm/pipe/pipe.go": {"time": true},
+		// 后端选择与原生宿主能力探测属于部署控制面，不进入客体核心。
+		"instance/backend.go":            {"time": true},
+		"instance/native_probe_linux.go": {"os": true, "path/filepath": true, "syscall": true},
+
 		// cgroupfs 的 FileInfo 只返回零值 ModTime;内容来自 VM 进程表。
 		"instance/cgroupfs.go": {"time": true},
 
