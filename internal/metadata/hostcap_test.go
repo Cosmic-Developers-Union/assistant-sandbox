@@ -20,6 +20,7 @@ var hostImportAllowlist = map[string]map[string]bool{
 		"cmd/assistant-sandbox/signals_unix.go":      true,
 		"cmd/assistant-sandbox/signals_windows.go":   true,
 		"filesystem/persistent/store.go":             true,
+		"guest/hostroot/image.go":                    true,
 		"internal/diff/diff.go":                      true,
 		"instance/native_probe_linux.go":             true,
 		"platform/filesystem/filesystem_native.go":   true,

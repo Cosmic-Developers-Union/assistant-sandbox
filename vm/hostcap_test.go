@@ -50,6 +50,9 @@ func TestVMProductionCodeHasNoAmbientHostImports(t *testing.T) {
 		"vm/net/stat.go": {"time": true},
 		// 管道 fstat 视图只返回零值 ModTime。
 		"vm/pipe/pipe.go": {"time": true},
+		// 原生客体根文件系统只解包到调用方提供的临时目录。
+		"guest/hostroot/image.go": {"os": true, "path/filepath": true},
+
 		// 后端选择与原生宿主能力探测属于部署控制面，不进入客体核心。
 		"instance/backend.go":            {"time": true},
 		"instance/native_probe_linux.go": {"os": true, "path/filepath": true, "syscall": true},

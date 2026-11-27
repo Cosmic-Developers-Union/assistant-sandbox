@@ -87,3 +87,19 @@ Zstandard 1.5.7-r0(BSD-3-Clause OR GPL-2.0-or-later)。许可
 [Zlib.txt](licenses/Zlib.txt)、[BSD-3-Clause.txt](licenses/BSD-3-Clause.txt)。
 上述 C++ 子集归档为 `testdata/gcc14-cxx-riscv64-toolchain.tar.gz`
 sha256=a9a452dc…199d5。
+
+X03 linux/amd64 原生客体根文件系统（固定归档
+`guest/hostroot/rootfs-amd64.tar.gz`，sha256=`79d49d64…f388f1f`）：
+
+- Alpine 3.22.8 linux/amd64 基线，manifest
+  `sha256:9db2934886712d877c932e07249c75a59e6ca27adfbccc05261987a17bef2d63`。
+- Node.js 22.23.5-r0，MIT；CPython/pyc 3.12.16-r0，PSF-2.0；
+  Bash 5.2.37-r0 与 Readline 8.2.13-r1，GPL-3.0-or-later；
+  BusyBox 1.37.0-r20，GPL-2.0-only；musl 1.2.5-r13，MIT。
+- ICU 76.1（Unicode-3.0）、OpenSSL 3.5（Apache-2.0）、bzip2、zlib、
+  Expat/c-ares/nghttp2/libffi/simdutf（MIT）、SQLite（public domain）、
+  simdjson（Apache-2.0）、Zstandard（BSD-3-Clause OR GPL-2.0-or-later）、
+  NCurses（X11）及 GCC Runtime Library Exception 覆盖的运行库。
+- 全部 38 个 APK 的来源 URL 与逐包 sha256 锁定于
+  `guest/hostroot/APKS.sha256`；版本、构建、ELF/加载器核对和完整许可
+  说明见 [amd64 根文件系统文档](docs/runtime/amd64-rootfs.md)。
