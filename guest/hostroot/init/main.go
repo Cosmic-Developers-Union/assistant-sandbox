@@ -6,6 +6,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path"
 	"path/filepath"
@@ -29,7 +30,7 @@ func main() {
 }
 
 func run() (int, error) {
-	rootfs, controlFD, directory, mounts, program, err := parseArguments(os.Args[1:])
+	rootfs, controlFD, gateFD, directory, mounts, program, err := parseArguments(os.Args[1:])
 	if err != nil {
 		return 125, err
 	}
@@ -41,6 +42,17 @@ func run() (int, error) {
 		_, _ = fmt.Fprintf(control, "ERROR %v\n", err)
 		_ = control.Close()
 		return 125, err
+	}
+	gate := os.NewFile(uintptr(gateFD), "assistant-start-gate")
+	if gate == nil {
+		return fail(errors.New("invalid start gate descriptor"))
+	}
+	var token [1]byte
+	if _, err := io.ReadFull(gate, token[:]); err != nil {
+		return fail(fmt.Errorf("wait for cgroup admission: %w", err))
+	}
+	if err := gate.Close(); err != nil {
+		return fail(fmt.Errorf("close start gate: %w", err))
 	}
 
 	if err := isolateRoot(rootfs, mounts); err != nil {
@@ -70,29 +82,33 @@ func run() (int, error) {
 	return 0, nil
 }
 
-func parseArguments(arguments []string) (string, int, string, map[string]string, []string, error) {
-	if len(arguments) < 8 || arguments[0] != "--rootfs" || arguments[2] != "--control-fd" ||
-		arguments[4] != "--chdir" {
-		return "", 0, "", nil, nil, errors.New("usage: assistant-init --rootfs PATH --control-fd N --chdir DIR [--mount GUEST=HOST ...] -- PROGRAM [ARG...]")
+func parseArguments(arguments []string) (string, int, int, string, map[string]string, []string, error) {
+	if len(arguments) < 10 || arguments[0] != "--rootfs" || arguments[2] != "--control-fd" ||
+		arguments[4] != "--chdir" || arguments[6] != "--gate-fd" {
+		return "", 0, 0, "", nil, nil, errors.New("usage: assistant-init --rootfs PATH --control-fd N --chdir DIR --gate-fd N [--mount GUEST=HOST ...] -- PROGRAM [ARG...]")
 	}
 	descriptor, err := strconv.Atoi(arguments[3])
 	if err != nil || descriptor < 3 {
-		return "", 0, "", nil, nil, errors.New("invalid control descriptor")
+		return "", 0, 0, "", nil, nil, errors.New("invalid control descriptor")
+	}
+	gateDescriptor, err := strconv.Atoi(arguments[7])
+	if err != nil || gateDescriptor < 4 {
+		return "", 0, 0, "", nil, nil, errors.New("invalid start gate descriptor")
 	}
 	mounts := map[string]string{}
-	position := 6
+	position := 8
 	for position+1 < len(arguments) && arguments[position] == "--mount" {
 		guest, host, ok := strings.Cut(arguments[position+1], "=")
 		if !ok || !filepath.IsAbs(guest) || !filepath.IsAbs(host) {
-			return "", 0, "", nil, nil, errors.New("mount must use absolute GUEST=HOST paths")
+			return "", 0, 0, "", nil, nil, errors.New("mount must use absolute GUEST=HOST paths")
 		}
 		mounts[filepath.Clean(guest)] = filepath.Clean(host)
 		position += 2
 	}
 	if position >= len(arguments) || arguments[position] != "--" || position+1 >= len(arguments) {
-		return "", 0, "", nil, nil, errors.New("missing guest program")
+		return "", 0, 0, "", nil, nil, errors.New("missing guest program")
 	}
-	return arguments[1], descriptor, arguments[5], mounts, arguments[position+1:], nil
+	return arguments[1], descriptor, gateDescriptor, arguments[5], mounts, arguments[position+1:], nil
 }
 
 func ensurePrivateMounts() error {

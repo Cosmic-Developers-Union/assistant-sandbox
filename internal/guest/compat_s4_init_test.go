@@ -225,8 +225,10 @@ printf 'tty-open-ok\n' >> /work/init-sysinit
 	}
 
 	var sleepProcess proc.Proc
+	var childNamespace string
+	var namespaceErr error
 	deadline = time.Now().Add(30 * time.Second)
-	for {
+	for childNamespace == "" {
 		for _, process := range machine.Kernel().Processes() {
 			if process.Program == "/bin/sleep" && process.State == proc.Running {
 				sleepProcess = process
@@ -234,20 +236,25 @@ printf 'tty-open-ok\n' >> /work/init-sysinit
 			}
 		}
 		if sleepProcess.ID != 0 {
-			break
+			childNamespace, namespaceErr = machine.Filesystem().Readlink(t.Context(),
+				"/proc/"+strconv.FormatUint(uint64(sleepProcess.ID), 10)+"/ns/mnt")
+			if namespaceErr == nil {
+				break
+			}
+			// init 的 respawn 子进程可能在快照与 Readlink 之间退出；
+			// 重新等待下一个稳定子进程，而不是把竞态当语义失败。
+			sleepProcess = proc.Proc{}
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("init 未启动 respawn 子进程: output=%q", output.String())
+			t.Fatalf("读取 respawn 子进程 namespace 超时: output=%q err=%v", output.String(), namespaceErr)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 	if sleepProcess.Parent != initProcess.ID {
 		t.Fatalf("respawn 父进程=%d want %d", sleepProcess.Parent, initProcess.ID)
 	}
-	childNamespace, err := machine.Filesystem().Readlink(t.Context(),
-		"/proc/"+strconv.FormatUint(uint64(sleepProcess.ID), 10)+"/ns/mnt")
-	if err != nil || childNamespace != namespaces["mnt"] {
-		t.Fatalf("子进程 mnt namespace=%q want %q err=%v", childNamespace, namespaces["mnt"], err)
+	if childNamespace != namespaces["mnt"] {
+		t.Fatalf("子进程 mnt namespace=%q want %q", childNamespace, namespaces["mnt"])
 	}
 
 	procs, err := readGuestFile(machine, "/sys/fs/cgroup/assistant-sandbox/cgroup.procs")

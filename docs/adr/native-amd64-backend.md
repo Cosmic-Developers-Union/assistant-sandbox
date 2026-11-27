@@ -160,6 +160,19 @@ cat "$probe/cgroup.procs"
 探测会用临时子进程完成同样的创建/移动/删除检查，避免把控制进程留在
 测试 cgroup 中。
 
+## 资源限制与计量（X07）
+
+每台 VM 在可写 cgroup v2 委派目录下创建独立父/叶两层 cgroup，启用
+`cpu`、`memory`、`pids` 控制器并设置 `memory.max`、`cpu.max`、
+`pids.max`。子进程启动后先被写入 `cgroup.procs`，再通过独立 gate
+管道放行；因此客体 init 与所有后代从第一次执行起就受配额约束。
+
+`NativeVM.Status` 读取 `memory.current/max`、`cpu.stat usage_usec`、
+`cpu.max` 与 `pids.current/max`。显式非零 RISC-V `Work` 返回
+`ErrNativeWorkBudgetUnsupported`，CLI 自动选择层负责转换默认预算。
+`ProcessTimeout` 由父进程定时器升级为 SIGKILL。关闭时先写
+`cgroup.kill`，等待宿主句柄后删除叶/父 cgroup 与私有根目录。
+
 ## 进程、信号与清理（X06）
 
 `NativeVM.Exec` 返回 `NativeProcess`，提供 `Wait`、`Signal` 与显式

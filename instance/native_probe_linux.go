@@ -22,8 +22,14 @@ func probeNativeBackend(ctx context.Context) (BackendCapabilities, error) {
 		return capabilities, ErrNativeArchitecture
 	}
 
+	probeRoot, err := os.MkdirTemp("", "assistant-namespace-probe-")
+	if err != nil {
+		return capabilities, fmt.Errorf("create namespace probe directory: %w", err)
+	}
+	defer func() { _ = os.Remove(probeRoot) }()
 	attributes := &os.ProcAttr{
-		Env:   []string{},
+		Dir:   "/",
+		Env:   []string{"PATH=/usr/bin:/bin"},
 		Files: []*os.File{},
 		Sys: &syscall.SysProcAttr{
 			Cloneflags: syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS |
@@ -39,7 +45,11 @@ func probeNativeBackend(ctx context.Context) (BackendCapabilities, error) {
 			Pdeathsig:                  syscall.SIGKILL,
 		},
 	}
-	process, err := os.StartProcess("/bin/true", []string{"true"}, attributes)
+	probeScript := `if awk '$5 == "/" && /shared:/ { found=1 } END { exit !found }' /proc/self/mountinfo; then
+  mount --make-rprivate / || exit 1
+fi
+mount --bind "$1" "$1"`
+	process, err := os.StartProcess("/bin/sh", []string{"sh", "-c", probeScript, "sh", probeRoot}, attributes)
 	if err != nil {
 		return capabilities, fmt.Errorf("create namespace probe: %w", err)
 	}
@@ -90,9 +100,14 @@ func seccompAvailable() (bool, error) {
 }
 
 func delegatedCgroupAvailable(ctx context.Context) (bool, bool, error) {
+	_, err := delegatedCgroupDirectory(ctx)
+	return err == nil, err == nil, err
+}
+
+func delegatedCgroupDirectory(ctx context.Context) (string, error) {
 	data, err := os.ReadFile("/proc/self/cgroup")
 	if err != nil {
-		return false, false, fmt.Errorf("read current cgroup: %w", err)
+		return "", fmt.Errorf("read current cgroup: %w", err)
 	}
 	var relative string
 	for line := range strings.SplitSeq(string(data), "\n") {
@@ -103,13 +118,13 @@ func delegatedCgroupAvailable(ctx context.Context) (bool, bool, error) {
 		}
 	}
 	if relative == "" {
-		return false, false, fmt.Errorf("cgroup v2 path missing")
+		return "", fmt.Errorf("cgroup v2 path missing")
 	}
 	current := filepath.Join("/sys/fs/cgroup", filepath.Clean(relative))
 	var lastErr error
 	for current != "/sys/fs/cgroup" {
 		if err := ctx.Err(); err != nil {
-			return false, false, err
+			return "", err
 		}
 		probe, err := os.MkdirTemp(current, ".assistant-sandbox-probe-")
 		if err != nil {
@@ -122,26 +137,36 @@ func delegatedCgroupAvailable(ctx context.Context) (bool, bool, error) {
 			continue
 		}
 		controllers, readErr := os.ReadFile(filepath.Join(probe, "cgroup.controllers")) //nolint:gosec // probe is created by MkdirTemp under cgroupfs
-		removeErr := os.Remove(probe)
-		if readErr != nil {
-			return true, false, fmt.Errorf("read cgroup controllers: %w", readErr)
-		}
-		if removeErr != nil {
-			return true, false, fmt.Errorf("remove cgroup probe: %w", removeErr)
-		}
 		available := map[string]bool{}
 		for _, controller := range strings.Fields(string(controllers)) {
 			available[controller] = true
 		}
-		if available["cpu"] && available["memory"] && available["pids"] {
-			return true, true, nil
+		if readErr == nil && available["cpu"] && available["memory"] && available["pids"] {
+			leaf := filepath.Join(probe, "vm")
+			if err := os.Mkdir(leaf, 0o750); err == nil {
+				if err := os.WriteFile(filepath.Join(probe, "cgroup.subtree_control"), []byte("+cpu +memory +pids"), 0o600); err == nil { //nolint:gosec // probe is created by MkdirTemp under cgroupfs
+					if err := os.WriteFile(filepath.Join(leaf, "memory.max"), []byte("64M"), 0o600); err == nil { //nolint:gosec // leaf is the probe child
+						_ = os.WriteFile(filepath.Join(leaf, "cpu.max"), []byte("50000 100000"), 0o600)
+						_ = os.WriteFile(filepath.Join(leaf, "pids.max"), []byte("8"), 0o600)
+						_ = os.Remove(leaf)
+						_ = os.Remove(probe)
+						return current, nil
+					}
+				}
+				_ = os.Remove(leaf)
+			}
 		}
-		lastErr = fmt.Errorf("cgroup %s lacks cpu/memory/pids controllers", current)
+		_ = os.Remove(probe)
+		if readErr != nil {
+			lastErr = readErr
+		} else {
+			lastErr = fmt.Errorf("cgroup %s cannot enable cpu/memory/pids for a child", current)
+		}
 		parent := filepath.Dir(current)
 		if parent == current {
 			break
 		}
 		current = parent
 	}
-	return true, false, fmt.Errorf("no writable delegated cgroup: %w", lastErr)
+	return "", fmt.Errorf("no writable delegated cgroup: %w", lastErr)
 }

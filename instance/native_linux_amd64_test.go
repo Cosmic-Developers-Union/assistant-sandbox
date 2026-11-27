@@ -12,10 +12,12 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm/resources"
 )
 
 func TestNativeVMIsolatesProcessAndResources(t *testing.T) {
-	machine, err := newNativeVM(t.Context(), Options{})
+	machine, err := newNativeVMForTest(t, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +100,7 @@ printf "arch=%s pid=%s\n" "$(uname -m)" "$$"
 }
 
 func TestNativeVMFileStateAndAuthorizedMounts(t *testing.T) {
-	machine, err := newNativeVM(t.Context(), Options{})
+	machine, err := newNativeVMForTest(t, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +108,7 @@ func TestNativeVMFileStateAndAuthorizedMounts(t *testing.T) {
 	runNativeShell(t, machine, `printf alpha > /work/shared; test "$(cat /work/shared)" = alpha`, nil)
 	runNativeShell(t, machine, `test "$(cat /work/shared)" = alpha; printf beta > /work/shared`, nil)
 
-	other, err := newNativeVM(t.Context(), Options{})
+	other, err := newNativeVMForTest(t, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,6 +153,18 @@ if cat /work/host/relative-escape; then exit 22; fi
 	runNativeShell(t, other, `test ! -e /work/host/from-host`, nil)
 }
 
+func newNativeVMForTest(t *testing.T, opts Options) (*NativeVM, error) {
+	t.Helper()
+	if _, err := probeNativeBackend(t.Context()); err != nil {
+		t.Skipf("linux/amd64 native isolation unavailable on this host: %v", err)
+	}
+	machine, err := newNativeVM(t.Context(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return machine, nil
+}
+
 func runNativeShell(t *testing.T, machine *NativeVM, script string, args []string) {
 	t.Helper()
 	command := []string{"-c", script, "sh"}
@@ -165,7 +179,7 @@ func runNativeShell(t *testing.T, machine *NativeVM, script string, args []strin
 }
 
 func TestNativeProcessExitWaitCancelAndSignal(t *testing.T) {
-	machine, err := newNativeVM(t.Context(), Options{})
+	machine, err := newNativeVMForTest(t, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +229,7 @@ func TestNativeProcessExitWaitCancelAndSignal(t *testing.T) {
 }
 
 func TestNativeShutdownKillsProcessTreeAndReleasesRoot(t *testing.T) {
-	machine, err := newNativeVM(t.Context(), Options{})
+	machine, err := newNativeVMForTest(t, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,8 +298,120 @@ func waitForNativeFile(t *testing.T, name, want string) {
 	t.Fatalf("file %s did not contain %q", name, want)
 }
 
+func TestNativeResourceLimitsAndStatus(t *testing.T) {
+	opts := Options{
+		Session:      resources.Limits{Memory: 64 << 20},
+		CPUs:         1,
+		MaxProcesses: 8,
+	}
+	machine, _ := newNativeVMForTest(t, opts)
+	defer func() { _ = machine.Close(t.Context()) }()
+	status, err := machine.Status(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.MemoryMax != 64<<20 || status.CPUQuotaMicros != 100000 ||
+		status.CPUPeriodMicros != 100000 || status.PidsMax != 8 {
+		t.Fatalf("unexpected native status: %+v", status)
+	}
+	runNativeShell(t, machine, `printf within-limit`, nil)
+
+	spin, err := machine.Exec(t.Context(), NativeExecSpec{
+		Program: "/bin/sh", Args: []string{"-c", `while :; do :; done`}, Dir: "/work",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	status, err = machine.Status(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.CPUUsageMicros == 0 {
+		t.Fatal("CPU usage was not metered")
+	}
+	t.Logf("cpu quota=%d/%d usec, observed usage=%d usec", status.CPUQuotaMicros, status.CPUPeriodMicros, status.CPUUsageMicros)
+	if err := spin.Cancel(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := spin.Wait(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	adjacent, _ := newNativeVMForTest(t, opts)
+	defer func() { _ = adjacent.Close(t.Context()) }()
+	runNativeShell(t, adjacent, `printf adjacent-ok`, nil)
+
+	memoryState, err := machine.Run(t.Context(), NativeExecSpec{
+		Program: "/bin/sh",
+		Args:    []string{"-c", `dd if=/dev/zero of=/work/too-large bs=1M count=128`},
+		Dir:     "/work",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if memoryState.Code == 0 && memoryState.Signal == 0 {
+		t.Fatalf("memory overflow was not stopped: %+v", memoryState)
+	}
+	runNativeShell(t, adjacent, `printf still-ok`, nil)
+
+	limited, _ := newNativeVMForTest(t, Options{MaxProcesses: 4})
+	defer func() { _ = limited.Close(t.Context()) }()
+	diagnostic, err := os.CreateTemp(t.TempDir(), "pids-stderr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = diagnostic.Close() }()
+	process, err := limited.Exec(t.Context(), NativeExecSpec{
+		Program: "/bin/sh",
+		Args:    []string{"-c", `i=0; while [ "$i" -lt 32 ]; do sleep 30 & i=$((i + 1)); done; wait`},
+		Dir:     "/work",
+		Stderr:  diagnostic,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	status, err = limited.Status(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.PidsCurrent > status.PidsMax {
+		t.Fatalf("pids.current=%d exceeds pids.max=%d", status.PidsCurrent, status.PidsMax)
+	}
+	if err := process.Cancel(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		t.Fatal(err)
+	}
+	if _, err := process.Wait(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(diagnostic.Name()); err != nil || !strings.Contains(string(data), "can't fork") {
+		t.Fatalf("process-limit diagnostic=%q err=%v", data, err)
+	}
+}
+
+func TestNativeRejectsInstructionBudget(t *testing.T) {
+	_, err := newNativeVM(t.Context(), Options{Process: resources.Limits{Work: 1}})
+	if !errors.Is(err, ErrNativeWorkBudgetUnsupported) {
+		t.Fatalf("error=%v want ErrNativeWorkBudgetUnsupported", err)
+	}
+}
+
+func TestNativeProcessTimeout(t *testing.T) {
+	machine, _ := newNativeVMForTest(t, Options{ProcessTimeout: uint64(50 * time.Millisecond)})
+	defer func() { _ = machine.Close(t.Context()) }()
+	started := time.Now()
+	state, err := machine.Run(t.Context(), NativeExecSpec{Program: "/bin/sleep", Args: []string{"30"}, Dir: "/work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Signal != syscall.SIGKILL || time.Since(started) > 2*time.Second {
+		t.Fatalf("timeout state=%+v elapsed=%s", state, time.Since(started))
+	}
+}
+
 func TestNativeInitFailureDoesNotFallbackToHost(t *testing.T) {
-	machine, err := newNativeVM(t.Context(), Options{})
+	machine, err := newNativeVMForTest(t, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

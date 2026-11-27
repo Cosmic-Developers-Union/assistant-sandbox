@@ -11,6 +11,7 @@ import (
 	"path"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -40,7 +41,10 @@ type NativeExit struct {
 
 // NativeVM 是 linux/amd64 原生后端的最小生命周期实现。
 type NativeVM struct {
-	root string
+	root           string
+	cgroupParent   string
+	cgroup         string
+	processTimeout time.Duration
 
 	mu        sync.Mutex
 	closed    bool
@@ -60,15 +64,170 @@ func newNativeVM(ctx context.Context, opts Options) (*NativeVM, error) {
 	if opts.Session.Work != 0 || opts.Process.Work != 0 {
 		return nil, ErrNativeWorkBudgetUnsupported
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if opts.ProcessTimeout > ^uint64(0)>>1 {
+		return nil, fmt.Errorf("ProcessTimeout exceeds duration range: %w", errno.Invalid)
+	}
+	base, err := delegatedCgroupDirectory(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrNativeCapability, err)
+	}
+	parent, leaf, err := createNativeCgroup(base, opts)
+	if err != nil {
+		return nil, err
+	}
+	cleanupCgroup := func() {
+		_ = os.Remove(leaf)
+		_ = os.Remove(parent)
+	}
 	root, err := os.MkdirTemp("", "assistant-native-")
 	if err != nil {
+		cleanupCgroup()
 		return nil, fmt.Errorf("create native root directory: %w", err)
 	}
 	if err := hostroot.Extract(ctx, hostroot.Archive(), root); err != nil {
 		_ = os.RemoveAll(root)
+		cleanupCgroup()
 		return nil, fmt.Errorf("extract native root filesystem: %w", err)
 	}
-	return &NativeVM{root: root, processes: map[int]*NativeProcess{}, mounts: map[string]string{}}, nil
+	return &NativeVM{
+		root: root, cgroupParent: parent, cgroup: leaf,
+		processTimeout: time.Duration(opts.ProcessTimeout), //nolint:gosec // checked against MaxInt64 above
+		processes:      map[int]*NativeProcess{}, mounts: map[string]string{},
+	}, nil
+}
+
+func createNativeCgroup(base string, opts Options) (string, string, error) {
+	parent, err := os.MkdirTemp(base, "assistant-sandbox-")
+	if err != nil {
+		return "", "", fmt.Errorf("create native cgroup parent: %w", err)
+	}
+	leaf := filepath.Join(parent, "vm")
+	if err := os.Mkdir(leaf, 0o750); err != nil {
+		_ = os.Remove(parent)
+		return "", "", fmt.Errorf("create native cgroup: %w", err)
+	}
+	cleanup := func() {
+		_ = os.Remove(leaf)
+		_ = os.Remove(parent)
+	}
+	if err := os.WriteFile(filepath.Join(parent, "cgroup.subtree_control"), []byte("+cpu +memory +pids"), 0o600); err != nil { //nolint:gosec // parent is created under the delegated cgroup base
+		cleanup()
+		return "", "", fmt.Errorf("enable native cgroup controllers: %w", err)
+	}
+	memory := opts.Session.Memory
+	if memory == 0 {
+		memory = opts.MemoryBytes
+	}
+	if memory == 0 {
+		memory = 1 << 30
+	}
+	cpus := opts.CPUs
+	if cpus == 0 {
+		cpus = 2
+	}
+	pids := opts.MaxProcesses
+	if pids == 0 {
+		pids = defaultMaxProcesses
+	}
+	limits := map[string]string{
+		"memory.max": strconv.FormatUint(memory, 10),
+		"cpu.max":    fmt.Sprintf("%d 100000", cpus*100000),
+		"pids.max":   strconv.Itoa(pids),
+	}
+	for name, value := range limits {
+		if err := os.WriteFile(filepath.Join(leaf, name), []byte(value), 0o600); err != nil { //nolint:gosec // leaf is the per-VM cgroup
+			cleanup()
+			return "", "", fmt.Errorf("set native cgroup %s: %w", name, err)
+		}
+	}
+	return parent, leaf, nil
+}
+
+// NativeStatus 是 cgroup v2 的实际资源计量。
+type NativeStatus struct {
+	MemoryCurrent   uint64
+	MemoryMax       uint64
+	CPUUsageMicros  uint64
+	CPUQuotaMicros  uint64
+	CPUPeriodMicros uint64
+	PidsCurrent     uint64
+	PidsMax         uint64
+}
+
+// Status 读取该 VM 的 cgroup 计量与配额。
+func (v *NativeVM) Status(ctx context.Context) (NativeStatus, error) {
+	if err := ctx.Err(); err != nil {
+		return NativeStatus{}, err
+	}
+	memoryCurrent, err := readNativeUint(filepath.Join(v.cgroup, "memory.current"))
+	if err != nil {
+		return NativeStatus{}, err
+	}
+	memoryMax, err := readNativeUint(filepath.Join(v.cgroup, "memory.max"))
+	if err != nil {
+		return NativeStatus{}, err
+	}
+	quota, period, err := v.readNativeCPUQuota()
+	if err != nil {
+		return NativeStatus{}, err
+	}
+	cpuData, err := os.ReadFile(filepath.Join(v.cgroup, "cpu.stat"))
+	if err != nil {
+		return NativeStatus{}, err
+	}
+	var cpuUsage uint64
+	for line := range strings.SplitSeq(string(cpuData), "\n") {
+		key, value, ok := strings.Cut(line, " ")
+		if ok && key == "usage_usec" {
+			cpuUsage, _ = strconv.ParseUint(value, 10, 64)
+			break
+		}
+	}
+	pidsCurrent, err := readNativeUint(filepath.Join(v.cgroup, "pids.current"))
+	if err != nil {
+		return NativeStatus{}, err
+	}
+	pidsMax, err := readNativeUint(filepath.Join(v.cgroup, "pids.max"))
+	if err != nil {
+		return NativeStatus{}, err
+	}
+	return NativeStatus{
+		MemoryCurrent: memoryCurrent, MemoryMax: memoryMax,
+		CPUUsageMicros: cpuUsage, CPUQuotaMicros: quota, CPUPeriodMicros: period,
+		PidsCurrent: pidsCurrent, PidsMax: pidsMax,
+	}, nil
+}
+
+func readNativeUint(name string) (uint64, error) {
+	data, err := os.ReadFile(name) //nolint:gosec // name is a file in the per-VM cgroup control directory
+	if err != nil {
+		return 0, err
+	}
+	value := strings.TrimSpace(string(data))
+	if value == "max" {
+		return ^uint64(0), nil
+	}
+	return strconv.ParseUint(value, 10, 64)
+}
+
+func (v *NativeVM) readNativeCPUQuota() (uint64, uint64, error) {
+	data, err := os.ReadFile(filepath.Join(v.cgroup, "cpu.max"))
+	if err != nil {
+		return 0, 0, err
+	}
+	quotaText, periodText, ok := strings.Cut(strings.TrimSpace(string(data)), " ")
+	if !ok {
+		return 0, 0, fmt.Errorf("invalid cpu.max %q", data)
+	}
+	quota, err := strconv.ParseUint(quotaText, 10, 64)
+	if err != nil {
+		return 0, 0, err
+	}
+	period, err := strconv.ParseUint(periodText, 10, 64)
+	return quota, period, err
 }
 
 // Root 返回该 VM 私有的宿主根目录；仅用于受控挂载与测试。
@@ -164,9 +323,16 @@ func (v *NativeVM) Exec(ctx context.Context, spec NativeExecSpec) (*NativeProces
 		closeNativeFiles(stdin, closeStdin, stdout, closeStdout, stderr, closeStderr)
 		return nil, fmt.Errorf("create native control pipe: %w", err)
 	}
+	gateReader, gateWriter, err := os.Pipe()
+	if err != nil {
+		_ = controlReader.Close()
+		_ = controlWriter.Close()
+		closeNativeFiles(stdin, closeStdin, stdout, closeStdout, stderr, closeStderr)
+		return nil, fmt.Errorf("create native start gate: %w", err)
+	}
 	helper := filepath.Join(v.root, "usr/bin/assistant-init")
 	arguments := []string{
-		helper, "--rootfs", v.root, "--control-fd", "3", "--chdir", spec.Dir,
+		helper, "--rootfs", v.root, "--control-fd", "3", "--chdir", spec.Dir, "--gate-fd", "4",
 	}
 	mounts := v.Mounts()
 	guestPaths := make([]string, 0, len(mounts))
@@ -186,7 +352,7 @@ func (v *NativeVM) Exec(ctx context.Context, spec NativeExecSpec) (*NativeProces
 	attributes := &os.ProcAttr{
 		Dir:   "/",
 		Env:   nativeEnvironment(environment),
-		Files: []*os.File{stdin, stdout, stderr, controlWriter},
+		Files: []*os.File{stdin, stdout, stderr, controlWriter, gateReader},
 		Sys: &syscall.SysProcAttr{
 			Cloneflags: syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS |
 				syscall.CLONE_NEWPID | syscall.CLONE_NEWNET | syscall.CLONE_NEWIPC |
@@ -204,17 +370,42 @@ func (v *NativeVM) Exec(ctx context.Context, spec NativeExecSpec) (*NativeProces
 	}
 	process, err := os.StartProcess(helper, arguments, attributes)
 	_ = controlWriter.Close()
+	_ = gateReader.Close()
 	closeNativeFiles(stdin, closeStdin, stdout, closeStdout, stderr, closeStderr)
 	if err != nil {
 		_ = controlReader.Close()
+		_ = gateWriter.Close()
 		return nil, fmt.Errorf("start native guest: %w", err)
 	}
 	handle := &NativeProcess{
 		process: process,
 		done:    make(chan struct{}),
 		vm:      v,
+		timeout: v.processTimeout,
+	}
+	if handle.timeout > 0 {
+		handle.timer = time.AfterFunc(handle.timeout, func() { _ = handle.Cancel() })
 	}
 	go handle.wait()
+	if err := os.WriteFile(filepath.Join(v.cgroup, "cgroup.procs"), []byte(strconv.Itoa(process.Pid)), 0o600); err != nil { //nolint:gosec // cgroup is the per-VM control directory
+		_ = gateWriter.Close()
+		_ = handle.process.Kill()
+		select {
+		case <-handle.done:
+		case <-time.After(5 * time.Second):
+		}
+		return nil, fmt.Errorf("admit native guest to cgroup: %w", err)
+	}
+	if _, err := gateWriter.Write([]byte{1}); err != nil {
+		_ = gateWriter.Close()
+		_ = handle.process.Kill()
+		select {
+		case <-handle.done:
+		case <-time.After(5 * time.Second):
+		}
+		return nil, fmt.Errorf("release native start gate: %w", err)
+	}
+	_ = gateWriter.Close()
 	if err := awaitNativeReady(ctx, controlReader, handle); err != nil {
 		_ = handle.process.Kill()
 		select {
@@ -254,12 +445,17 @@ type NativeProcess struct {
 	done    chan struct{}
 	result  NativeExit
 	err     error
+	timeout time.Duration
+	timer   *time.Timer
 }
 
 // ID 返回宿主可见的进程号；客体 PID namespace 内该进程通常为 PID 1。
 func (p *NativeProcess) ID() int { return p.process.Pid }
 
 func (p *NativeProcess) wait() {
+	if p.timer != nil {
+		defer p.timer.Stop()
+	}
 	state, err := p.process.Wait()
 	if err == nil {
 		if status, ok := state.Sys().(syscall.WaitStatus); ok {
@@ -327,10 +523,24 @@ func (v *NativeVM) Close(ctx context.Context) error {
 		select {
 		case <-process.done:
 		case <-deadline.C:
-			return errors.Join(ctx.Err(), os.RemoveAll(v.root))
+			return errors.Join(ctx.Err(), v.cleanup())
 		}
 	}
-	return errors.Join(ctx.Err(), os.RemoveAll(v.root))
+	return errors.Join(ctx.Err(), v.cleanup())
+}
+
+func (v *NativeVM) cleanup() error {
+	var cleanupErr error
+	if v.cgroup != "" {
+		if err := os.WriteFile(filepath.Join(v.cgroup, "cgroup.kill"), []byte("1"), 0o600); err != nil && !errors.Is(err, os.ErrNotExist) { //nolint:gosec // cgroup is the per-VM control directory
+			cleanupErr = errors.Join(cleanupErr, err)
+		}
+		cleanupErr = errors.Join(cleanupErr, os.Remove(v.cgroup))
+	}
+	if v.cgroupParent != "" {
+		cleanupErr = errors.Join(cleanupErr, os.Remove(v.cgroupParent))
+	}
+	return errors.Join(cleanupErr, os.RemoveAll(v.root))
 }
 
 func nativeFileOrDefault(file *os.File, mode int) (*os.File, bool, error) {
