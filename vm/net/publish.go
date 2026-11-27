@@ -139,8 +139,10 @@ func (p *Publication) acceptLoop(listener *TCPListener) {
 			continue
 		}
 		listener.queue = append(listener.queue, server)
-		listener.base.notify()
 		listener.mu.Unlock()
+		// notify 会获取 endpointBase 的唤醒队列锁；不得在 listener.mu
+		// 内调用，否则 Accept 的条件闭包持锁等待时会形成自锁。
+		listener.base.notify()
 		go func() {
 			pumpHost(hostConn, client, func() {
 				p.mu.Lock()

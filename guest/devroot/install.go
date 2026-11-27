@@ -199,15 +199,14 @@ func extract(
 			if header.Size > maxArchiveFileBytes {
 				return fmt.Errorf("%s 超过单文件上限", target)
 			}
-			data, err := io.ReadAll(io.LimitReader(files, maxArchiveFileBytes+1))
-			if err != nil {
-				return err
-			}
 			mode := header.FileInfo().Mode().Perm()
 			if mode == 0 {
 				mode = 0o644
 			}
-			if err := writeFile(ctx, system, target, data, mode); err != nil {
+			// 大文件直接流入客体文件系统，避免 io.ReadAll 的整文件
+			// 临时切片与 zstd 窗口叠加导致低内存 runner OOM。
+			if err := writeFileFrom(ctx, system, target,
+				io.LimitReader(files, header.Size), mode); err != nil {
 				return err
 			}
 		case tar.TypeSymlink:
@@ -245,6 +244,10 @@ func mkdirAll(ctx context.Context, system vmfs.System, name string) error {
 }
 
 func writeFile(ctx context.Context, system vmfs.System, name string, data []byte, mode stdfs.FileMode) error {
+	return writeFileFrom(ctx, system, name, bytes.NewReader(data), mode)
+}
+
+func writeFileFrom(ctx context.Context, system vmfs.System, name string, source io.Reader, mode stdfs.FileMode) error {
 	if err := mkdirAll(ctx, system, path.Dir(name)); err != nil {
 		return err
 	}
@@ -252,7 +255,7 @@ func writeFile(ctx context.Context, system vmfs.System, name string, data []byte
 	if err != nil {
 		return fmt.Errorf("写入 %s: %w", name, err)
 	}
-	if _, err := file.Write(data); err != nil {
+	if _, err := io.Copy(file, source); err != nil {
 		_ = file.Close()
 		return fmt.Errorf("写入 %s: %w", name, err)
 	}

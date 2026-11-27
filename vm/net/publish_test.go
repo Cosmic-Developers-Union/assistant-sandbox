@@ -13,7 +13,8 @@ import (
 // TestPublishExplicitGuestPort 验证 M13:只有显式发布的宿主端口可访问
 // 客体监听;撤销后宿主入口关闭而客体监听保持。
 func TestPublishExplicitGuestPort(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
 	ns := vmnet.New()
 	defer ns.Close()
 	server, err := ns.NewINETSocket(vmnet.SockStream)
@@ -35,6 +36,7 @@ func TestPublishExplicitGuestPort(t *testing.T) {
 	if err != nil {
 		t.Fatalf("发布端口不可访问: %v", err)
 	}
+	defer func() { _ = host.Close() }()
 	accepted, err := server.Accept(ctx)
 	if err != nil {
 		t.Fatal(err)

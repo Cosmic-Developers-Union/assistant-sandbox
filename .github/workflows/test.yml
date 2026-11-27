@@ -61,7 +61,9 @@ jobs:
       - name: Unit and integration tests
         shell: bash
         run: |
-          ulimit -d 1048576
+          # 完整客体运行时套件的活动内存会超过 1 GiB；保留 2 GiB
+          # 数据段硬限，Go 堆仍由 GOMEMLIMIT=768MiB 约束。
+          ulimit -d 2097152
           go test -count=1 -skip 'TestPython312Multiprocessing|TestPython312VenvOfflineInstall|TestPython312ControlledPipInstall|TestPython312PipBuildsNativeSdist|TestPython312UpstreamTestSlice|TestPythonNodeCoexist|TestNode' ./abi/... ./filesystem/... ./loader/... ./vm/... ./executor/... ./model/... ./internal/guest/ ./deployment/... ./contract/... ./inspect/...
       - name: ISA regression gate (D13)
         shell: bash
