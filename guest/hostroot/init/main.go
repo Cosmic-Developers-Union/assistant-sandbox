@@ -10,6 +10,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -19,6 +20,9 @@ import (
 )
 
 func main() {
+	// helper 必须兼容很小的 pids.max；固定单线程避免 Go 运行时线程抢占
+	// 客体进程配额，并让 no_new_privs/capabilities/seccomp/exec 保持同线程。
+	runtime.GOMAXPROCS(1)
 	if len(os.Args) > 1 && os.Args[1] == "netproxy" {
 		os.Exit(runNetProxy(os.Args[2:]))
 	}
@@ -73,6 +77,10 @@ func run() (int, error) {
 	if err := bringUpLoopback(); err != nil {
 		return fail(err)
 	}
+	// no_new_privs、capabilities 与 seccomp 都是调用线程的状态；锁定线程
+	// 确保后续 execve 由同一线程完成，避免 Go 调度导致 filter 安装 EPERM
+	// 或客体进程继承到未过滤线程。
+	runtime.LockOSThread()
 	if err := dropCapabilities(); err != nil {
 		return fail(err)
 	}

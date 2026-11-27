@@ -33,6 +33,15 @@ jobs:
         run: make isolated-check
       - name: Track discipline and license inventory (A10/B10)
         run: go test ./internal/metadata/ -count=1
+      - name: Performance evaluator and fixed failure gate (X12/X13)
+        shell: bash
+        run: |
+          python3 -m unittest discover -s testdata/release -p 'test_perf_samples.py' -v
+          set +e
+          python3 testdata/release/perf_samples.py testdata/release/perf-over-threshold.json
+          status=$?
+          set -e
+          test "$status" -eq 1
       - uses: golangci/golangci-lint-action@v9
         with:
           version: v2.14.0
@@ -68,6 +77,28 @@ jobs:
       - name: ISA regression gate (D13)
         shell: bash
         run: go test ./executor/cpu/... -count=1 -v 2>&1 | grep -E '^(=== RUN|--- FAIL|FAIL|ok)' | tail -120
+
+  # X13:原生 amd64 契约、隔离、PTY、性能与下载产物必须在具备能力的
+  # 特权容器中真实执行;ASSISTANT_REQUIRE_NATIVE=1 禁止静默跳过。
+  native-amd64:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build pinned native CI image
+        run: docker build -t assistant-sandbox-native-ci -f testdata/release/native-ci.Dockerfile testdata/release
+      - name: Native contracts, PTY, performance and candidate verification
+        run: |
+          docker run --rm --privileged --cgroupns=host \
+            -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
+            -v "$PWD":/src -w /src \
+            assistant-sandbox-native-ci sh testdata/release/native-ci-check.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-amd64-evidence
+          path: |
+            native-evidence/
 
   # T08:固定配置的 CPU/系统调用基准,结果作为可比对工件保存。
   # Q10/Q12:Python multiprocessing 与 venv/pip 离线安装属于重型

@@ -1,7 +1,11 @@
 # 发布 SDK、镜像与工具链清单(U12)
 
 本清单固定当前仓库 HEAD 的本地可重建产物。发布时必须先执行
-`make release`,再将 `dist/` 与本文档一起上传到稳定 Release。
+`make release`,再将 `dist/` 与本文档一起上传到稳定 Release。GitHub
+Release 工作流使用 `testdata/release/build-release.sh` 生成五平台二进制、
+`SBOM.txt` 与 `SHA256SUMS`，先创建 draft，再从空目录下载复验，全部通过
+后才发布。平台与后端运行时验证范围见
+[`platform-matrix.md`](platform-matrix.md)。
 
 发布构建必须注入标签版本，并检查 `dist/assistant-sandbox --version`
 输出与标签一致：
@@ -30,6 +34,10 @@ make release VERSION=vX.Y.Z
 - 客体运行时/工具链的来源、许可证与固定摘要见 `THIRD_PARTY.md`。
 - `make release` 生成 `dist/SBOM.txt`,内容为 `go version -m` 的模块构建
   信息;发布流水线必须将该文件与 `dist/SHA256SUMS` 一并保存。
+- Release 工作流通过 `gh release download` 下载到空目录，运行
+  `testdata/release/verify-download.sh` 核对摘要、架构、版本与 SBOM，
+  再以 `PATH=/nonexistent` 在特权容器中对下载的 linux/amd64 默认 CLI
+  执行真实 PTY 验收；不传后端参数，也不依赖宿主 Node/Python。
 
 ## 新环境重建
 

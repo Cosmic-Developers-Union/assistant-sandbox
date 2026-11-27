@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"runtime"
 	"testing"
 )
@@ -150,6 +151,9 @@ func TestNativeBackendProbe(t *testing.T) {
 	}
 	capabilities, err := probeNativeBackend(t.Context())
 	if err != nil {
+		if os.Getenv("ASSISTANT_REQUIRE_NATIVE") == "1" {
+			t.Fatalf("required native capabilities unavailable: %v", err)
+		}
 		// CI 或受限宿主可以缺少能力；选择层会把它转换为具名错误。
 		t.Logf("native capabilities unavailable: %v", err)
 		return

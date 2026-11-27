@@ -163,6 +163,9 @@ if cat /work/host/relative-escape; then exit 22; fi
 func newNativeVMForTest(t *testing.T, opts Options) (*NativeVM, error) {
 	t.Helper()
 	if _, err := probeNativeBackend(t.Context()); err != nil {
+		if os.Getenv("ASSISTANT_REQUIRE_NATIVE") == "1" {
+			t.Fatalf("required native isolation unavailable: %v", err)
+		}
 		t.Skipf("linux/amd64 native isolation unavailable on this host: %v", err)
 	}
 	machine, err := newNativeVM(t.Context(), opts)
@@ -494,8 +497,8 @@ func TestNativeResourceLimitsAndStatus(t *testing.T) {
 	runNativeShell(t, adjacent, `printf adjacent-ok`, nil)
 
 	memoryState, err := machine.Run(t.Context(), NativeExecSpec{
-		Program: "/bin/sh",
-		Args:    []string{"-c", `dd if=/dev/zero of=/work/too-large bs=1M count=128`},
+		Program: "/usr/bin/python3.12",
+		Args:    []string{"-c", `x = bytearray(128 * 1024 * 1024); print(len(x))`},
 		Dir:     "/work",
 	})
 	if err != nil {
@@ -506,7 +509,7 @@ func TestNativeResourceLimitsAndStatus(t *testing.T) {
 	}
 	runNativeShell(t, adjacent, `printf still-ok`, nil)
 
-	limited, _ := newNativeVMForTest(t, Options{MaxProcesses: 4})
+	limited, _ := newNativeVMForTest(t, Options{MaxProcesses: 8})
 	defer func() { _ = limited.Close(t.Context()) }()
 	diagnostic, err := os.CreateTemp(t.TempDir(), "pids-stderr")
 	if err != nil {
@@ -520,7 +523,8 @@ func TestNativeResourceLimitsAndStatus(t *testing.T) {
 		Stderr:  diagnostic,
 	})
 	if err != nil {
-		t.Fatal(err)
+		data, readErr := os.ReadFile(diagnostic.Name())
+		t.Fatalf("start process-limit guest: %v; stderr=%q read=%v", err, data, readErr)
 	}
 	time.Sleep(200 * time.Millisecond)
 	status, err = limited.Status(t.Context())

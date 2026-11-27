@@ -14,8 +14,8 @@
 | Bash | `5.2.37-r0`，APK sha256 `8218982214f1b51f520d282b0c81d654846e974ce009e758acc6187bd64fe228` |
 | musl | `1.2.5-r13`，APK sha256 `359890bc7c4dc5fee7a85192de60a471c987e4664767288578beca60a44db2c8` |
 | BusyBox | `1.37.0-r20`，APK sha256 `7cc34c2dda2520b456ab4a55abc37fe245ac90f98ab9f1c7a9be3aec035df48e` |
-| `assistant-init` | 静态 Go linux/amd64 helper，sha256 `c6c55d268de642d7e993a63fc4b618516e76e91863a3afda2316883789957fde` |
-| 根文件系统归档 | sha256 `73a1ff00753239a733df5da2326b7b08e76c0336c93682824d8b29d927b08f06`，43,694,321 字节 |
+| `assistant-init` | 静态 Go linux/amd64 helper，sha256 `2d780fe96b8b44da3c4bc604c28e67f4d2df146a9023d50fee79bd83d2806da3` |
+| 根文件系统归档 | sha256 `47ee80d8292f48036698d383eafbfca20764e7cd978eab2d674b536a0e1cab2a`，43,693,759 字节 |
 
 所有 APK 来自固定仓库
 `https://dl-cdn.alpinelinux.org/alpine/v3.22/main/x86_64/`；完整 38 项直接/
@@ -34,8 +34,8 @@ cmp /tmp/opencode/hostroot-a.tar.gz /tmp/opencode/hostroot-b.tar.gz
 两次独立构建实测：
 
 ```text
-73a1ff00753239a733df5da2326b7b08e76c0336c93682824d8b29d927b08f06  hostroot-a.tar.gz
-73a1ff00753239a733df5da2326b7b08e76c0336c93682824d8b29d927b08f06  hostroot-b.tar.gz
+47ee80d8292f48036698d383eafbfca20764e7cd978eab2d674b536a0e1cab2a  hostroot-a.tar.gz
+47ee80d8292f48036698d383eafbfca20764e7cd978eab2d674b536a0e1cab2a  hostroot-b.tar.gz
 ```
 
 脚本固定 Docker 镜像摘要、APK 文件、`/etc/hostname`、`/etc/hosts`、
@@ -82,7 +82,10 @@ bind `/dev/null`、`zero`、`full`、`random`、`urandom`，并把 `/dev/tty`
 链接到当前控制终端描述符；显式 PTY 会话在 exec 前获取 controlling terminal。
 随后设置
 guest hostname、`no_new_privs`、清空 bounding/effective capabilities、
-安装 seccomp denylist。独立 gate 管道保证父进程先把子进程写入 per-VM
+安装 seccomp denylist。helper 固定 `GOMAXPROCS=1` 并锁定执行线程，避免
+很小的 `pids.max` 被 Go 运行时线程耗尽，同时保证线程相关的
+`no_new_privs`/capabilities/seccomp 状态由同一线程带入 `execve`。独立 gate
+管道保证父进程先把子进程写入 per-VM
 cgroup，再放行隔离初始化。控制管道设置 CLOEXEC；helper 报告 READY 后
 `execve` 客体程序，父进程观察到管道 EOF 才返回成功，避免信号在 exec
 前丢失。配置出站策略时，同一 helper 以 `netproxy` 模式启动客体 HTTP

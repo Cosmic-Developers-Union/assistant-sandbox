@@ -116,3 +116,24 @@ make getting-started
 
 该目标依次构建 CLI、执行 Bash 命令、运行公开 model 示例、运行
 Python/Node 最小启动测试;CI 的 `getting-started` 任务执行同一目标。
+
+## 6. 原生后端与性能复验
+
+具备 Linux 隔离能力的 linux/amd64 宿主可运行完整原生契约、PTY、
+五轮 REPL 与六个语言场景门禁：
+
+```sh
+make native-ci
+```
+
+该目标使用固定 Go 1.27.0、Node 22.23.5、Python 3.12.16 的特权容器，
+要求 namespace、bind mount、seccomp 和可写 cgroup v2 真实可用；原始
+JSON 与 PTY 记录写入 `native-evidence/`。只运行本机性能测量：
+
+```sh
+make perf-native HOST_NODE=/path/to/node-v22.23.5/bin/node \
+  HOST_PYTHON=/path/to/python3.12
+```
+
+平台构建与运行时验证范围见
+[`docs/release/platform-matrix.md`](../docs/release/platform-matrix.md)。

@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 
@@ -18,6 +19,9 @@ func TestCLINativeBackendIdentity(t *testing.T) {
 		"-c", `printf "%s:%s\n" "$ASSISTANT_SANDBOX_BACKEND" "$(uname -m)"`,
 	}, strings.NewReader(""), output, diagnostic)
 	if errors.Is(err, instance.ErrNativeCapability) {
+		if os.Getenv("ASSISTANT_REQUIRE_NATIVE") == "1" {
+			t.Fatalf("required native backend unavailable: %v", err)
+		}
 		t.Skipf("native backend unavailable: %v", err)
 	}
 	if err != nil || code != 0 || output.String() != "linux/amd64:x86_64\n" ||

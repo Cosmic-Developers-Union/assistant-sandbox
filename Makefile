@@ -26,7 +26,7 @@ endif
 # golangci-lint 版本固定在 .github/workflows/test.yml 的 action 参数中。
 GOLANGCI_LINT_VERSION := v2.14.0
 
-.PHONY: build release install clean lint test bench test-multicore docker-test toolchain isolated-check offline-check getting-started compat-s3 compat-ltp compat-s4 sandbox-in-sandbox compat-python perf-languages
+.PHONY: build release install clean lint test bench test-multicore docker-test toolchain isolated-check offline-check getting-started compat-s3 compat-ltp compat-s4 sandbox-in-sandbox compat-python perf-languages perf-native native-ci
 
 # B01:全新克隆仅依赖模块缓存即可构建(无 replace/无宿主绝对路径,
 # 由 internal/metadata TestModuleResolvesWithoutLocalReplacements 锁定)。
@@ -88,6 +88,25 @@ perf-languages:
 	SANDBOX_PERF=1 go test ./internal/guest -run '^TestPerformanceNodeJitless$$' -count=1 -v -timeout 10m
 	SANDBOX_PERF=1 go test ./internal/guest -run '^TestPerformanceNodeStandard$$' -count=1 -v -timeout 10m
 	SANDBOX_PERF=1 go test ./internal/guest -run '^TestPerformanceGo$$' -count=1 -v -timeout 10m
+
+HOST_NODE ?= node
+HOST_PYTHON ?= python3
+PERF_OUTPUT ?= native-performance.json
+PERF_TRANSCRIPTS ?= native-performance-transcripts
+
+# X12:宿主与客体 Node 必须同为 22.23.5;五对交替 REPL 与六个语言场景。
+perf-native: build
+	python3 testdata/release/perf-node-check.py ./assistant-sandbox \
+		--host-node "$(HOST_NODE)" --host-python "$(HOST_PYTHON)" \
+		--output "$(PERF_OUTPUT)" --transcript-dir "$(PERF_TRANSCRIPTS)"
+
+# X13:特权容器提供 namespace、bind mount、seccomp 与可写 cgroup v2。
+native-ci:
+	docker build -t assistant-sandbox-native-ci \
+		-f testdata/release/native-ci.Dockerfile testdata/release
+	docker run --rm --privileged --cgroupns=host \
+		-v /sys/fs/cgroup:/sys/fs/cgroup:rw -v "$$(pwd)":/src -w /src \
+		assistant-sandbox-native-ci sh testdata/release/native-ci-check.sh
 
 # 所有测试在 Docker 内执行并以 cgroup 硬限 512MB(含 swap),避免宿主机内存压力。
 # 用法:make docker-test                          # 全量 go test ./...

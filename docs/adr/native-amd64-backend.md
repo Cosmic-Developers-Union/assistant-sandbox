@@ -213,7 +213,18 @@ Bash 的标准输入/输出/错误。init 在 `setsid` 后通过 `TIOCSCTTY` 获
 `ProcessTimeout` 由父进程定时器升级为 SIGKILL。关闭时先写
 `cgroup.kill`，等待宿主句柄后删除叶/父 cgroup 与私有根目录。
 
-## 进程、信号与清理（X06）
+## 可重复 CI 与发布检查（X13）
+
+`native-amd64` CI 任务在固定版本的特权容器内运行，设置
+`ASSISTANT_REQUIRE_NATIVE=1`，缺少 namespace、bind mount、seccomp 或
+cgroup v2 委派时直接失败，不允许静默跳过。它覆盖原生隔离、文件、网络、
+资源、PTY、模型契约、语言扩展、X11 下载产物 PTY 与 X12 性能门禁；
+现有 integration 矩阵继续运行 RISC-V 回归，显式 RISC-V CLI 入口也在
+原生任务中复验。
+
+Release 工作流要求同一提交的 Test 工作流成功，构建五平台资产与 SBOM，
+创建 draft 后下载到空目录，校验摘要、架构、版本，并在无宿主
+Node/Python PATH 的环境中运行下载的默认 CLI。全部通过后才取消 draft。
 
 `NativeVM.Exec` 返回 `NativeProcess`，提供 `Wait`、`Signal` 与显式
 `Cancel`；等待上下文到期只取消等待，不隐式杀掉进程。正常退出、非零

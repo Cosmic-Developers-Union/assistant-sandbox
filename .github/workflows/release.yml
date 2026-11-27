@@ -7,7 +7,7 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     env:
       GOFLAGS: -p=2
       GOMEMLIMIT: 768MiB
@@ -25,49 +25,66 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           sha=$(git rev-parse HEAD)
-          deadline=$(( $(date +%s) + 10800 ))
+          deadline=$(( $(date +%s) + 3600 ))
           while :; do
-            runs=$(gh api "repos/$GH_REPO/actions/workflows/test.yml/runs?head_sha=$sha" --jq '[.workflow_runs[] | select(.event != "pull_request")]')
-            conclusions=$(printf '%s' "$runs" | jq -r '[.[].conclusion] | join(",")')
-            statuses=$(printf '%s' "$runs" | jq -r '[.[].status] | join(",")')
-            if [ -n "$conclusions" ] && [ "$statuses" = "completed" ]; then
-              if [ "$conclusions" = "success" ]; then
+            runs=$(gh api "repos/$GH_REPO/actions/workflows/test.yml/runs?head_sha=$sha" --jq '[.workflow_runs[] | select(.event != "pull_request")] | sort_by(.created_at) | last')
+            status=$(printf '%s' "$runs" | jq -r '.status // "missing"')
+            conclusion=$(printf '%s' "$runs" | jq -r '.conclusion // "pending"')
+            if [ "$status" = completed ]; then
+              if [ "$conclusion" = success ]; then
                 echo "Test 工作流对该提交结论为 success,放行发布"
                 exit 0
               fi
-              echo "Test 工作流对该提交结论为 $conclusions,未通过目标提交验收,拒绝发布" >&2
+              echo "Test 工作流对该提交结论为 $conclusion,未通过目标提交验收,拒绝发布" >&2
               exit 1
             fi
             if [ "$(date +%s)" -gt "$deadline" ]; then
-              echo "等待 Test 工作流超时(3 小时),拒绝发布" >&2
+              echo "等待 Test 工作流超时(60 分钟),拒绝发布" >&2
               exit 1
             fi
-            echo "等待 Test 工作流完成(当前: ${statuses:-尚未注册})…"
+            echo "等待 Test 工作流完成(当前: ${status:-尚未注册})…"
             sleep 60
           done
-      - name: Build release CLIs
+      - name: Build release CLIs and SBOM
         shell: bash
-        run: |
-          mkdir -p dist
-          version="${GITHUB_REF_NAME}"
-          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
-            output="dist/assistant-sandbox-${target%/*}-${target#*/}"
-            if [[ "$target" == windows/* ]]; then output="${output}.exe"; fi
-            if [[ "$target" == "linux/amd64" ]]; then
-              CGO_ENABLED=1 go build -trimpath -tags netgo,osusergo \
-                -ldflags "-linkmode external -extldflags -static -X main.version=$version" \
-                -o "$output" ./cmd/assistant-sandbox
-            else
-              CGO_ENABLED=0 GOOS="${target%/*}" GOARCH="${target#*/}" \
-                go build -trimpath -ldflags "-X main.version=$version" \
-                -o "$output" ./cmd/assistant-sandbox
-            fi
-          done
-          cd dist
-          sha256sum * > SHA256SUMS
-      - name: Publish release
+        run: sh testdata/release/build-release.sh dist "${GITHUB_REF_NAME}"
+      - name: Create draft release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.ref_name }}
-        run: gh release create "$RELEASE_TAG" dist/* --verify-tag --generate-notes
+        run: gh release create "$RELEASE_TAG" dist/* --verify-tag --generate-notes --draft
+      - name: Download and verify release in an empty directory
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          download="$RUNNER_TEMP/release-download"
+          mkdir -p "$download"
+          gh release download "$RELEASE_TAG" -D "$download"
+          sh testdata/release/verify-download.sh "$download" "$RELEASE_TAG"
+      - name: Verify downloaded default CLI through real PTY
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          download="$RUNNER_TEMP/release-download"
+          mkdir -p "$RUNNER_TEMP/release-pty"
+          docker run --rm --privileged --cgroupns=host \
+            -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
+            -v "$download":/download:ro \
+            -v "$PWD/testdata/release":/scripts:ro \
+            -v "$RUNNER_TEMP/release-pty":/out \
+            python:3.12.16-slim-bookworm@sha256:44cf1793efa7c7a476bb0f2cff81443f4a072c90c1cb127e2924933daa3e8c64 \
+            sh -c 'PATH=/nonexistent /usr/local/bin/python3 /scripts/pty-node-check.py /download/assistant-sandbox-linux-amd64 /out/native-x11.pty.log --expect-backend linux/amd64 --expect-arch x64'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-download-verification
+          path: ${{ runner.temp }}/release-pty/
+      - name: Publish verified release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: gh release edit "$RELEASE_TAG" --draft=false

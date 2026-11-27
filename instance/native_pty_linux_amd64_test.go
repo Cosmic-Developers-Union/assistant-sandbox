@@ -16,6 +16,9 @@ import (
 
 func TestNativeModelSuite(t *testing.T) {
 	if _, err := probeNativeBackend(t.Context()); err != nil {
+		if os.Getenv("ASSISTANT_REQUIRE_NATIVE") == "1" {
+			t.Fatalf("required native isolation unavailable: %v", err)
+		}
 		t.Skipf("linux/amd64 native isolation unavailable on this host: %v", err)
 	}
 	model.Suite(t, func() (model.VM, error) {
