@@ -47,9 +47,8 @@ VM 默认 2 CPU、4 GiB;配置支持 1–8 个客体 CPU 与 256 MiB–16 GiB �
   后两项分别约 1.10 秒和 4.67 秒。同一客体二进制在 QEMU user-mode
   TCG 下 `-S -c 'print(1)'` 约 0.21 秒，因此扣除安装后的 VM 指令层
   仍约有 4.6 倍损失；计入开发根装入时整条 CLI 约为 6.5 倍。
-- Node.js 默认使用 `--jitless`，C++ 快速路径下
-  `node -e 'console.log(1)'` 约 10.5 秒；加 `--allow-guest-rwx`
-  后 `/usr/bin/node` 切换到标准 V8，约 8.3 秒。纯 Go 回退更慢。
+- 开发 CLI 默认使用标准 V8，裸 `node` 进入交互 REPL。
+  严格客体 W^X 模式（`--allow-guest-rwx=false`）使用 jitless。
 - npm 已打包，但 `npm --version` 在当前解释器中需要数分钟，仍需优化。
 - pip 暂不打包；完整 pip CLI 导入超过 180 秒，不能作为可用开发工具发布。
 - 当前 `apk` 是真实 apk-tools 二进制，但包索引/仓库未预置；离线安装

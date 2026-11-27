@@ -51,19 +51,12 @@
   特殊浮点值、原子/CSR/系统调用等回退到解释器语义基准。
 - 该缓存不计入客体物理页预算,但受固定条数与代码体积上限约束。
 
-## 标准 V8 JIT 实验开关
+## 开发 CLI 的 Node 默认配置（2026-11-27）
 
-标准 Node 的 V8 JIT 会在启动阶段请求 guest
-`mprotect(PROT_READ|PROT_WRITE|PROT_EXEC)`。默认 VM 仍按本 ADR
-拒绝该请求。为进行标准 Node 性能对比，CLI 提供显式实验开关：
+直接启动 CLI 后，开发环境中的 Node 使用标准 V8。V8 请求的客体
+RWX 页由 VM 内存表提供。宿主翻译缓存仍按 RW→RX 创建。
+裸 `node` 使用前台编译与 GC，进入正常 Node REPL。
 
-```sh
-assistant-sandbox --allow-guest-rwx -c 'node app.js'
-```
-
-该模式只允许 guest 逻辑页同时具备 W/X；宿主 JIT 代码缓存仍严格
-保持 RW→RX，不产生宿主 RWX 映射。它会降低 guest 代码页的 W^X
-隔离保证，不得作为默认生产配置。
-
-该开关会让 `/usr/bin/node` 包装器切换到标准 V8；不带开关时仍使用
-`--jitless`。直接执行 `/usr/bin/node-bin` 始终是标准 V8。
+该默认值只适用于 CLI 的开发环境。CLI 的 `--allow-guest-rwx=false`
+启用严格客体 W^X 并选择 jitless Node；minimal 环境和 Go SDK 的零值配置
+保留严格客体 W^X。显式指定 `node --jitless` 也会选择解释模式。

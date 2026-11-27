@@ -121,6 +121,7 @@ func Install(ctx context.Context, system vmfs.System) error {
 			"  *\" --jitless \"*) NODE_NO_WARNINGS=1 exec /usr/bin/node-bin \"$@\" ;;\n"+
 			"esac\n"+
 			"if [ \"${ASSISTANT_SANDBOX_NODE_STANDARD:-0}\" = \"1\" ]; then\n"+
+			"  if [ \"$#\" -eq 0 ]; then exec /usr/bin/node-bin --single-threaded; fi\n"+
 			"  exec /usr/bin/node-bin \"$@\"\n"+
 			"fi\n"+
 			"NODE_NO_WARNINGS=1 exec /usr/bin/node-bin --jitless \"$@\"\n"), 0o755); err != nil {

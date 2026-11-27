@@ -1,6 +1,9 @@
 # Changelog
 
-## [Unreleased]
+## [0.1.1] - 2026-11-27
+
+RISC-V 修复版：默认开发 CLI 可直接进入真实 Node REPL，并修复批量浮点、
+翻译缓存与开发根包装器的交互问题。
 
 ### 新增
 
@@ -25,6 +28,16 @@
 
 ### 修复
 
+- 开发 CLI 默认启用标准 V8；无参数 `node` 使用前台编译与垃圾回收，
+  可直接进入 REPL，粘贴长循环后仍能读回顶层变量并正常退出。
+- `--allow-guest-rwx=false` 明确启用严格客体 W^X 与 jitless Node；
+  minimal 工具包和 SDK 零值配置继续默认严格 W^X。
+- 修复 `FCVT.S.D` 的 rs2 格式校验，并让 C++ 批量路径接受合法的
+  `FCVT.D.S` 立即数转换。
+- 修复指令页快照被碰撞驱逐后，代码代际仍错误沿用旧值导致翻译缓存
+  失效不完整的问题；失效现在按实际取指页集合处理。
+- Node/libm 的平方根与正数加法热路径在满足标志和舍入前提时进入
+  C++ 批量快速路径；REPL 的 1 亿次 `Math.sqrt` 累加保持结果不变。
 - 线程从非组长 TID 调用 `exit_group` 时未结束整个线程组的问题。
 - 批量 FP 比较把 FLE/FLT/FEQ 的 funct3 映射错位的问题。
 - `/dev/null` 等静态设备缺少 `F_GETFL`/`F_SETFL` 状态标志的问题。
@@ -88,10 +101,13 @@
 
 ### 已知限制
 
+- 开发 CLI 默认允许客体 RWX 页以运行标准 V8，降低客体代码页的 W^X
+  隔离；使用 `--allow-guest-rwx=false` 进入严格模式。
 - Python/Node 仍受 RISC-V 指令数上限约束，明显慢于宿主原生运行时。
 - 当前没有客体 zsh 资产；`--shell zsh` 明确拒绝。
 - S4 的发行版 init、完整 sysfs/设备枚举和可用包仓库仍未完成。
-- 标准 V8 需要 `--allow-guest-rwx`，该开关降低客体代码页的 W^X 隔离。
+- 标准 V8 在开发 CLI 中默认启用；严格模式使用 `--allow-guest-rwx=false`，
+  客体代码页不再允许同时可写可执行。
 - Q25–Q27 重型 Node/npm 网络门禁在 main push 和 tag 发布中暂不阻塞；
   仍可在 PR、`workflow_dispatch` 或本地 `make compat-*` 中运行。
 

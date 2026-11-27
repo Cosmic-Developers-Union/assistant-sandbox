@@ -38,7 +38,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	memory := flags.String("memory", "4g", "客体内存 (256m..16g，例如 300m/1.5g/16g)")
 	noPTY := flags.Bool("no-pty", false, "禁用宿主 PTY，仅用于排查终端兼容问题")
 	readOnly := flags.Bool("read-only", false, "工作区只读（当前原生 VM 明确拒绝）")
-	allowGuestRWX := flags.Bool("allow-guest-rwx", false, "实验性：允许客体同时写与执行（标准 V8 JIT 需要；降低隔离级别）")
+	allowGuestRWX := flags.Bool("allow-guest-rwx", true, "允许开发环境中的客体 JIT 使用可写可执行页；设为 false 启用严格 W^X")
 	session := flags.Bool("session", false, "从 stdin 运行 shell 并保持同一 VM 会话")
 	dryRun := flags.Bool("dry-run", false, "显示执行配置")
 	debug := flags.Bool("debug", false, "输出调试信息")
@@ -114,7 +114,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	options := instance.Options{}
 	options.MemoryBytes = memoryBytes
 	options.CPUs = *cpus
-	options.AllowGuestRWX = *allowGuestRWX
+	options.AllowGuestRWX = *allowGuestRWX && (*tools == "dev" || flags.Changed("allow-guest-rwx"))
 	if *tools == "dev" {
 		options.Session = resources.Limits{Memory: memoryBytes, Work: 1 << 38}
 		options.Process = resources.Limits{Memory: memoryBytes, Work: 1 << 38}
@@ -164,7 +164,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		environmentMap["PYTHONHOME"] = "/usr"
 		environmentMap["NODE_ICU_DATA"] = "/usr/share/icu/76.1"
 	}
-	if *allowGuestRWX {
+	if options.AllowGuestRWX {
 		environmentMap["ASSISTANT_SANDBOX_NODE_STANDARD"] = "1"
 	}
 	connection, err := machine.Connect(ctx)

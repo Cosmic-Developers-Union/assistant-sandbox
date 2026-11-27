@@ -991,3 +991,34 @@ func TestAtomicModifySerializesConcurrentUpdates(t *testing.T) {
 		t.Fatalf("非法宽度原子访问=%v want EINVAL", err)
 	}
 }
+
+func TestInstructionCacheEpochSurvivesSnapshotEviction(t *testing.T) {
+	ctx := t.Context()
+	table := NewWithOptions(0, Options{AllowWX: true})
+	// Page 258 and page 0 collide in the 256-slot snapshot cache.
+	addrs := []uint64{0, PageSize, 258 * PageSize}
+	for _, addr := range addrs {
+		if err := table.Map(ctx, Region{Start: addr, End: addr + PageSize, Prot: ProtRead | ProtWrite | ProtExec}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fetch := func(addr uint64) uint64 {
+		t.Helper()
+		_, _, generation, ok, err := table.FetchInstructionPage(ctx, addr)
+		if err != nil || !ok {
+			t.Fatalf("fetch %#x: ok=%t err=%v", addr, ok, err)
+		}
+		return generation
+	}
+	for _, addr := range addrs {
+		fetch(addr)
+	}
+	before := fetch(PageSize)
+	if err := table.Write(ctx, 0, []byte{1}); err != nil {
+		t.Fatal(err)
+	}
+	after := fetch(PageSize)
+	if after == before || fetch(0) != after {
+		t.Fatalf("inconsistent instruction generation after rewriting an evicted page: %d -> %d", before, after)
+	}
+}

@@ -2,6 +2,10 @@
 
 #include "hot_cpp.h"
 
+#if defined(__x86_64__)
+#include <emmintrin.h>
+#endif
+
 #include <algorithm>
 #include <cfenv>
 #include <cmath>

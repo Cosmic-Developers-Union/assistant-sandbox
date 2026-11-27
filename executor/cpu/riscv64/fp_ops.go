@@ -222,8 +222,8 @@ func (c *Core) fpOp(ctx context.Context, pc uint64, instruction uint32) (cpu.Out
 			return 0, illegal(pc, instruction), nil
 		}
 		return c.fpSqrtOp(pc, instruction, width, p)
-	case 0x10: // FCVT.S.D / FCVT.D.S(rs2 必须为 0)
-		if rs2 != 0 {
+	case 0x10: // FCVT.S.D / FCVT.D.S，rs2 指定源格式
+		if (single && rs2 != 1) || (!single && rs2 != 0) {
 			return 0, illegal(pc, instruction), nil
 		}
 		return c.fpConvertWidth(pc, instruction, single)

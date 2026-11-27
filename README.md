@@ -60,15 +60,11 @@ assistant-sandbox --cpus 8 --memory 16g -c 'python -c "import os; print(len(os.s
 Go `linux/riscv64` ELF runtime 可直接在客体中运行，测试使用宿主 Go
 交叉编译 fixture；dev 根当前不内置客体 `go` 编译器。
 
-标准 V8 JIT 需要 guest 逻辑 RWX 页，可用实验开关运行并与 jitless
-对比；默认仍保持 W^X：
-
-```sh
-assistant-sandbox --allow-guest-rwx -c 'node app.js'
-```
-
-该开关同时让 `/usr/bin/node` 包装器改用标准 V8；直接运行
-`/usr/bin/node-bin` 也会走标准 V8。
+直接运行 `./assistant-sandbox`，在客体 shell 输入 `node` 即可进入 Node REPL。
+CLI 的开发环境默认允许客体申请同时可写可执行的内存页，供标准 V8 JIT 使用。
+无参数 Node REPL 在前台完成 V8 编译与垃圾回收。需要严格客体 W^X 时，
+使用 `--allow-guest-rwx=false`，此时 Node 包装器使用 jitless。
+宿主翻译缓存继续执行先写后执行的 W^X 策略。
 
 当前解释器吞吐、Python/Node/Go 端到端倍率与多核扩展见
 [性能基线](docs/runtime/performance.md);`make bench` 可重跑 CPU 核心

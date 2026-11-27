@@ -454,7 +454,7 @@ func TestFloatConvertWidthAndFlagsAccumulate(t *testing.T) {
 	}
 	port := runFP(t, write,
 		encodeFP3(0x21, 0, 1, 0, 0), // fcvt.d.s f1 = 1.5(double)
-		encodeFP3(0x20, 0, 2, 1, 0), // fcvt.s.d f2 = 1.5
+		encodeFP3(0x20, 0, 2, 1, 1), // fcvt.s.d f2 = 1.5
 	)
 	got, err := port.ReadFP(1)
 	if err != nil || math.Float64frombits(got) != 1.5 {

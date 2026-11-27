@@ -427,7 +427,7 @@ func TestStepBatchFPRawMatchesSingleStep(t *testing.T) {
 		},
 		{
 			name:   "fcvt.s.d",
-			code:   encodeFPCvtInt(0x20, 0, 1, 2, 0),
+			code:   encodeFPCvtInt(0x20, 0, 1, 2, 1),
 			floats: map[int]uint64{2: oneAndHalf},
 		},
 		{
@@ -1212,4 +1212,56 @@ func readPage(ctx context.Context, table *memory.Table, address uint64) ([]byte,
 		return nil, err
 	}
 	return buffer, nil
+}
+
+func TestStepBatchSqrtReduction(t *testing.T) {
+	if !hotBatchSupported {
+		t.Skip("requires the native batch executor")
+	}
+	// TurboFan's RV64 loop, with its interrupt byte at x22-207.
+	words := []uint32{0x02d75063, 0xd2070153, 0x5a010153, 0x0017071b,
+		0x022080d3, 0xf31b4783, 0x18079063, 0xfe5ff06f}
+	ctx := t.Context()
+	table := memory.New(0)
+	if err := table.Map(ctx, memory.Region{Start: batchCodeBase, End: batchCodeBase + memory.PageSize,
+		Prot: memory.ProtRead | memory.ProtExec}); err != nil {
+		t.Fatal(err)
+	}
+	program := make([]byte, memory.PageSize)
+	for i, word := range words {
+		binary.LittleEndian.PutUint32(program[4*i:], word)
+	}
+	if err := table.Load(ctx, batchCodeBase, program); err != nil {
+		t.Fatal(err)
+	}
+	for _, offset := range []uint64{0, 4, 28} {
+		for _, budget := range []uint64{2048, 2059} {
+			state := cpu.Machine{PC: batchCodeBase + offset, FCSR: 1,
+				Registers: make([]uint64, numRegs), Floats: make([]uint64, numFPRegs)}
+			state.Registers[13], state.Registers[14] = 4000, 1
+			state.Registers[22] = batchCodeBase + 512 + 207
+			state.Floats[1] = math.Float64bits(1.25)
+			newCore := func() *Core {
+				core, err := New(cpu.Config{Memory: table, Entry: state.PC})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := core.Reset(ctx, state); err != nil {
+					t.Fatal(err)
+				}
+				return core
+			}
+			fast, reference := newCore(), newCore()
+			steps, _, err := fast.StepBatch(ctx, budget)
+			if err != nil || steps == 0 || steps > budget {
+				t.Fatalf("offset=%d budget=%d steps=%d error=%v", offset, budget, steps, err)
+			}
+			for range steps {
+				if _, err := reference.Step(ctx); err != nil {
+					t.Fatal(err)
+				}
+			}
+			compareMachineState(t, fast, reference)
+		}
+	}
 }

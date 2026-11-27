@@ -26,6 +26,7 @@ type Table struct {
 
 	instructionPages [256]instructionPage
 	codeGeneration   uint64
+	fetchedCodePages map[uint64]struct{}
 
 	memoryViewValid     bool
 	memoryViewRegionsOK bool
@@ -39,10 +40,9 @@ type Table struct {
 }
 
 type instructionPage struct {
-	page    uint64
-	data    []byte
-	version uint64
-	valid   bool
+	page  uint64
+	data  []byte
+	valid bool
 }
 
 func instructionPageSlot(page uint64) uint64 {
@@ -331,7 +331,7 @@ func (t *Table) FetchInstructionPage(ctx context.Context, address uint64) (uint6
 	if entry == nil {
 		return 0, nil, 0, false, nil
 	}
-	return page * PageSize, entry.data, entry.version, true, nil
+	return page * PageSize, entry.data, t.codeGeneration, true, nil
 }
 
 // AcquireMemoryView 锁定地址空间并返回批量执行所需的只读区域表与
@@ -527,22 +527,30 @@ func (t *Table) cacheInstructionPageLocked(address uint64) {
 		t.invalidateCodeLocked(base, base+PageSize)
 		return
 	}
+	if t.fetchedCodePages == nil {
+		t.fetchedCodePages = make(map[uint64]struct{})
+	}
+	t.fetchedCodePages[page] = struct{}{}
 	t.instructionPages[instructionPageSlot(page)] = instructionPage{
-		page: page, data: data, version: t.codeGeneration, valid: true,
+		page: page, data: data, valid: true,
 	}
 }
 
 func (t *Table) invalidateCodeLocked(start, end uint64) {
-	if start >= end {
+	if start >= end || len(t.fetchedCodePages) == 0 {
 		return
 	}
 	invalidated := false
 	for page := start / PageSize; page <= (end-1)/PageSize; page++ {
+		if _, fetched := t.fetchedCodePages[page]; !fetched {
+			continue
+		}
+		delete(t.fetchedCodePages, page)
+		invalidated = true
 		entry := &t.instructionPages[instructionPageSlot(page)]
 		if entry.valid && entry.page == page {
 			entry.valid = false
 			entry.data = nil
-			invalidated = true
 		}
 	}
 	if invalidated {

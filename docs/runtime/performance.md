@@ -64,7 +64,7 @@ JIT 相对 Go 单步约快 38–43 倍。页级 JIT 的执行上限由宿主代�
 | Node.js 22 jitless 启动 | 约 2.4 s | 约 0.03 s | 含开发根初始化与两次启动 |
 | Python 1M 次整数循环 | 4.46–4.52 s | 0.057–0.063 s | 块链接开启，约 72–77×；关闭链接 5.98–6.00 s |
 | Node.js 22 jitless, 100k 次循环 | 1.72–1.80 s | 0.026–0.033 s | 约 55–70×；关闭链接 1.76–1.93 s |
-| Node.js 22 标准 V8 JIT, 100k 次循环 | 3.8–4.6 s | 0.032–0.034 s | 约 131–143×，需 `--allow-guest-rwx` |
+| Node.js 22 标准 V8 JIT, 100k 次循环 | 3.8–4.6 s | 0.032–0.034 s | 约 131–143×，标准 V8 |
 | Go 10M 次整数循环 | 0.055–0.062 s | 0.0064–0.0075 s | 约 8–9×；关闭链接 0.058–0.059 s |
 | CPython `test_os` | 171.7 s | n/a | 完整上游模块 |
 | S3 开发工作流 | 88.9 s | n/a | Bash/Python/Node/TCC/git/apk |
@@ -150,3 +150,35 @@ Python 1M 整数循环仍约 4.6 s，Python/Node 的常规回归测试保持通�
 3× 目标的指令级可行性、标准 Node 对比与可选后端决策见
 [加速路线](acceleration-roadmap.md)。
 
+
+## Node 的 1 亿次 Math.sqrt 累加
+
+在 linux/amd64 的 CGO 构建中，以下两条命令运行相同的 CommonJS 文件。
+从仓库根目录运行，先用 `make build` 生成 CLI。
+
+```sh
+node testdata/performance/node-sqrt.cjs
+./assistant-sandbox --dir "$PWD/testdata/performance" \
+  -c 'node --single-threaded /work/node-sqrt.cjs'
+```
+
+`console.time('bench')` 覆盖循环及 V8 在循环期间的优化开销。
+宿主 Node 22.18.0 与客体 Node 22.23.5 的三次交替运行中，宿主中位数为
+196 ms，客体中位数为 316 ms，均输出 `666666661666.567`。
+
+标准 V8 的 TurboFan 将模块局部累加器保存在浮点寄存器中。VM 在锁定的
+内存视图内识别对应的 RISC-V 计数循环，在剩余指令预算内成对计算平方根，
+依原顺序逐项累加。中断轮询字节非零、访存无法直接读取、浮点标志或操作数
+越出快速路径时，继续按原指令执行。
+
+开发环境默认允许客体页面同时可写和可执行，降低客体 W^X 隔离。
+CLI 开发环境默认使用标准 V8；严格客体 W^X 模式使用 jitless。`node -e` 的顶层变量会生成另一种循环，两种
+入口的性能需要分别测量。
+
+### 默认交互 REPL
+
+在真实伪终端直接执行 `./assistant-sandbox`，输入 `node`，将上述循环作为
+一行粘贴。linux/amd64 上一次实测的 `bench` 时间为 27.530 秒，宿主
+Node 22.18.0 REPL 为 0.813 秒。客体输出 `666666661666.567`，下一条
+提示符输入 `s` 可读回相同值。REPL 顶层绑定在循环结束后仍可访问，
+V8 为这个循环生成的代码涉及数值对象分配和垃圾回收。

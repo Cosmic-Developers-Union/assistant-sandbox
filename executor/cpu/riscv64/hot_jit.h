@@ -54,6 +54,14 @@ static bool fp_execute(uint64_t *registers, uint64_t *floats, uint64_t *fcsr,
 	}
 
 	if (operation == op_fcvt_from_int) {
+		// Both 32-bit integer formats are exactly representable in binary64.
+		if (!single && selector < 2) {
+			const uint64_t source = rs1 == 0 ? 0 : int_source ? *int_source : registers[rs1];
+			const double value = selector == 0 ? static_cast<double>(static_cast<int32_t>(source))
+			                                   : static_cast<double>(static_cast<uint32_t>(source));
+			std::memcpy(&floats[rd], &value, sizeof(value));
+			return true;
+		}
 		const int previous_round = std::fegetround();
 		if (previous_round != FE_TONEAREST) {
 			std::fesetround(FE_TONEAREST);
@@ -148,6 +156,22 @@ static bool fp_execute(uint64_t *registers, uint64_t *floats, uint64_t *fcsr,
 		if (rd != 0) {
 			registers[rd] = result ? 1 : 0;
 		}
+		return true;
+	}
+
+	// A positive normal square root can only raise NX. Adding positive
+	// normals below the largest finite exponent also cannot overflow or
+	// underflow. Once NX is sticky, neither operation needs a flag probe.
+	if (!single && (*fcsr & 1) && (left_bits >> 63) == 0 && exponent != 0 &&
+	    (operation == op_fsqrt ||
+	     (operation == op_fadd && (right_bits >> 63) == 0 && right_exponent != 0 &&
+	      exponent < exponent_mask - 1 && right_exponent < exponent_mask - 1)) &&
+	    std::fegetround() == FE_TONEAREST) {
+		double left, right;
+		std::memcpy(&left, &left_bits, sizeof(left));
+		std::memcpy(&right, &right_bits, sizeof(right));
+		const double result = operation == op_fsqrt ? std::sqrt(left) : left + right;
+		std::memcpy(&floats[rd], &result, sizeof(result));
 		return true;
 	}
 
@@ -430,7 +454,7 @@ static bool fp_execute_raw(uint64_t *registers, uint64_t *floats, uint64_t *fcsr
 		return true;
 	}
 	case 0x10: { // FCVT.S.D / FCVT.D.S
-		if (rs2 != 0) {
+		if (rs2 != (single ? 1U : 0U) || !fp_rounding_supported(funct3, fcsr)) {
 			return false;
 		}
 		const int previous_round = std::fegetround();
@@ -1333,14 +1357,21 @@ public:
 	std::unordered_map<JitPageKey, JitPage *, JitPageKeyHash> pages;
 	std::unordered_map<JitPageKey, uint32_t, JitPageKeyHash> warmup;
 
-	JitPage *lookup(const JitPageKey &key) {
-		thread_local JitPageHint hint;
+	JitPage *lookup(const JitPageKey &key, bool &compile) {
+		thread_local JitPageHint hints[256];
+		JitPageHint &hint = hints[(key.base >> 12) & 255];
 		if (hint.valid && hint.key == key) {
 			return hint.page;
 		}
 		std::lock_guard<std::mutex> guard(mutex);
 		const auto found = pages.find(key);
 		if (found == pages.end()) {
+			if (pages.size() < jit_max_pages) {
+				if (warmup.size() >= 8192) {
+					warmup.clear();
+				}
+				compile = ++warmup[key] >= jit_page_hotness;
+			}
 			return nullptr;
 		}
 		hint.key = key;
@@ -1355,22 +1386,9 @@ public:
 			return nullptr;
 		}
 		const auto [position, inserted] = pages.emplace(key, page);
-		thread_local JitPageHint hint;
-		hint.key = key;
-		hint.page = position->second;
-		hint.valid = true;
 		return inserted ? page : position->second;
 	}
 
-	bool should_compile(const JitPageKey &key) {
-		std::lock_guard<std::mutex> guard(mutex);
-		if (warmup.size() >= 8192) {
-			warmup.clear();
-		}
-		uint32_t &entries = warmup[key];
-		entries++;
-		return entries >= jit_page_hotness;
-	}
 };
 
 static JitCodeCache &jit_cache() {
@@ -2330,20 +2348,22 @@ void JitCompiler::emitInstruction(uint32_t slot, const DecodedInstruction &instr
 		emitNextPC(slot);
 		return;
 	}
-	case op_fp_raw: {
-		emitter.mov_rr(x64_rdi, x64_rbp);
-		emitter.mov_ri64(x64_rsi, static_cast<uint32_t>(instruction.imm));
-		emitCallHelper(reinterpret_cast<uint64_t>(&jit_execute_fp_raw));
-		emitMemoryFail(pc);
-		emitStep();
-		emitNextPC(slot);
-		return;
-	}
+	case op_fp_raw:
 	case op_fp_csr: {
+		const uint32_t raw = static_cast<uint32_t>(instruction.imm);
+		const bool csr = instruction.op == op_fp_csr;
+		const uint32_t group = raw >> 26;
+		const bool integer_source = csr ? ((raw >> 12) & 7) < 5 : group == 0x3c || group == 0x34;
+		if (integer_source && host_map[rs1] >= 0) {
+			emitter.mov_mr(x64_r14, static_cast<int32_t>(rs1) * 8, host_map[rs1]);
+		}
 		emitter.mov_rr(x64_rdi, x64_rbp);
-		emitter.mov_ri64(x64_rsi, static_cast<uint32_t>(instruction.imm));
-		emitCallHelper(reinterpret_cast<uint64_t>(&jit_execute_fp_csr));
+		emitter.mov_ri64(x64_rsi, raw);
+		emitCallHelper(reinterpret_cast<uint64_t>(csr ? &jit_execute_fp_csr : &jit_execute_fp_raw));
 		emitMemoryFail(pc);
+		if (csr || group == 0x30 || group == 0x38) {
+			reloadRegister(rd);
+		}
 		emitStep();
 		emitNextPC(slot);
 		return;
@@ -2568,10 +2588,11 @@ static JitPage *jit_compile_page(uint64_t identity, uint64_t version, uint64_t b
 		return nullptr;
 	}
 	const JitPageKey key{identity, version, base, start_slot};
-	if (JitPage *cached = jit_cache().lookup(key)) {
+	bool compile = false;
+	if (JitPage *cached = jit_cache().lookup(key, compile)) {
 		return cached;
 	}
-	if (!jit_cache().should_compile(key)) {
+	if (!compile) {
 		return nullptr;
 	}
 	JitCompiler compiler(base, slots, decoded, start_slot);
@@ -2579,12 +2600,89 @@ static JitPage *jit_compile_page(uint64_t identity, uint64_t version, uint64_t b
 	if (page == nullptr) {
 		return nullptr;
 	}
-	if (JitPage *existing = jit_cache().insert(key, page)) {
-		return existing;
+	JitPage *existing = jit_cache().insert(key, page);
+	if (existing == page) {
+		return page;
 	}
 	munmap(page->mapping, page->mapping_size);
 	delete page;
-	return nullptr;
+	return existing;
+}
+
+// Fuse the RV64 counted binary64 reduction emitted by TurboFan. The byte
+// poll is invariant only while the caller owns the locked RAM view. Stop
+// at the loop header, leaving both exit branches for normal execution.
+static uint64_t jit_sqrt_reduction(JitCall &call, const CodeView &code, uint32_t slot,
+                                   uint64_t budget, uint64_t &pc) {
+	const auto *d = code.decoded;
+	int adjustment = 0;
+	if (d[slot].op == op_fcvt_from_int && slot >= 2) {
+		slot -= 2;
+		adjustment = -1; // the entry comparison has already retired
+	} else if (d[slot].op == op_jal && d[slot].imm == -28 && slot >= 14) {
+		slot -= 14;
+		adjustment = 1; // retire the pending back edge first
+	}
+	if (slot + 14 >= code.slots || d[slot].op != op_bge || !call.floats || !call.fcsr) {
+		return 0;
+	}
+	const auto *loop = d + slot;
+	const uint8_t index = loop[0].rs1, limit = loop[0].rs2;
+	const uint8_t temp = loop[2].rd, sum = loop[8].rd;
+	const auto &poll = loop[10];
+	if (loop[2].op != op_fcvt_from_int || loop[2].imm != 0 || loop[2].rs1 != index ||
+	    loop[4].op != op_fsqrt || loop[4].imm != 0 || loop[4].rd != temp || loop[4].rs1 != temp ||
+	    loop[6].op != op_addiw || loop[6].imm != 1 || loop[6].rs1 != index || loop[6].rd != index ||
+	    loop[8].op != op_fadd || loop[8].imm != 0 || loop[8].rs1 != sum || loop[8].rs2 != temp ||
+	    sum == temp || poll.op != op_lbu || loop[12].op != op_bne || loop[12].rs1 != poll.rd ||
+	    loop[12].rs2 != 0 || loop[14].op != op_jal || loop[14].rd != 0 || loop[14].imm != -28 ||
+	    index == 0 || index == limit || poll.rd == 0 || poll.rd == index || poll.rd == limit ||
+	    poll.rs1 == index || poll.rs1 == poll.rd) {
+		return 0;
+	}
+	for (int i = 0; i < 16; i += 2) {
+		if (loop[i].length != 4) {
+			return 0;
+		}
+	}
+	const uint64_t first = call.registers[index], bound = call.registers[limit];
+	// Positive bounded operands can only raise NX, already sticky here.
+	const uint64_t bits = call.floats[sum];
+	if (first >= bound || bound > INT32_MAX || bits < (UINT64_C(1) << 52) ||
+	    bits >= (UINT64_C(0x7fd) << 52) || (*call.fcsr & 1) == 0 ||
+	    std::fegetround() != FE_TONEAREST) {
+		return 0;
+	}
+	const uint64_t count = std::min(bound - first, (budget - adjustment) / 8);
+	if (count == 0) {
+		return 0;
+	}
+	const uint8_t *flag = call.memory->translate(call.registers[poll.rs1] + poll.imm, 1,
+	                                            false, code.page_base);
+	if (!flag || *flag != 0) {
+		return 0;
+	}
+	double total, root = 0;
+	std::memcpy(&total, &bits, sizeof(total));
+	int32_t i = static_cast<int32_t>(first);
+	const int32_t end = static_cast<int32_t>(first + count);
+	// Independent roots can run together; additions retain guest order.
+	for (; end - i >= 2; i += 2) {
+		const __m128d roots = _mm_sqrt_pd(_mm_cvtepi32_pd(_mm_set_epi32(0, 0, i + 1, i)));
+		total += _mm_cvtsd_f64(roots);
+		root = _mm_cvtsd_f64(_mm_unpackhi_pd(roots, roots));
+		total += root;
+	}
+	if (i < end) {
+		root = std::sqrt(static_cast<double>(i));
+		total += root;
+	}
+	std::memcpy(&call.floats[sum], &total, sizeof(total));
+	std::memcpy(&call.floats[temp], &root, sizeof(root));
+	call.registers[index] = first + count;
+	call.registers[poll.rd] = 0;
+	pc = code.page_base + slot * 2;
+	return count * 8 + adjustment;
 }
 
 static uint64_t jit_run(MemoryView &memory, CodeView &code, uint64_t identity,
@@ -2633,6 +2731,11 @@ static uint64_t jit_run(MemoryView &memory, CodeView &code, uint64_t identity,
 		const uint32_t entry_slot = static_cast<uint32_t>((current - base) >> 1);
 		if (entry_slot >= slots) {
 			break;
+		}
+		const uint64_t fused = jit_sqrt_reduction(call, code, entry_slot, remaining, current);
+		if (fused != 0) {
+			retired += fused;
+			continue;
 		}
 		JitPage *compiled = jit_compile_page(identity, code.page_version, base, slots,
 		                                    code.decoded, code.page_start_slot);

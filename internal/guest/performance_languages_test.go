@@ -231,3 +231,59 @@ func buildGoProgram(t *testing.T, source, goos, goarch string) string {
 	}
 	return output
 }
+
+// TestRuntimeHostEnvelope compares complete process executions in an installed
+// VM. Run each language in a fresh test process to isolate the global JIT cache.
+func TestRuntimeHostEnvelope(t *testing.T) {
+	requirePerformanceRun(t)
+	for _, runtime := range []struct {
+		host, guest, eval, startup, cpu, io string
+		wantCPU                             string
+	}{
+		{"python3", "/usr/bin/python3.12", "-c", "print(42)", pythonPerformanceScript,
+			`from pathlib import Path
+path = Path("perf.bin")
+data = b"x" * (1 << 20)
+path.write_bytes(data)
+assert path.read_bytes() == data
+print(len(data))`, "499999500000\n"},
+		{"node", "/usr/bin/node-bin", "-e", "console.log(42)", nodePerformanceScript,
+			`const fs = require("node:fs");
+const data = Buffer.alloc(1 << 20, 120);
+fs.writeFileSync("perf.bin", data);
+if (!fs.readFileSync("perf.bin").equals(data)) throw Error("data");
+console.log(data.length);`, "4999950000\n"},
+	} {
+		t.Run(runtime.host, func(t *testing.T) {
+			_, connection := languagePerformanceGuest(t, runtime.host == "node")
+			for _, scene := range []struct{ name, script, want string }{
+				{"startup", runtime.startup, "42\n"},
+				{"cpu", runtime.cpu, runtime.wantCPU},
+				{"file", runtime.io, "1048576\n"},
+			} {
+				t.Run(scene.name, func(t *testing.T) {
+					args := []string{runtime.eval, scene.script}
+					cmd := exec.CommandContext(t.Context(), runtime.host, args...)
+					cmd.Dir = t.TempDir()
+					start := time.Now()
+					out, err := cmd.Output()
+					host := time.Since(start)
+					if err != nil || string(out) != scene.want {
+						t.Fatalf("host output %q, error %v", out, err)
+					}
+					start = time.Now()
+					output, diagnostic, code := runGuestProgram(t, connection, runtime.guest, args,
+						map[string]string{"HOME": "/work", "PATH": "/usr/bin:/bin"}, 5*time.Minute)
+					guest := time.Since(start)
+					if code != 0 || output != scene.want {
+						t.Fatalf("guest exit=%d stdout=%q stderr=%q", code, output, diagnostic)
+					}
+					logLanguageTiming(t, scene.name, guest, host)
+					if guest > 3*host {
+						t.Errorf("guest %s exceeds 3 × host %s", guest, host)
+					}
+				})
+			}
+		})
+	}
+}

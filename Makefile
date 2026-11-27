@@ -77,6 +77,12 @@ bench:
 test-multicore:
 	go test -race ./instance -run '^TestMultiCoreTypicalConfigs$$' -count=1 -v
 
+.PHONY: perf-python-node
+perf-python-node:
+	@status=0; for runtime in python3 node; do \
+		SANDBOX_PERF=1 go test ./internal/guest -run "^TestRuntimeHostEnvelope$$/^$$runtime$$" -count=1 -v || status=1; \
+	done; exit $$status
+
 perf-languages:
 	SANDBOX_PERF=1 go test ./internal/guest -run '^TestPerformancePython$$' -count=1 -v -timeout 10m
 	SANDBOX_PERF=1 go test ./internal/guest -run '^TestPerformanceNodeJitless$$' -count=1 -v -timeout 10m
