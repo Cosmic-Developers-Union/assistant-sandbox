@@ -18,6 +18,8 @@ const (
 	tiocswinsz = 0x5414
 	tiocgpgrp  = 0x540f
 	tiocspgrp  = 0x5410
+	tiocsctty  = 0x540e
+	tiocnotty  = 0x5422
 	tiocgptn   = 0x80045430
 	tiocsptlck = 0x40045431
 	fionbio    = 0x5421
@@ -58,6 +60,10 @@ func (s Syscalls) ioctl(ctx context.Context, call Call) Reply {
 		return Reply{Errno: errno.NotATerminal}
 	}
 	switch request {
+	case tiocsctty, tiocnotty:
+		// 发行版 init/getty 用 TIOCSCTTY 认领控制终端。VM 尚无独立
+		// 控制终端归属模型，接受调用并保持当前会话。
+		return Reply{}
 	case tcgets:
 		return s.getTermios(ctx, arg, terminal)
 	case tcsets, tcsetsw, tcsetsf:

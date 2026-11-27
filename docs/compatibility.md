@@ -9,7 +9,7 @@
 | S1 | POSIX、coreutils、管道、信号、PTY | 通过已覆盖子集 |
 | S2 | CPython、Node.js、标准库、子进程 | 通过已覆盖子集 |
 | S3 | 同一 VM 的 shell、Python、Node、C 编译链和子进程开发流 | 通过，CLI `--tools=dev` 默认提供 |
-| S4 | 发行版镜像、`apk`、`git`、`cc`、`/proc`、`/sys`、init | 内置合同通过；Alpine 外部镜像的 init、namespace/cgroup 与本地包仓库通过 |
+| S4 | 发行版镜像、`apk`、`git`、`cc`、`/proc`、`/sys`、init | 内置合同通过；Alpine 外部镜像的 PID 1 init、namespace/cgroup 与本地包仓库真实安装通过 |
 
 ## S3
 
@@ -122,7 +122,8 @@ make compat-s4
 该门禁使用内置开发根验证 `/sbin/init`、`apk`、`git`、`cc`、Python、
 Node、`/proc/self/status`、`/proc/self/cgroup`、`/proc/self/ns/*`、
 `/sys/kernel`、`/sys/fs/cgroup`、CPU 拓扑与 `lo` 网络属性，并用固定
-APK 仓库索引执行 `apk add --simulate`。
+APK 仓库执行真实的 `apk add` / `apk del`：校验索引与包签名、解包到
+VM 根文件系统、检查 APK 数据库记录，再验证卸载后文件消失。
 随后用以下命令验证外层 VM 内可以再启动一台 sandbox：
 
 ```sh
@@ -143,19 +144,23 @@ make compat-s4
 
 外部镜像门禁检查：
 
-- `/sbin/init`
+- `/sbin/init` 作为 PID 1 启动；一个用例使用控制用 inittab 验证
+  sysinit 与 respawn，另一个用例用镜像自带 inittab 验证 getty 启动
+  且 tty 打开失败不会形成 respawn 风暴
 - `/etc/inittab` 与可用 `/bin/sh`
+- `/dev/console`、`/dev/tty1` 可打开并接入 init 标准流
 - `apk`
 - `/proc/self/status`
-- `/proc/self/cgroup` 与 `/proc/self/ns/*`
-- `/sys/kernel` 与 `/sys/fs/cgroup`
-- 可选本地 APK 仓库的 `apk add --simulate`
+- `/proc/self/cgroup` 与 `/proc/<pid>/ns/*`（VM 内稳定、跨 VM 不复用）
+- `/sys/kernel` 与动态 `/sys/fs/cgroup`：
+  `/proc/<pid>/cgroup` 映射到 `/sys/fs/cgroup/assistant-sandbox`，
+  `cgroup.procs`、`pids.current`、`memory.current/max` 来自内核与计量
+- 可选本地 APK 仓库的带签名真实安装与卸载
 
 CI 使用固定 Alpine minirootfs 3.22.8 与仓库测试夹具验证上述合同。
-仓库夹具只验证索引读取、包选择与依赖求解，不执行安装脚本或写盘。
-这些 namespace/cgroup 是每 VM 的只读身份视图；`unshare`/`setns` 等
-命名空间切换仍未接入。完整 sysfs/设备枚举与外部包仓库的真实安装
-脚本仍属于后续扩展。
+仓库夹具执行安装/卸载但显式关闭包安装脚本；脚本执行属于后续扩展。
+namespace/cgroup 是每 VM 的只读身份视图；`unshare`/`setns` 等
+命名空间切换、独立虚拟控制台和完整设备枚举仍未接入。
 
 ## 参考与差分
 

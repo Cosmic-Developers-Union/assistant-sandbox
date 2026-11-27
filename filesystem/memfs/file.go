@@ -29,6 +29,21 @@ type handle struct {
 	closed     bool
 }
 
+// ChownDescriptor 按句柄的 inode 更新属主,供 fchown 与已经解链的
+// O_PATH 临时文件使用。
+func (h *handle) ChownDescriptor(uid, gid int64) error {
+	h.mu.Lock()
+	if h.closed {
+		h.mu.Unlock()
+		return errno.BadHandle
+	}
+	inode := h.node
+	h.mu.Unlock()
+	h.fs.st.mu.Lock()
+	defer h.fs.st.mu.Unlock()
+	return applyChown(inode, uid, gid)
+}
+
 func (h *handle) Read(p []byte) (int, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()

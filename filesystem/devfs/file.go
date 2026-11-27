@@ -29,6 +29,12 @@ func (f *file) Read(buffer []byte) (int, error) {
 	if f.stream != nil {
 		return f.stream.Read(buffer)
 	}
+	if isTerminalName(f.name) {
+		if f.fs.terminal == nil {
+			return 0, errno.Wrap(errno.NoDevice, "没有控制终端")
+		}
+		return f.fs.terminal.Read(buffer)
+	}
 	switch f.name {
 	case nullName:
 
@@ -42,11 +48,6 @@ func (f *file) Read(buffer []byte) (int, error) {
 	case randomName, urandomName:
 
 		return f.fs.entropy.Read(context.Background(), buffer)
-	case ttyName:
-		if f.fs.terminal == nil {
-			return 0, errno.Wrap(errno.NoDevice, "没有控制终端")
-		}
-		return f.fs.terminal.Read(buffer)
 	default:
 		return 0, errno.Wrap(errno.NotFound, "没有该设备节点: "+f.name)
 	}
@@ -63,6 +64,12 @@ func (f *file) Write(buffer []byte) (int, error) {
 	if f.stream != nil {
 		return f.stream.Write(buffer)
 	}
+	if isTerminalName(f.name) {
+		if f.fs.terminal == nil {
+			return 0, errno.Wrap(errno.NoDevice, "没有控制终端")
+		}
+		return f.fs.terminal.Write(buffer)
+	}
 	switch f.name {
 	case nullName:
 
@@ -73,11 +80,6 @@ func (f *file) Write(buffer []byte) (int, error) {
 	case randomName, urandomName:
 
 		return 0, errno.Wrap(errno.Permission, "随机设备不接受写入: "+f.name)
-	case ttyName:
-		if f.fs.terminal == nil {
-			return 0, errno.Wrap(errno.NoDevice, "没有控制终端")
-		}
-		return f.fs.terminal.Write(buffer)
 	default:
 		return 0, errno.Wrap(errno.NotFound, "没有该设备节点: "+f.name)
 	}

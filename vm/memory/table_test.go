@@ -37,6 +37,60 @@ func TestMapRejectsMisalignedAndEmpty(t *testing.T) {
 	}
 }
 
+// TestMemoryViewTracksPagesAndRegionsIncrementally 锁定批量执行视图的
+// 增量维护:新页插入保持页号有序,Protect/Unmap 后区域表立即更新。
+func TestMemoryViewTracksPagesAndRegionsIncrementally(t *testing.T) {
+	ctx := context.Background()
+	table := New(0)
+	if err := table.Map(ctx, Region{
+		Start: page(1), End: page(4), Prot: ProtRead | ProtWrite,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	view := func() (regions []uint64, pages []uint64, addresses []uintptr) {
+		regions, pages, addresses, _, ok, err := table.AcquireMemoryView(ctx)
+		if err != nil || !ok {
+			t.Fatalf("AcquireMemoryView ok=%v err=%v", ok, err)
+		}
+		table.ReleaseMemoryView()
+		return regions, pages, addresses
+	}
+	if err := table.Write(ctx, page(1), []byte{1}); err != nil {
+		t.Fatal(err)
+	}
+	_, pages, addresses := view()
+	if len(pages) != 1 || pages[0] != 1 || addresses[0] == 0 {
+		t.Fatalf("初始视图 pages=%v addresses=%v", pages, addresses)
+	}
+	if err := table.Write(ctx, page(3), []byte{3}); err != nil {
+		t.Fatal(err)
+	}
+	_, pages, _ = view()
+	if len(pages) != 2 || pages[0] != 1 || pages[1] != 3 {
+		t.Fatalf("新增页后 pages=%v", pages)
+	}
+	if err := table.Protect(ctx, page(1), page(2), ProtRead); err != nil {
+		t.Fatal(err)
+	}
+	regions, _, _ := view()
+	if len(regions) != 6 {
+		t.Fatalf("Protect 后区域表=%v", regions)
+	}
+	if regions[2] != uint64(ProtRead) {
+		t.Fatalf("首段保护位=%d want %d", regions[2], ProtRead)
+	}
+	if err := table.Unmap(ctx, page(1), page(2)); err != nil {
+		t.Fatal(err)
+	}
+	regions, pages, _ = view()
+	if len(pages) != 1 || pages[0] != 3 {
+		t.Fatalf("Unmap 后 pages=%v", pages)
+	}
+	if len(regions) != 3 || regions[0] != page(2) {
+		t.Fatalf("Unmap 后区域表=%v", regions)
+	}
+}
+
 func TestMapRejectsWriteExecute(t *testing.T) {
 	ctx := context.Background()
 	table := New(0)

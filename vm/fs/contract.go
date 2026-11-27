@@ -24,6 +24,12 @@ type Ownership interface {
 	Chown(context.Context, string, int64, int64) error
 }
 
+// DescriptorOwner 是按打开描述符更新属主的能力。fchown 与
+// fchownat(AT_EMPTY_PATH)用于已经解链的临时文件,不能退化为路径 chown。
+type DescriptorOwner interface {
+	ChownDescriptor(uid, gid int64) error
+}
+
 type File interface {
 	io.Reader
 	io.Writer

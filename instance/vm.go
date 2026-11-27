@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"sync"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/executor/elf"
@@ -116,11 +117,49 @@ type Options struct {
 	// Binaries 是客体二进制工厂;为空时使用 RV64 ELF 工厂。
 	Binaries executable.BinaryFactory
 
+	// Init 让发行版 init 成为客体 PID 1。指定后 VM 不再创建内置
+	// Bash 会话；连接启动的客体进程挂在 init 下。为空时使用内置
+	// Bash 会话作为根进程。
+	Init *InitSpec
+
 	// faults 是初始化失败注入点(仅供同包测试)。
 	faults initFaults
 
 	// env 是根文件系统生成的客体会话环境(N04,仅供同包装配)。
 	env map[string]string
+}
+
+// InitSpec 描述客体 PID 1 程序，例如发行版镜像中的 /sbin/init。
+type InitSpec struct {
+	Program string
+	Args    []string
+	Dir     string
+	Env     map[string]string
+	Streams fd.Streams
+}
+
+// initConsole 把发行版 init 的标准流接到 /dev/console 与 /dev/ttyN。
+// 多路 tty 共用同一后端，满足 init/getty 的打开与输出路径，不模拟
+// 独立虚拟控制台。
+type initConsole struct {
+	streams fd.Streams
+}
+
+func (c initConsole) Read(buffer []byte) (int, error) {
+	if c.streams.Input == nil {
+		return 0, io.EOF
+	}
+	return c.streams.Input.Read(buffer)
+}
+
+func (c initConsole) Write(buffer []byte) (int, error) {
+	if c.streams.Output != nil {
+		return c.streams.Output.Write(buffer)
+	}
+	if c.streams.Error != nil {
+		return c.streams.Error.Write(buffer)
+	}
+	return len(buffer), nil
 }
 
 // VM 是一台虚拟机:拥有自己的内核实例、根文件系统与挂载表、时钟、
@@ -149,6 +188,9 @@ type VM struct {
 
 	// env 是客体会话默认环境(N04)。
 	env map[string]string
+
+	// namespaces 是每台 VM 稳定的 namespace 标识视图。
+	namespaces map[string]string
 
 	mu          sync.Mutex
 	closed      bool
@@ -283,7 +325,16 @@ func newVM(ctx context.Context, opts Options, root *memfs.FS, source clock.Sourc
 		return nil, err
 	}
 	terminals := pty.NewManager()
-	devices, err := devfs.New(devfs.Options{Entropy: random, PTY: terminals, Subdirs: map[string]vmfs.System{"shm": shm, "pts": terminals.SlaveFS()}})
+	var console devfs.Terminal
+	if opts.Init != nil {
+		console = initConsole{streams: opts.Init.Streams}
+	}
+	devices, err := devfs.New(devfs.Options{
+		Entropy:  random,
+		Terminal: console,
+		PTY:      terminals,
+		Subdirs:  map[string]vmfs.System{"shm": shm, "pts": terminals.SlaveFS()},
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -299,6 +350,7 @@ func newVM(ctx context.Context, opts Options, root *memfs.FS, source clock.Sourc
 		clock: source, entropy: random, env: opts.env,
 		memoryBytes: opts.MemoryBytes, cpus: opts.CPUs, meters: meters,
 		processTimeout: opts.ProcessTimeout,
+		namespaces:     newNamespaceView(),
 		connections:    map[uint64]*Connection{},
 		running:        map[proc.PID]context.CancelFunc{},
 	}
@@ -380,20 +432,48 @@ func newVM(ctx context.Context, opts Options, root *memfs.FS, source clock.Sourc
 		_ = kernel.Close(ctx)
 		return nil, err
 	}
+	if err := mounts.Mount("/sys/fs/cgroup", newCgroupFS(machine)); err != nil {
+		_ = kernel.Close(ctx)
+		return nil, err
+	}
 	if err := opts.faults.afterKernel(); err != nil {
 		_ = kernel.Close(ctx)
 		return nil, err
 	}
-	// 客体 Shell 会话:作为内核的常驻父进程,连接的子进程都挂在它下面。
-	parent, err = kernel.Begin(0, "bash", nil, WorkRoot, machine.env, fd.Streams{})
-	if err != nil {
-		_ = kernel.Close(ctx)
-		return nil, err
+	if opts.Init != nil {
+		initSpec := *opts.Init
+		dir := initSpec.Dir
+		if dir == "" {
+			dir = "/"
+		}
+		env := maps.Clone(machine.env)
+		if env == nil {
+			env = map[string]string{}
+		}
+		for name, value := range initSpec.Env {
+			env[name] = value
+		}
+		session, bootErr := kernel.BootInit(initSpec.Program, initSpec.Args, dir, env, initSpec.Streams)
+		if bootErr != nil {
+			_ = kernel.Close(ctx)
+			return nil, fmt.Errorf("启动客体 init %s: %w", initSpec.Program, bootErr)
+		}
+		machine.session = session
+	} else {
+		// 客体 Shell 会话:作为内核的常驻父进程,连接的子进程都挂在它下面。
+		parent, err = kernel.Begin(0, "bash", nil, WorkRoot, machine.env, fd.Streams{})
+		if err != nil {
+			_ = kernel.Close(ctx)
+			return nil, err
+		}
+		machine.session = parent
 	}
-	machine.session = parent
 	if err := opts.faults.afterSession(); err != nil {
 		_ = kernel.Close(ctx)
 		return nil, err
+	}
+	if opts.Init != nil {
+		machine.startExecution(context.Background(), machine.session)
 	}
 	return machine, nil
 }
@@ -507,6 +587,20 @@ func (v *VM) unregisterRunning(pid proc.PID) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	delete(v.running, pid)
+}
+
+// startExecution 在 VM 生命周期内执行一个已登记的客体进程。关闭 VM
+// 时由 cancelRunning 取消，executions 保证归还前等待执行器结束。
+func (v *VM) startExecution(ctx context.Context, process proc.Proc) {
+	runCtx, cancel := context.WithCancel(ctx)
+	v.registerRunning(process.ID, cancel)
+	v.executions.Add(1)
+	go func() {
+		defer v.executions.Done()
+		defer cancel()
+		defer v.unregisterRunning(process.ID)
+		_, _ = v.kernel.RunRegistered(runCtx, process)
+	}()
 }
 
 // cancelRunning 取消全部正在执行的客体程序:协作退出的第一手段,

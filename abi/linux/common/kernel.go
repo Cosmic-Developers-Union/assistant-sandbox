@@ -244,12 +244,36 @@ func (p ProcessDescriptors) dupAt(ctx context.Context, creator fd.Creator, descr
 	return uint64(id), err
 }
 
+func (p ProcessDescriptors) dupAtFlags(
+	ctx context.Context,
+	creator interface {
+		DupAtFlags(ctx context.Context, pid, from, min uint64, cloexec bool) (uint32, error)
+	},
+	descriptor, minID uint64,
+	cloexec bool,
+) (uint64, error) {
+	if minID > math.MaxUint32 {
+		return 0, errno.Wrap(errno.Invalid, "起始描述符超出表示范围")
+	}
+	id, err := creator.DupAtFlags(ctx, p.PID, descriptor, minID, cloexec)
+	return uint64(id), err
+}
+
 func (p ProcessDescriptors) DupFrom(ctx context.Context, descriptor uint64) (uint64, error) {
+	return p.DupFromFlags(ctx, descriptor, false)
+}
+
+func (p ProcessDescriptors) DupFromFlags(ctx context.Context, descriptor uint64, cloexec bool) (uint64, error) {
 	if p.Table == nil {
 		return 0, errno.Wrap(errno.NotImplemented, "描述符端口未装配")
 	}
 	if descriptor > math.MaxUint32 {
 		return 0, errno.Wrap(errno.BadHandle, "描述符编号超出表示范围")
+	}
+	if flagsCreator, ok := p.Table.(interface {
+		DupAtFlags(ctx context.Context, pid, from, min uint64, cloexec bool) (uint32, error)
+	}); ok {
+		return p.dupAtFlags(ctx, flagsCreator, descriptor, 0, cloexec)
 	}
 	creator, ok := p.Table.(fd.Creator)
 	if !ok {
@@ -855,6 +879,32 @@ func (f pathOnlyFile) Read([]byte) (int, error)  { return 0, errno.BadHandle }
 func (f pathOnlyFile) Write([]byte) (int, error) { return 0, errno.BadHandle }
 func (f pathOnlyFile) Seek(int64, int) (int64, error) {
 	return 0, errno.BadHandle
+}
+
+// ResolveGuestPath 让 O_PATH 目录描述符继续可作为 openat 的 dirfd。
+// Linux 的 O_PATH 句柄保留路径引用；apk-tools 用它逐级打开目录。
+func (f pathOnlyFile) ResolveGuestPath(name string) (string, error) {
+	resolver, ok := f.File.(fs.DirectoryResolver)
+	if !ok {
+		return "", errno.NotDirectory
+	}
+	return resolver.ResolveGuestPath(name)
+}
+
+func (f pathOnlyFile) GuestPath() (string, bool) {
+	provider, ok := f.File.(interface{ GuestPath() (string, bool) })
+	if !ok {
+		return "", false
+	}
+	return provider.GuestPath()
+}
+
+func (f pathOnlyFile) ChownDescriptor(uid, gid int64) error {
+	owner, ok := f.File.(fs.DescriptorOwner)
+	if !ok {
+		return errno.NotSupported
+	}
+	return owner.ChownDescriptor(uid, gid)
 }
 
 var (

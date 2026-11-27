@@ -114,7 +114,7 @@ compat-ltp:
 	go test ./internal/guest -run '^TestCompatibilityExternalLTP$$' -count=1 -v -timeout 3h
 
 compat-s4:
-	go test ./internal/guest -run '^TestCompatibilityS4DevelopmentWorkflow$$|^TestCompatibilityS4DevelopmentImageExternal$$' -count=1 -v -timeout 1h
+	go test ./internal/guest -run '^TestCompatibilityS4DevelopmentWorkflow$$|^TestCompatibilityS4DevelopmentImageExternal$$|^TestCompatibilityS4ExternalInit$$|^TestCompatibilityS4ExternalDistroInittab$$' -count=1 -v -timeout 1h
 
 # 初步嵌套验证:构建 riscv64 CLI,在外层 VM 中启动内层 sandbox。
 sandbox-in-sandbox:

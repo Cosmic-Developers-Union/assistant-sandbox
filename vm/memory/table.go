@@ -28,6 +28,7 @@ type Table struct {
 	codeGeneration   uint64
 
 	memoryViewValid     bool
+	memoryViewRegionsOK bool
 	memoryViewRegions   []uint64
 	memoryViewPages     []uint64
 	memoryViewAddresses []uintptr
@@ -156,6 +157,7 @@ func (t *Table) Unmap(ctx context.Context, start, end uint64) error {
 		}
 	}
 	t.regions = updated
+	t.invalidateRegionViewLocked()
 
 	t.dropPagesLocked(start, end)
 	return nil
@@ -201,7 +203,7 @@ func (t *Table) Protect(ctx context.Context, start, end uint64, prot Prot) error
 		return faultError(FaultUnmapped, start, "修改保护位的范围未被完整映射")
 	}
 	t.invalidateCodeLocked(start, end)
-	t.invalidateMemoryViewLocked()
+	t.invalidateRegionViewLocked()
 	updated := make([]Region, 0, len(t.regions)+2)
 	for _, region := range t.regions {
 		if region.End <= start || region.Start >= end {
@@ -343,10 +345,6 @@ func (t *Table) AcquireMemoryView(ctx context.Context) ([]uint64, []uint64, []ui
 	}
 	t.mu.Lock()
 	if !t.memoryViewValid {
-		type pageRef struct {
-			number  uint64
-			address uintptr
-		}
 		refs := make([]pageRef, 0, len(t.pages))
 		for number, data := range t.pages {
 			// #nosec G103 -- 页切片由 Table 持有，原生调用期间持锁且不越过生命周期。
@@ -357,6 +355,17 @@ func (t *Table) AcquireMemoryView(ctx context.Context) ([]uint64, []uint64, []ui
 		slices.SortFunc(refs, func(left, right pageRef) int {
 			return cmp.Compare(left.number, right.number)
 		})
+		pages := make([]uint64, len(refs))
+		addresses := make([]uintptr, len(refs))
+		for index, ref := range refs {
+			pages[index] = ref.number
+			addresses[index] = ref.address
+		}
+		t.memoryViewPages = pages
+		t.memoryViewAddresses = addresses
+		t.memoryViewValid = true
+	}
+	if !t.memoryViewRegionsOK {
 		regions := make([]uint64, 0, len(t.regions)*3)
 		for _, region := range t.regions {
 			flags := uint64(region.Prot)
@@ -365,18 +374,15 @@ func (t *Table) AcquireMemoryView(ctx context.Context) ([]uint64, []uint64, []ui
 			}
 			regions = append(regions, region.Start, region.End, flags)
 		}
-		pages := make([]uint64, len(refs))
-		addresses := make([]uintptr, len(refs))
-		for index, ref := range refs {
-			pages[index] = ref.number
-			addresses[index] = ref.address
-		}
 		t.memoryViewRegions = regions
-		t.memoryViewPages = pages
-		t.memoryViewAddresses = addresses
-		t.memoryViewValid = true
+		t.memoryViewRegionsOK = true
 	}
 	return t.memoryViewRegions, t.memoryViewPages, t.memoryViewAddresses, PageSize, true, nil
+}
+
+type pageRef struct {
+	number  uint64
+	address uintptr
 }
 
 // ReleaseMemoryView 释放 AcquireMemoryView 持有的地址空间锁。
@@ -384,8 +390,58 @@ func (t *Table) ReleaseMemoryView() {
 	t.mu.Unlock()
 }
 
-func (t *Table) invalidateMemoryViewLocked() {
+func (t *Table) invalidateRegionViewLocked() {
+	t.memoryViewRegionsOK = false
+}
+
+func (t *Table) invalidatePageViewLocked() {
 	t.memoryViewValid = false
+}
+
+// addPageLocked 登记一个新生页并增量维护按页号排序的批量视图。
+// 批量执行每次系统调用边界都会取内存视图;若每次重新收集并排序全部
+// 页,Node 启动这类持续分配页面的负载会把时间耗在排序上。
+func (t *Table) addPageLocked(page uint64, data []byte) {
+	t.pages[page] = data
+	if !t.memoryViewValid {
+		return
+	}
+	index := sort.Search(len(t.memoryViewPages), func(index int) bool {
+		return t.memoryViewPages[index] >= page
+	})
+	if index < len(t.memoryViewPages) && t.memoryViewPages[index] == page {
+		// #nosec G103 -- 页切片由 Table 持有,视图只在本表生命周期内使用。
+		t.memoryViewAddresses[index] = uintptr(unsafe.Pointer(unsafe.SliceData(data)))
+		return
+	}
+	// #nosec G103 -- 页切片由 Table 持有,视图只在本表生命周期内使用。
+	address := uintptr(unsafe.Pointer(unsafe.SliceData(data)))
+	t.memoryViewPages = append(t.memoryViewPages, 0)
+	copy(t.memoryViewPages[index+1:], t.memoryViewPages[index:])
+	t.memoryViewPages[index] = page
+	t.memoryViewAddresses = append(t.memoryViewAddresses, 0)
+	copy(t.memoryViewAddresses[index+1:], t.memoryViewAddresses[index:])
+	t.memoryViewAddresses[index] = address
+}
+
+// removePagesFromViewLocked 从按页号排序的视图移除 [start, end) 页。
+// 页面丢弃通常发生在 Unmap/MADV_DONTNEED,比页面新增稀疏;一次
+// 区间删除优于重新收集并排序全部页。
+func (t *Table) removePagesFromViewLocked(start, end uint64) {
+	if !t.memoryViewValid || start >= end {
+		return
+	}
+	first := sort.Search(len(t.memoryViewPages), func(index int) bool {
+		return t.memoryViewPages[index] >= start
+	})
+	last := sort.Search(len(t.memoryViewPages), func(index int) bool {
+		return t.memoryViewPages[index] >= end
+	})
+	if first == last {
+		return
+	}
+	t.memoryViewPages = append(t.memoryViewPages[:first], t.memoryViewPages[last:]...)
+	t.memoryViewAddresses = append(t.memoryViewAddresses[:first], t.memoryViewAddresses[last:]...)
 }
 
 func (t *Table) fetchInstructionLocked(address uint64) (uint32, uint64, error) {
@@ -577,8 +633,7 @@ func (t *Table) writeLocked(address uint64, buffer []byte) error {
 		stored := t.pages[page]
 		if stored == nil {
 			stored = make([]byte, PageSize)
-			t.pages[page] = stored
-			t.invalidateMemoryViewLocked()
+			t.addPageLocked(page, stored)
 		}
 		copy(stored[start-base:stop-base], slice)
 	}
@@ -678,8 +733,7 @@ func (t *Table) Load(ctx context.Context, address uint64, content []byte) error 
 		stored := t.pages[page]
 		if stored == nil {
 			stored = make([]byte, PageSize)
-			t.pages[page] = stored
-			t.invalidateMemoryViewLocked()
+			t.addPageLocked(page, stored)
 		}
 		copy(stored[start-base:stop-base], content[start-address:stop-address])
 	}
@@ -705,7 +759,7 @@ func (t *Table) Sync(ctx context.Context, start, end uint64) error {
 
 func (t *Table) dropPagesLocked(start, end uint64) {
 	t.invalidateCodeLocked(start, end)
-	t.invalidateMemoryViewLocked()
+	t.removePagesFromViewLocked(start/PageSize, end/PageSize)
 	for page := start / PageSize; page < end/PageSize; page++ {
 		delete(t.pages, page)
 	}
@@ -832,7 +886,7 @@ func (t *Table) checkBudgetLocked(size uint64) error {
 
 func (t *Table) insertLocked(region Region) {
 	t.invalidateCodeLocked(region.Start, region.End)
-	t.invalidateMemoryViewLocked()
+	t.invalidateRegionViewLocked()
 	index := sort.Search(len(t.regions), func(i int) bool {
 		return t.regions[i].Start >= region.Start
 	})
@@ -889,7 +943,7 @@ func (t *Table) Resize(ctx context.Context, oldStart, oldEnd, newEnd uint64) err
 		return err
 	}
 	t.regions = kept
-	t.invalidateMemoryViewLocked()
+	t.invalidateRegionViewLocked()
 	return nil
 }
 
@@ -946,6 +1000,7 @@ func (t *Table) Move(ctx context.Context, oldStart, oldEnd, newStart uint64) err
 	kept = append(kept, t.regions[index+1:]...)
 	t.regions = kept
 	t.insertLocked(target)
+	t.invalidatePageViewLocked()
 	return nil
 }
 
@@ -1004,6 +1059,7 @@ func (t *Table) Replace(ctx context.Context, region Region, noReplace bool) erro
 	kept = append(kept, region)
 	slices.SortFunc(kept, func(a, b Region) int { return cmp.Compare(a.Start, b.Start) })
 	t.regions = kept
+	t.invalidateRegionViewLocked()
 	t.dropPagesLocked(region.Start, region.End)
 	return nil
 }

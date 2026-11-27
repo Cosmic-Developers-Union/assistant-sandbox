@@ -220,6 +220,15 @@ func TestTTYRequiresTerminal(t *testing.T) {
 	if string(buffer) != "typed" {
 		t.Fatalf("终端输入=%q", buffer)
 	}
+	for _, name := range []string{consoleName, "tty1"} {
+		handle := open(t, fs2, name, vmfs.ReadWrite)
+		if _, err := handle.Write([]byte(name)); err != nil {
+			t.Fatalf("写 %s: %v", name, err)
+		}
+		if err := handle.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func TestTTYPermissionsAreEnforced(t *testing.T) {
@@ -321,7 +330,11 @@ func TestDirectoryViewListsDevices(t *testing.T) {
 		names = append(names, entry.Name())
 	}
 
-	want := []string{"fd", "null", "random", "stderr", "stdin", "stdout", "tty", "urandom", "zero"}
+	want := []string{
+		"console", "fd", "null", "random", "stderr", "stdin", "stdout",
+		"tty", "tty0", "tty1", "tty2", "tty3", "tty4", "tty5", "tty6",
+		"urandom", "zero",
+	}
 	if strings.Join(names, ",") != strings.Join(want, ",") {
 		t.Fatalf("设备列表=%v want %v", names, want)
 	}

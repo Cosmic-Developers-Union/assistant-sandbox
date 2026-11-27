@@ -53,9 +53,14 @@ func (m *Mounts) Mount(point string, system vmfs.System) error {
 	}
 
 	if parent, ok := m.parentMount(clean); ok {
-		if err := parent.sys.Mkdir(context.Background(), m.relative(parent, clean), 0o755); err != nil &&
+		relative := m.relative(parent, clean)
+		if err := parent.sys.Mkdir(context.Background(), relative, 0o755); err != nil &&
 			!errors.Is(err, errno.Exist) {
-			return errno.Wrap(err, "在父挂载建立挂载点")
+			// 只读父文件系统可能已经带有挂载点目录(例如 /sys 下的
+			// /sys/fs/cgroup);只要目录存在就允许在其上挂载。
+			if info, statErr := parent.sys.Stat(context.Background(), relative); statErr != nil || !info.IsDir() {
+				return errno.Wrap(err, "在父挂载建立挂载点")
+			}
 		}
 	}
 	m.mounts = append(m.mounts, mount{point: clean, sys: system})

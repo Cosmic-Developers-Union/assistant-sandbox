@@ -20,6 +20,7 @@ const (
 	randomName  = "random"
 	urandomName = "urandom"
 	ttyName     = "tty"
+	consoleName = "console"
 	ptmxName    = "ptmx"
 
 	fdDir = "fd"
@@ -58,7 +59,7 @@ type Options struct {
 }
 
 func defaultMode(name string) stdfs.FileMode {
-	if name == ttyName || name == ptmxName {
+	if isTerminalName(name) || name == ptmxName {
 		return 0o600
 	}
 	return 0o666
@@ -100,7 +101,24 @@ func New(options Options) (*FS, error) {
 	}, nil
 }
 
-var deviceNames = []string{fdDir, nullName, randomName, stderrName, stdinName, stdoutName, ttyName, urandomName, zeroName}
+var deviceNames = []string{
+	fdDir, nullName, randomName, stderrName, stdinName, stdoutName,
+	ttyName, consoleName, "tty0", "tty1", "tty2", "tty3", "tty4", "tty5", "tty6",
+	urandomName, zeroName,
+}
+
+// isTerminalName 报告名称是否为控制终端设备。当前 tty0..tty6 与控制台
+// 共用同一个终端后端；它们只提供 init/getty 所需的打开、读写与状态
+// 接口，不实现独立虚拟控制台切换。
+func isTerminalName(name string) bool {
+	if name == ttyName || name == consoleName || name == "tty0" {
+		return true
+	}
+	if len(name) != 4 || name[:3] != "tty" || name[3] < '1' || name[3] > '6' {
+		return false
+	}
+	return true
+}
 
 // deviceNames 返回当前配置可见的设备节点;PTY 未装配时不暴露 ptmx。
 func (f *FS) visibleDeviceNames() []string {
@@ -409,7 +427,7 @@ func (f *FS) Open(ctx context.Context, path string, flags uint32, mode stdfs.Fil
 		return nil, err
 	}
 
-	if name == ttyName && f.terminal == nil {
+	if isTerminalName(name) && f.terminal == nil {
 		return nil, errno.Wrap(errno.NoDevice, "没有控制终端")
 	}
 	return &file{fs: f, name: name, flags: flags}, nil

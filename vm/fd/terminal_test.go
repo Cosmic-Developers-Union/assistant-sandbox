@@ -115,6 +115,26 @@ func TestTerminalQueryReportsOnlyRealTerminals(t *testing.T) {
 	}
 }
 
+// TestNestedStandardStreamDoesNotInheritTerminal 验证标准流再包一层
+// 时不会把普通管道误判为 TTY:内层 stream 虽然实现 Dimensions,
+// 但外层的 IsTerminal 标记必须优先。
+func TestNestedStandardStreamDoesNotInheritTerminal(t *testing.T) {
+	ctx := context.Background()
+	outer := New()
+	outer.Attach(1, Streams{})
+	stdin, err := outer.Get(ctx, 1, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	inner := New()
+	inner.Attach(1, Streams{Input: stdin})
+	info, err := inner.Terminal(ctx, 1, 0)
+	if err != nil || info.TTY {
+		t.Fatalf("嵌套标准流不应是终端: %+v err=%v", info, err)
+	}
+}
+
 func TestTerminalQueryErrors(t *testing.T) {
 	ctx := context.Background()
 	table := New()

@@ -78,6 +78,9 @@ type Descriptors interface {
 
 	// DupFrom 复制描述符到 ≥ 0 的最低空闲编号,共享底层句柄。
 	DupFrom(ctx context.Context, descriptor uint64) (uint64, error)
+
+	// DupFromFlags 与 DupFrom 相同,并按 cloexec 设置新描述符标志。
+	DupFromFlags(ctx context.Context, descriptor uint64, cloexec bool) (uint64, error)
 }
 
 type SeekWhence int
@@ -1233,9 +1236,19 @@ func (s Syscalls) openAt(ctx context.Context, call Call) Reply {
 	if err := call.OpenFlags.Validate(); err != nil {
 		return Reply{Errno: errno.Invalid}
 	}
-	path, code := s.readPath(ctx, call.Args[1])
+	path, code := s.readPathAllowEmpty(ctx, call.Args[1], call.OpenFlags.PathOnly)
 	if code != "" {
 		return Reply{Errno: code}
+	}
+	if path == "" {
+		if s.Descriptors == nil {
+			return Reply{Errno: errno.NotImplemented}
+		}
+		id, err := s.Descriptors.DupFromFlags(ctx, call.Args[0], call.OpenFlags.CloseOnExec)
+		if err != nil {
+			return Reply{Errno: errnoOf(err)}
+		}
+		return Reply{Value: id}
 	}
 	path, code = s.resolveDirPath(ctx, call.Args[0], path)
 	if code != "" {
@@ -1333,6 +1346,10 @@ func (s Syscalls) resolveDirPath(ctx context.Context, dirfd uint64, name string)
 }
 
 func (s Syscalls) readPath(ctx context.Context, address uint64) (string, errno.Code) {
+	return s.readPathAllowEmpty(ctx, address, false)
+}
+
+func (s Syscalls) readPathAllowEmpty(ctx context.Context, address uint64, allowEmpty bool) (string, errno.Code) {
 	var buffer [1]byte
 	path := make([]byte, 0, 64)
 	for offset := uint64(0); offset < PathLimit; offset++ {
@@ -1341,7 +1358,9 @@ func (s Syscalls) readPath(ctx context.Context, address uint64) (string, errno.C
 		}
 		if buffer[0] == 0 {
 			if len(path) == 0 {
-
+				if allowEmpty {
+					return "", ""
+				}
 				return "", errno.NotFound
 			}
 			return string(path), ""
@@ -2922,19 +2941,40 @@ func (s Syscalls) fchownat(ctx context.Context, call Call) Reply {
 		return Reply{Errno: errno.NotImplemented}
 	}
 	flags := call.Args[4]
-	if flags&^uint64(atSymlinkNoFollow) != 0 {
+	if flags&^(uint64(atSymlinkNoFollow)|uint64(atEmptyPath)) != 0 {
 		return Reply{Errno: errno.Invalid}
 	}
+	uid := int64(int32(uint32(call.Args[2])))
+	gid := int64(int32(uint32(call.Args[3])))
+	path, code := s.readPathAllowEmpty(ctx, call.Args[1], flags&atEmptyPath != 0)
+	if code != "" {
+		return Reply{Errno: code}
+	}
+	if path == "" {
+		if flags&atEmptyPath == 0 {
+			return Reply{Errno: errno.NotFound}
+		}
+		if handled, chownErr := s.chownDescriptor(ctx, call.Args[0], uid, gid); handled {
+			return Reply{Errno: chownErr}
+		}
+		path = s.descriptorPath(ctx, call.Args[0])
+		if path == "" {
+			return Reply{Errno: errno.NotSupported}
+		}
+	} else {
+		path, code = s.resolveDirPath(ctx, call.Args[0], path)
+		if code != "" {
+			return Reply{Errno: code}
+		}
+	}
 	if flags&atSymlinkNoFollow != 0 {
-		return Reply{Errno: errno.NotSupported}
-	}
-	path, code := s.readPath(ctx, call.Args[1])
-	if code != "" {
-		return Reply{Errno: code}
-	}
-	path, code = s.resolveDirPath(ctx, call.Args[0], path)
-	if code != "" {
-		return Reply{Errno: code}
+		info, err := s.Files.Lstat(ctx, path)
+		if err != nil {
+			return Reply{Errno: errnoOf(err)}
+		}
+		if info.Mode()&stdfs.ModeSymlink != 0 {
+			return Reply{Errno: errno.NotSupported}
+		}
 	}
 	chowner, ok := s.Files.(interface {
 		Chown(context.Context, string, int64, int64) error
@@ -2942,8 +2982,6 @@ func (s Syscalls) fchownat(ctx context.Context, call Call) Reply {
 	if !ok {
 		return Reply{Errno: errno.NotSupported}
 	}
-	uid := int64(int32(uint32(call.Args[2])))
-	gid := int64(int32(uint32(call.Args[3])))
 	if err := chowner.Chown(ctx, path, uid, gid); err != nil {
 		return Reply{Errno: errnoOf(err)}
 	}
@@ -2954,8 +2992,10 @@ func (s Syscalls) fchown(ctx context.Context, call Call) Reply {
 	if s.Files == nil || s.Descriptors == nil {
 		return Reply{Errno: errno.NotImplemented}
 	}
-	if _, err := s.Descriptors.Get(ctx, call.Args[0]); err != nil {
-		return Reply{Errno: errnoOf(err)}
+	uid := int64(int32(uint32(call.Args[1])))
+	gid := int64(int32(uint32(call.Args[2])))
+	if handled, chownErr := s.chownDescriptor(ctx, call.Args[0], uid, gid); handled {
+		return Reply{Errno: chownErr}
 	}
 	path := s.descriptorPath(ctx, call.Args[0])
 	if path == "" {
@@ -2967,12 +3007,30 @@ func (s Syscalls) fchown(ctx context.Context, call Call) Reply {
 	if !ok {
 		return Reply{Errno: errno.NotSupported}
 	}
-	uid := int64(int32(uint32(call.Args[1])))
-	gid := int64(int32(uint32(call.Args[2])))
 	if err := chowner.Chown(ctx, path, uid, gid); err != nil {
 		return Reply{Errno: errnoOf(err)}
 	}
 	return Reply{}
+}
+
+// chownDescriptor 走描述符属主更新。返回 handled=false 表示该句柄
+// 不支持按描述符 chown,调用方可回退到路径操作。
+func (s Syscalls) chownDescriptor(ctx context.Context, descriptor uint64, uid, gid int64) (bool, errno.Code) {
+	if s.Descriptors == nil {
+		return false, ""
+	}
+	handle, err := s.Descriptors.Get(ctx, descriptor)
+	if err != nil {
+		return true, errnoOf(err)
+	}
+	owner, ok := handle.(vmfs.DescriptorOwner)
+	if !ok {
+		return false, ""
+	}
+	if err := owner.ChownDescriptor(uid, gid); err != nil {
+		return true, errnoOf(err)
+	}
+	return true, ""
 }
 
 func (s Syscalls) umask(ctx context.Context, call Call) Reply {

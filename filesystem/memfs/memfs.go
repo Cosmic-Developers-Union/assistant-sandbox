@@ -822,6 +822,10 @@ func (f *FS) Chown(ctx context.Context, p string, uid, gid int64) error {
 	if err != nil {
 		return err
 	}
+	return applyChown(node, uid, gid)
+}
+
+func applyChown(node *inode, uid, gid int64) error {
 	if uid != vmfs.ChownUnchanged {
 		if uid < 0 || uid > 0xFFFF_FFFF {
 			return errno.Wrap(errno.Invalid, "属主越界")

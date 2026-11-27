@@ -334,7 +334,7 @@ func TestRootListsFDAndAliases(t *testing.T) {
 	for _, entry := range entries {
 		names = append(names, entry.Name())
 	}
-	want := "fd,null,random,stderr,stdin,stdout,tty,urandom,zero"
+	want := "console,fd,null,random,stderr,stdin,stdout,tty,tty0,tty1,tty2,tty3,tty4,tty5,tty6,urandom,zero"
 	if strings.Join(names, ",") != want {
 		t.Fatalf("根目录=%v want %s", names, want)
 	}

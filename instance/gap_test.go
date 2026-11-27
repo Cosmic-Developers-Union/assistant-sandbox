@@ -50,8 +50,9 @@ func TestRuntimeGapTracking(t *testing.T) {
 	run("syscall")
 
 	var fileGap, syscallGap *vm.GapReport
-	for index := range machine.GapReports() {
-		gap := &machine.GapReports()[index]
+	reports := machine.GapReports()
+	for index := range reports {
+		gap := &reports[index]
 		switch gap.Kind {
 		case "file":
 			fileGap = gap

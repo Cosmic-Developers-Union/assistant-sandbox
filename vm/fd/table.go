@@ -151,7 +151,10 @@ func (t *Table) InstallNext(pid uint64, handle Stream) (uint32, error) {
 	if table == nil {
 		return 0, errno.NoProcess
 	}
-	for id := uint32(3); id < ^uint32(0); id++ {
+	// Linux 的打开路径返回最低可用编号:进程关闭 stdin 后,下一次
+	// open 必须优先复用 0。BusyBox init 依赖这一行为判断 getty 的
+	// 终端打开是否成功。
+	for id := uint32(0); id < ^uint32(0); id++ {
 		if _, taken := table[id]; !taken {
 			if err := t.chargeLocked(pid, 1); err != nil {
 				return 0, err
@@ -388,6 +391,12 @@ func (t *Table) InstallPassed(pid uint64, passed *Passed) (uint32, error) {
 // DupAt 把 from 复制到 ≥ min 的最低空闲编号并返回该编号;
 // 复制共享同一底层句柄(偏移与状态共享),与 dup/fcntl F_DUPFD 一致。
 func (t *Table) DupAt(ctx context.Context, pid, from, min uint64) (uint32, error) {
+	return t.DupAtFlags(ctx, pid, from, min, false)
+}
+
+// DupAtFlags 是 DupAt 的带 cloexec 版本:O_PATH 空路径重开等调用
+// 需要复制描述符并保留 O_CLOEXEC 语义。
+func (t *Table) DupAtFlags(ctx context.Context, pid, from, min uint64, cloexec bool) (uint32, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
@@ -410,7 +419,7 @@ func (t *Table) DupAt(ctx context.Context, pid, from, min uint64) (uint32, error
 				return 0, err
 			}
 			source.ref.refs++
-			table[id] = &entry{ref: source.ref}
+			table[id] = &entry{ref: source.ref, cloexec: cloexec}
 			return id, nil
 		}
 	}
@@ -899,10 +908,24 @@ func (s *stream) ReadContext(ctx context.Context, p []byte) (int, error) {
 // reader/writer, so a PTY slave installed as fd 0/1/2 must remain visible as
 // a terminal to isatty/tcgetattr/tcsetpgrp.
 func (s *stream) terminalSource() (terminalStream, bool) {
-	if terminal, ok := s.reader.(terminalStream); ok {
+	if terminal, ok := terminalStreamOf(s.reader); ok {
 		return terminal, true
 	}
-	terminal, ok := s.writer.(terminalStream)
+	terminal, ok := terminalStreamOf(s.writer)
+	return terminal, ok
+}
+
+// terminalStreamOf 只把真正的终端视为终端。标准流可以包裹另一层
+// stream(例如在测试或管道重定向下);外层 stream 虽然实现了
+// Dimensions,但不一定代表 TTY,必须尊重其 IsTerminal 标记。
+func terminalStreamOf(value any) (terminalStream, bool) {
+	if value == nil {
+		return nil, false
+	}
+	if marker, ok := value.(interface{ IsTerminal() bool }); ok && !marker.IsTerminal() {
+		return nil, false
+	}
+	terminal, ok := value.(terminalStream)
 	return terminal, ok
 }
 

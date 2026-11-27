@@ -87,6 +87,10 @@ func (d *fakeDescriptors) Dup2(_ context.Context, oldfd, newfd uint64, cloexec b
 }
 
 func (d *fakeDescriptors) DupFrom(_ context.Context, descriptor uint64) (uint64, error) {
+	return d.DupFromFlags(context.Background(), descriptor, false)
+}
+
+func (d *fakeDescriptors) DupFromFlags(_ context.Context, descriptor uint64, _ bool) (uint64, error) {
 	if d.seekErr != nil {
 		return 0, d.seekErr
 	}
@@ -639,6 +643,30 @@ func TestMknodatCreatesFIFO(t *testing.T) {
 	}
 	if files.fifoPath != "/work/pipe" || files.fifoMode != stdfs.ModeNamedPipe|0o640 {
 		t.Fatalf("FIFO 创建=%q mode=%v", files.fifoPath, files.fifoMode)
+	}
+}
+
+// TestOpenAtEmptyPathDuplicatesDescriptor 锁定 O_PATH 空路径语义:
+// apk-tools 用 openat(fd, "", O_PATH|O_CLOEXEC) 复制目录描述符。
+func TestOpenAtEmptyPathDuplicatesDescriptor(t *testing.T) {
+	space := newFakeMemory()
+	descriptors := &fakeDescriptors{}
+	syscalls := Syscalls{Memory: space, Descriptors: descriptors, Files: &fakeFiles{}}
+	reply := syscalls.Handle(context.Background(), Call{
+		Syscall:   SysOpenAt,
+		Args:      [6]uint64{7, 0x1000, 0, 0},
+		OpenFlags: &OpenFlags{Mode: OpenRead, PathOnly: true},
+	})
+	if reply.Errno != "" || reply.Value != 8 {
+		t.Fatalf("O_PATH 空路径=%+v", reply)
+	}
+	reply = syscalls.Handle(context.Background(), Call{
+		Syscall:   SysOpenAt,
+		Args:      [6]uint64{7, 0x1000, 0, 0},
+		OpenFlags: &OpenFlags{Mode: OpenRead},
+	})
+	if reply.Errno != errno.NotFound {
+		t.Fatalf("空路径非 O_PATH=%+v", reply)
 	}
 }
 

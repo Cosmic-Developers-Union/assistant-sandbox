@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync/atomic"
 
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/filesystem/procfs"
 	"github.com/Cosmic-Developers-Union/assistant-sandbox/vm"
@@ -16,6 +17,40 @@ import (
 type kernelProcfs struct {
 	kernel  *vm.Kernel
 	machine *VM
+}
+
+const cgroupPath = "/assistant-sandbox"
+
+const (
+	namespaceCgroup = "cgroup"
+	namespaceIPC    = "ipc"
+	namespaceMnt    = "mnt"
+	namespaceNet    = "net"
+	namespacePID    = "pid"
+	namespacePIDFor = "pid_for_children"
+	namespaceTime   = "time"
+	namespaceUser   = "user"
+	namespaceUTS    = "uts"
+)
+
+var namespaceInodeSeed atomic.Uint64
+
+// newNamespaceView 为每台 VM 生成一组稳定的 namespace 标识。同一 VM
+// 的所有进程共享相同目标;不同 VM 不复用编号,避免把独立内核误报成
+// 同一 namespace。
+func newNamespaceView() map[string]string {
+	base := 4026531834 + namespaceInodeSeed.Add(16)
+	return map[string]string{
+		namespaceCgroup: fmt.Sprintf("cgroup:[%d]", base+1),
+		namespaceIPC:    fmt.Sprintf("ipc:[%d]", base+2),
+		namespaceMnt:    fmt.Sprintf("mnt:[%d]", base+3),
+		namespaceNet:    fmt.Sprintf("net:[%d]", base+4),
+		namespacePID:    fmt.Sprintf("pid:[%d]", base+5),
+		namespacePIDFor: fmt.Sprintf("pid:[%d]", base+5),
+		namespaceTime:   fmt.Sprintf("time:[%d]", base+6),
+		namespaceUser:   fmt.Sprintf("user:[%d]", base+7),
+		namespaceUTS:    fmt.Sprintf("uts:[%d]", base+8),
+	}
 }
 
 // SystemFiles 生成 /proc 顶层的系统视图文件(N08):
@@ -112,25 +147,11 @@ func (p kernelProcfs) Processes(ctx context.Context) ([]procfs.Entry, error) {
 			ThreadCount: threadCounts[item.TGID],
 			Exe:         item.Program, Maps: p.maps(ctx, item.ID),
 			OpenFDs:    descriptors,
-			Namespaces: namespaceView(),
-			Cgroup:     "0::/assistant-sandbox\n",
+			Namespaces: p.machine.namespaces,
+			Cgroup:     "0::" + cgroupPath + "\n",
 		})
 	}
 	return out, nil
-}
-
-func namespaceView() map[string]string {
-	return map[string]string{
-		"cgroup":           "cgroup:[4026531835]",
-		"ipc":              "ipc:[4026531839]",
-		"mnt":              "mnt:[4026531840]",
-		"net":              "net:[4026531992]",
-		"pid":              "pid:[4026531836]",
-		"pid_for_children": "pid:[4026531836]",
-		"time":             "time:[4026531834]",
-		"user":             "user:[4026531837]",
-		"uts":              "uts:[4026531838]",
-	}
 }
 
 func (p kernelProcfs) Self(ctx context.Context) (proc.PID, error) {

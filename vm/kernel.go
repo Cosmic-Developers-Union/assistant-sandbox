@@ -85,6 +85,7 @@ type Kernel struct {
 	signals    *signal.Table
 	fds        *fd.Table
 	init       proc.PID
+	initBooted bool
 	cpus       int
 
 	bootTime     int64
@@ -327,6 +328,57 @@ func (k *Kernel) HasProgram(name string) bool {
 }
 
 func (k *Kernel) Init() proc.PID { return k.table.Init() }
+
+// BootInit 把内核的 PID 1 占位条目配置为发行版 init 并挂接标准流。
+// 调用方随后用 RunRegistered 执行返回的进程；每个内核只允许一次。
+func (k *Kernel) BootInit(program string, args []string, dir string, env map[string]string, streams fd.Streams) (proc.Proc, error) {
+	resolved, err := k.resolve(program)
+	if err != nil {
+		return proc.Proc{}, err
+	}
+	if len(resolved.Args) > 0 {
+		args = append(slices.Clone(resolved.Args), args...)
+	}
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.failed {
+		return proc.Proc{}, errno.Busy
+	}
+	if k.closed {
+		return proc.Proc{}, errno.Cancelled
+	}
+	if k.initBooted {
+		return proc.Proc{}, errno.Busy
+	}
+	if len(k.table.Children(k.init)) > 0 {
+		return proc.Proc{}, errno.Busy
+	}
+	if k.meters != nil {
+		requested := k.budget(proc.Proc{Program: resolved.Name})
+		if err := k.meters.Spawn(uint64(k.init), requested); err != nil {
+			return proc.Proc{}, err
+		}
+		if err := k.meters.Charge(context.Background(), uint64(k.init), spawnWorkUnits); err != nil {
+			return proc.Proc{}, err
+		}
+		const standardDescriptors = 3
+		if err := k.meters.ChargeKind(context.Background(), uint64(k.init), resources.KindDescriptors, standardDescriptors); err != nil {
+			return proc.Proc{}, err
+		}
+	}
+	p, err := k.table.ConfigureInit(resolved.Name, args, dir, env)
+	if err != nil {
+		return proc.Proc{}, err
+	}
+	if k.fds != nil {
+		k.fds.Attach(uint64(k.init), streams)
+	}
+	p.Resources = capability.Scope(uint64(k.init), k.services.Set, k.meters)
+	p.Control = k.processControl(k.init)
+	k.initBooted = true
+	k.emitLocked(scheduler.KindSpawn, k.init, scheduler.SpawnDetail(resolved.Name))
+	return p, nil
+}
 
 type Feature uint8
 

@@ -55,7 +55,7 @@ ENOSYS 清单,归 L/I/H 组后续任务。
 | symlinkat / linkat / readlinkat | I11;`TestLinkSymlinkLifecycle*` |
 | ftruncate / fsync / fdatasync / utimensat | I12;`TestUtimensatAndFtruncate*` |
 | fchmod / fchmodat | I13 权限位;`TestFchmodat*`、Q12 venv |
-| fchown / fchownat | I13/O01 属主与属组更新;CPython `test_os` |
+| fchown / fchownat | I13/O01 属主与属组更新;`AT_SYMLINK_NOFOLLOW` 对非符号链接生效,`AT_EMPTY_PATH` 经描述符路径生效;CPython `test_os`、apk 解包 |
 | umask | I13 每进程文件创建掩码;`TestUmask*`、Q12 pip |
 | chdir / fchdir | I01 工作目录;Q12 venv、`TestChdir*` |
 | faccessat | G 组;`TestFaccessat*` |
@@ -118,8 +118,13 @@ ENOSYS 清单,归 L/I/H 组后续任务。
   fork 克隆(E10)。**文件映射 ENOTSUP**(E08/E09);栈保护页(E13)未配置。
 - 挂载:同 VM 统一挂载表,只读层与写时复制(I16);跨挂载 rename EXDEV。
 - namespace/cgroup 视图:`/proc/<pid>/ns/{cgroup,ipc,mnt,net,pid,pid_for_children,time,user,uts}`
-  提供每 VM 的只读身份,`/proc/<pid>/cgroup` 与 `/sys/fs/cgroup/*`
-  提供 cgroup v2 只读视图;`unshare`/`setns` 切换不在本版配置。
+  提供每 VM 稳定且跨 VM 不复用的只读身份;`/proc/<pid>/cgroup` 报告
+  `0::/assistant-sandbox`,对应 `/sys/fs/cgroup/assistant-sandbox` 下的
+  cgroup v2 只读文件。`cgroup.procs`、`pids.current`、`memory.current`
+  按内核进程表与资源计量动态生成;`unshare`/`setns` 切换不在本版配置。
+- 设备:`/dev/console` 与 `/dev/tty0..tty6` 映射到 init 的同一控制台
+  后端,只提供发行版 init/getty 所需的打开、读写与终端 ioctl;不模拟
+  独立虚拟控制台。
 - 持久化:memfs 为内存介质;崩溃恢复(I17)与文件锁(I14)不在本版配置。
 
 ## 4. 进程、信号与时间

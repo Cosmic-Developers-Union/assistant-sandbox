@@ -107,6 +107,27 @@ func (t *Table) Init() PID { return t.init }
 
 func (t *Table) Limit() int { return t.limit }
 
+// ConfigureInit 把占位的 PID 1 条目替换为发行版 init 程序。它只允许
+// 在内核启动会话前调用一次,不改变 PID、进程组或会话标识。
+func (t *Table) ConfigureInit(program string, args []string, dir string, env map[string]string) (Proc, error) {
+	if program == "" || dir == "" || dir[0] != '/' {
+		return Proc{}, fmt.Errorf("init 需要程序名与客体绝对目录: %w", errno.Invalid)
+	}
+	p, ok := t.entries[t.init]
+	if !ok {
+		return Proc{}, errno.NoProcess
+	}
+	if p.State != Running || p.Parent != 0 {
+		return Proc{}, errno.Busy
+	}
+	p.Program = program
+	p.Args = slices.Clone(args)
+	p.Dir = dir
+	p.Env = maps.Clone(env)
+	t.entries[p.ID] = p
+	return clone(p), nil
+}
+
 func (t *Table) Create(parent PID, program string, args []string, dir string, env map[string]string) (Proc, error) {
 	if program == "" || dir == "" || dir[0] != '/' {
 		return Proc{}, fmt.Errorf("进程需要程序名与客体绝对目录: %w", errno.Invalid)

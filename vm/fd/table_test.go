@@ -176,7 +176,7 @@ func TestCloexecMarker(t *testing.T) {
 	}
 }
 
-func TestInstallNextAllocatesLowestFreeAboveStdio(t *testing.T) {
+func TestInstallNextAllocatesLowestFree(t *testing.T) {
 	table := New()
 	table.Attach(1, Streams{})
 	first, err := table.InstallNext(1, &counted{})
@@ -198,6 +198,15 @@ func TestInstallNextAllocatesLowestFreeAboveStdio(t *testing.T) {
 
 	if opened := table.Opened(1); !slices.Equal(opened, []uint32{0, 1, 2, 3, 4}) {
 		t.Fatalf("opened=%v", opened)
+	}
+
+	// Linux 允许关闭 stdin 后由下一次 open/pipe 复用 0。
+	if err := table.Close(t.Context(), 1, 0); err != nil {
+		t.Fatal(err)
+	}
+	stdin, err := table.InstallNext(1, &counted{})
+	if err != nil || stdin != 0 {
+		t.Fatalf("stdin reuse=%d err=%v", stdin, err)
 	}
 
 	if _, err := table.InstallNext(1, nil); !errors.Is(err, errno.Invalid) {

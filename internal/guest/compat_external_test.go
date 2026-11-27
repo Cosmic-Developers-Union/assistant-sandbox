@@ -62,6 +62,18 @@ test -r /sys/fs/cgroup/cgroup.controllers
 test -L /proc/self/ns/mnt
 test -e /proc/self/ns/pid
 apk --version >/dev/null
+for name in cgroup ipc mnt net pid time user uts; do
+  target=$(readlink /proc/self/ns/$name)
+  case "$target" in "$name:"\[[0-9]*\]) ;; *) echo "bad ns $name=$target" >&2; exit 1;; esac
+done
+case "$(readlink /proc/self/ns/pid_for_children)" in pid:\[[0-9]*\]) ;; *) exit 1;; esac
+test "$(readlink /proc/self/ns/mnt)" = "$(readlink /proc/1/ns/mnt)"
+grep -qx '0::/assistant-sandbox' /proc/self/cgroup
+grep -q '^cpu memory pids$' /sys/fs/cgroup/cgroup.controllers
+grep -q '^cpu memory pids$' /sys/fs/cgroup/assistant-sandbox/cgroup.controllers
+awk -v pid=$$ '$1 == pid { found=1 } END { exit !found }' /sys/fs/cgroup/assistant-sandbox/cgroup.procs
+test "$(cat /sys/fs/cgroup/assistant-sandbox/pids.current)" -ge 1
+test "$(cat /sys/fs/cgroup/assistant-sandbox/memory.max)" -eq 8589934592
 printf 's4-ok\n'`
 	output, diagnostic, code := runGuestProgram(t, connection,
 		"/bin/sh", []string{"-c", script},
@@ -76,18 +88,25 @@ printf 's4-ok\n'`
 		return
 	}
 	copyGuestTree(t, machine, repo, "/work/s4repo/riscv64")
-	pkg := os.Getenv("COMPAT_S4_PACKAGE")
-	if pkg == "" {
-		pkg = "git-init-template"
-	}
-	script = `/sbin/apk add --simulate --allow-untrusted --logfile=no \
-		--repository /work/s4repo --repositories-file /dev/null \
-		--no-scripts --force-non-repository ` + pkg
+	const pkg = "git-init-template"
+	script = `set -eu
+for key in /work/s4repo/riscv64/*.rsa.pub; do
+  if [ -e "$key" ]; then cp "$key" /etc/apk/keys/; fi
+done
+/sbin/apk add --no-scripts --repositories-file /dev/null \
+	--repository /work/s4repo ` + pkg + `
+test -f /usr/share/git-core/templates/description
+grep -qx 'P:` + pkg + `' /lib/apk/db/installed
+/sbin/apk info -e ` + pkg + ` >/dev/null
+/sbin/apk del --no-scripts --repositories-file /dev/null \
+	--repository /work/s4repo ` + pkg + `
+test ! -e /usr/share/git-core/templates/description
+printf 's4-repo-ok\n'`
 	output, diagnostic, code = runGuestProgram(t, connection,
 		"/bin/sh", []string{"-c", script},
 		map[string]string{"HOME": "/work", "PATH": "/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
 		300*time.Second)
-	if code != 0 || !strings.Contains(output, "OK:") {
+	if code != 0 || !strings.Contains(output, "OK:") || !strings.HasSuffix(output, "s4-repo-ok\n") {
 		t.Fatalf("S4 包仓库 exit=%d stdout=%q stderr=%q", code, output, diagnostic)
 	}
 }
