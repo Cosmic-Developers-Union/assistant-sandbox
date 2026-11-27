@@ -182,3 +182,50 @@ CLI 开发环境默认使用标准 V8；严格客体 W^X 模式使用 jitless。
 Node 22.18.0 REPL 为 0.813 秒。客体输出 `666666661666.567`，下一条
 提示符输入 `s` 可读回相同值。REPL 顶层绑定在循环结束后仍可访问，
 V8 为这个循环生成的代码涉及数值对象分配和垃圾回收。
+
+## linux/amd64 原生后端 3× 门禁（X12）
+
+2026-11-27 在 AMD Ryzen 7 5700G（16 逻辑 CPU、8 物理核心、
+Linux `7.0.0-43-generic`）上实测。宿主与客体 Node 均为
+`v22.23.5`，Python 均为 `3.12.16`；Go 为 `1.27.0`。候选二进制
+`x12-candidate` 的 sha256 为
+`abe3ef5e86f3a207db4281c1eccdfa834ce73d69343c53f2b3ffeec51bc0e9c3`，
+源码提交为 `4410716f08124d56bd624ad506078c291247504d`。
+
+`testdata/release/perf-node-check.py` 每轮启动全新宿主 Node REPL 和全新
+默认 CLI/客体 Node REPL，按 host/guest、guest/host 交替共五对，逐轮验证
+`666666661666.567` 与 `s` 读回。原始样本、逐对比值、启动时间、硬件、
+内核、版本和 `execArgv` 见
+[`native-x12-performance.json`](native-x12-performance.json)。
+
+| 指标 | 宿主中位数 | 客体中位数 | 比值 |
+| --- | ---: | ---: | ---: |
+| Node REPL `bench` | 703.236 ms | 778.717 ms | 1.107× |
+| Node REPL 启动到首个提示符 | 29.709 ms | 1.409 s | 47.423×（仅记录） |
+| Python 启动 | 24.771 ms | 16.315 ms | 0.659× |
+| Python 1M 次整数累加 | 84.500 ms | 107.019 ms | 1.266× |
+| Python 1 MiB 文件读写 | 24.260 ms | 32.855 ms | 1.354× |
+| Node 启动 | 25.704 ms | 42.967 ms | 1.672× |
+| Node 100k 次整数累加 | 27.134 ms | 37.395 ms | 1.378× |
+| Node 1 MiB 文件读写 | 25.173 ms | 37.685 ms | 1.497× |
+
+REPL 启动时间包含 rootfs 解包、VM/namespace 创建和 shell 启动，因此
+只按要求记录，不参与脚本 `bench` 的 3× 门禁。六个语言场景在预先启动的
+默认 CLI 会话内逐次启动全新解释器进程，排除 VM 创建成本；宿主与客体
+文件场景分别使用同一宿主文件系统上的临时目录和 VM 私有 `/work`。
+所有七项计算/脚本门禁均低于 3×。
+
+复验命令：
+
+```sh
+make build
+python3 testdata/release/perf-node-check.py ./assistant-sandbox \
+  --host-node /path/to/node-v22.23.5/bin/node \
+  --host-python /path/to/python3.12 \
+  --output native-performance.json \
+  --transcript-dir native-performance-transcripts
+python3 -m unittest discover -s testdata/release -p 'test_perf_samples.py' -v
+```
+
+固定超阈值样本 `perf-over-threshold.json` 的中位数比值为 3.03，
+评估器返回退出码 1，用于 CI 反向验证门禁。

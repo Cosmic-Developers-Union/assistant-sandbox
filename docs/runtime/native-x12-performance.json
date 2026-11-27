@@ -1,0 +1,1035 @@
+{
+  "benchmark": "console.time('bench'); let s = 0; for (let i = 0; i < 1e8; i++) s += Math.sqrt(i); console.timeEnd('bench'); console.log(s);",
+  "expected_result": "666666661666.567",
+  "finished_at_unix": 1795812944.6518402,
+  "gate": 3.0,
+  "language_scenes": {
+    "node_file_1mib": {
+      "evaluator_flag": "-e",
+      "expected_stdout": "1048576\n",
+      "gate": 3.0,
+      "guest_median": 0.037685279035940766,
+      "guest_program": "/usr/bin/node",
+      "guest_samples": [
+        0.03693381499033421,
+        0.03842347697354853,
+        0.038938285084441304,
+        0.037685279035940766,
+        0.03764315997250378
+      ],
+      "host_median": 0.025172514957375824,
+      "host_samples": [
+        0.02491136291064322,
+        0.026509660063311458,
+        0.02557585295289755,
+        0.025172514957375824,
+        0.024101399932987988
+      ],
+      "pairs": [
+        {
+          "guest": {
+            "backend_asserted": "linux/amd64",
+            "seconds": 0.03693381499033421,
+            "stderr": "",
+            "stdout": "1048576\n"
+          },
+          "host": {
+            "seconds": 0.02491136291064322,
+            "stderr": "",
+            "stdout": "1048576\n"
+          },
+          "order": [
+            "host",
+            "guest"
+          ],
+          "pair": 1,
+          "ratio": 1.4826091660586935
+        },
+        {
+          "guest": {
+            "backend_asserted": "linux/amd64",
+            "seconds": 0.03842347697354853,
+            "stderr": "",
+            "stdout": "1048576\n"
+          },
+          "host": {
+            "seconds": 0.026509660063311458,
+            "stderr": "",
+            "stdout": "1048576\n"
+          },
+          "order": [
+            "guest",
+            "host"
+          ],
+          "pair": 2,
+          "ratio": 1.4494141713542916
+        },
+        {
+          "guest": {
+            "backend_asserted": "linux/amd64",
+            "seconds": 0.038938285084441304,
+            "stderr": "",
+            "stdout": "1048576\n"
+          },
+          "host": {
+            "seconds": 0.02557585295289755,
+            "stderr": "",
+            "stdout": "1048576\n"
+          },
+          "order": [
+            "host",
+            "guest"
+          ],
+          "pair": 3,
+          "ratio": 1.5224628150683004
+        },
+        {
+          "guest": {
+            "backend_asserted": "linux/amd64",
+            "seconds": 0.037685279035940766,
+            "stderr": "",
+            "stdout": "1048576\n"
+          },
+          "host": {
+            "seconds": 0.025172514957375824,
+            "stderr": "",
+            "stdout": "1048576\n"
+          },
+          "order": [
+            "guest",
+            "host"
+          ],
+          "pair": 4,
+          "ratio": 1.4970804109066014
+        },
+        {
+          "guest": {
+            "backend_asserted": "linux/amd64",
+            "seconds": 0.03764315997250378,
+            "stderr": "",
+            "stdout": "1048576\n"
+          },
+          "host": {
+            "seconds": 0.024101399932987988,
+            "stderr": "",
+            "stdout": "1048576\n"
+          },
+          "order": [
+            "host",
+            "guest"
+          ],
+          "pair": 5,
+          "ratio": 1.5618661188631189
+        }
+      ],
+      "passed": true,
+      "ratio": 1.4970804109066014,
+      "runtime": "node",
+      "sample_count": 5,
+      "scene": "file_1mib",
+      "script": "const fs = require(\"node:fs\");\nconst data = Buffer.alloc(1 << 20, 120);\nfs.writeFileSync(\"perf.bin\", data);\nif (!fs.readFileSync(\"perf.bin\").equals(data)) throw Error(\"data\");\nconsole.log(data.length);\n"
+    },
+    "node_integer": {
+      "evaluator_flag": "-e",
+      "expected_stdout": "4999950000\n",
+      "gate": 3.0,
+      "guest_median": 0.03739452199079096,
+      "guest_program": "/usr/bin/node",
+      "guest_samples": [
+        0.03739452199079096,
+        0.0363542849663645,
+        0.03682225593365729,
+        0.03947401302866638,
+        0.03900442004669458
+      ],
+      "host_median": 0.027134033967740834,
+      "host_samples": [
+        0.0257683249656111,
+        0.027346583898179233,
+        0.02458943799138069,
+        0.027932094992138445,
+        0.027134033967740834
+      ],
+      "pairs": [
+        {
+          "guest": {
+            "backend_asserted": "linux/amd64",
+            "seconds": 0.03739452199079096,
+            "stderr": "",
+            "stdout": "4999950000\n"
+          },
+          "host": {
+            "seconds": 0.0257683249656111,
+            "stderr": "",
+            "stdout": "4999950000\n"
+          },
+          "order": [
+            "host",
+            "guest"
+          ],
+          "pair": 1,
+          "ratio": 1.4511817140111165
+        },
+        {
+          "guest": {
+            "backend_asserted": "linux/amd64",
+            "seconds": 0.0363542849663645,
+            "stderr": "",
+            "stdout": "4999950000\n"
+          },
+          "host": {
+            "seconds": 0.027346583898179233,
+            "stderr": "",
+            "stdout": "4999950000\n"
+          },
+          "order": [
+            "guest",
+            "host"
+          ],
+          "pair": 2,
+          "ratio": 1.3293903582884081
+        },
+        {
+          "guest": {
+            "backend_asserted": "linux/amd64",
+            "seconds": 0.03682225593365729,
+            "stderr": "",
+            "stdout": "4999950000\n"
+          },
+          "host": {
+            "seconds": 0.02458943799138069,
+            "stderr": "",
+            "stdout": "4999950000\n"
+          },
+          "order": [
+            "host",
+            "guest"
+          ],
+          "pair": 3,
+          "ratio": 1.4974826161770982
+        },
+        {
+          "guest": {
+            "backend_asserted": "linux/amd64",
+            "seconds": 0.03947401302866638,
+            "stderr": "",
+            "stdout": "4999950000\n"
+          },
+          "host": {
+            "seconds": 0.027932094992138445,
+            "stderr": "",
+            "stdout": "4999950000\n"
+          },
+          "order": [
+            "guest",
+            "host"
+          ],
+          "pair": 4,
+          "ratio": 1.4132134750285086
+        },
+        {
+          "guest": {
+            "backend_asserted": "linux/amd64",
+            "seconds": 0.03900442004669458,
+            "stderr": "",
+            "stdout": "4999950000\n"
+          },
+          "host": {
+            "seconds": 0.027134033967740834,
+            "stderr": "",
+            "stdout": "4999950000\n"
+          },
+          "order": [
+            "host",
+            "guest"
+          ],
+          "pair": 5,
+          "ratio": 1.4374722200564145
+        }
+      ],
+      "passed": true,
+      "ratio": 1.37814089992106,
+      "runtime": "node",
+      "sample_count": 5,
+      "scene": "integer",
+      "script": "let x = 0;\nfor (let i = 0; i < 100000; i++) x += i;\nprocess.stdout.write(String(x) + \"\\n\");\n"
+    },
+    "node_startup": {
+      "evaluator_flag": "-e",
+      "expected_stdout": "42\n",
+      "gate": 3.0,
+      "guest_median": 0.042966802953742445,
+      "guest_program": "/usr/bin/node",
+      "guest_samples": [
+        0.04305882495827973,
+        0.04194610193371773,
+        0.039262035046704113,
+        0.043766275979578495,
+        0.042966802953742445
+      ],
+      "host_median": 0.02570420503616333,
+      "host_samples": [
+        0.026170641998760402,
+        0.03153025300707668,
+        0.025229280930943787,
+        0.02525806601624936,
+        0.02570420503616333
+      ],
+      "pairs": [
+        {
+          "guest": {
+            "backend_asserted": "linux/amd64",
+            "seconds": 0.04305882495827973,
+            "stderr": "",
+            "stdout": "42\n"
+          },
+          "host": {
+            "seconds": 0.026170641998760402,
+            "stderr": "",
+            "stdout": "42\n"
+          },
+          "order": [
+            "host",
+            "guest"
+          ],
+          "pair": 1,
+          "ratio": 1.645310228167855
+        },
+        {
+          "guest": {
+            "backend_asserted": "linux/amd64",
+            "seconds": 0.04194610193371773,
+            "stderr": "",
+            "stdout": "42\n"
+          },
+          "host": {
+            "seconds": 0.03153025300707668,
+            "stderr": "",
+            "stdout": "42\n"
+          },
+          "order": [
+            "guest",
+            "host"
+          ],
+          "pair": 2,
+          "ratio": 1.3303446034607875
+        },
+        {
+          "guest": {
+            "backend_asserted": "linux/amd64",
+            "seconds": 0.039262035046704113,
+            "stderr": "",
+            "stdout": "42\n"
+          },
+          "host": {
+            "seconds": 0.025229280930943787,
+            "stderr": "",
+            "stdout": "42\n"
+          },
+          "order": [
+            "host",
+            "guest"
+          ],
+          "pair": 3,
+          "ratio": 1.5562090395746917
+        },
+        {
+          "guest": {
+            "backend_asserted": "linux/amd64",
+            "seconds": 0.043766275979578495,
+            "stderr": "",
+            "stdout": "42\n"
+          },
+          "host": {
+            "seconds": 0.02525806601624936,
+            "stderr": "",
+            "stdout": "42\n"
+          },
+          "order": [
+            "guest",
+            "host"
+          ],
+          "pair": 4,
+          "ratio": 1.7327643356154896
+        },
+        {
+          "guest": {
+            "backend_asserted": "linux/amd64",
+            "seconds": 0.042966802953742445,
+            "stderr": "",
+            "stdout": "42\n"
+          },
+          "host": {
+            "seconds": 0.02570420503616333,
+            "stderr": "",
+            "stdout": "42\n"
+          },
+          "order": [
+            "host",
+            "guest"
+          ],
+          "pair": 5,
+          "ratio": 1.6715865319815302
+        }
+      ],
+      "passed": true,
+      "ratio": 1.6715865319815302,
+      "runtime": "node",
+      "sample_count": 5,
+      "scene": "startup",
+      "script": "console.log(42)"
+    },
+    "python_file_1mib": {
+      "evaluator_flag": "-c",
+      "expected_stdout": "1048576\n",
+      "gate": 3.0,
+      "guest_median": 0.03285525506362319,
+      "guest_program": "/usr/bin/python3.12",
+      "guest_samples": [
+        0.03285525506362319,
+        0.035350366961210966,
+        0.03128257708158344,
+        0.032996018999256194,
+        0.03255765500944108
+      ],
+      "host_median": 0.02425953804049641,
+      "host_samples": [
+        0.02582140499725938,
+        0.024814991978928447,
+        0.024243626976385713,
+        0.02397629409097135,
+        0.02425953804049641
+      ],
+      "pairs": [
+        {
+          "guest": {
+            "backend_asserted": "linux/amd64",
+            "seconds": 0.03285525506362319,
+            "stderr": "",
+            "stdout": "1048576\n"
+          },
+          "host": {
+            "seconds": 0.02582140499725938,
+            "stderr": "",
+            "stdout": "1048576\n"
+          },
+          "order": [
+            "host",
+            "guest"
+          ],
+          "pair": 1,
+          "ratio": 1.2724038473936785
+        },
+        {
+          "guest": {
+            "backend_asserted": "linux/amd64",
+            "seconds": 0.035350366961210966,
+            "stderr": "",
+            "stdout": "1048576\n"
+          },
+          "host": {
+            "seconds": 0.024814991978928447,
+            "stderr": "",
+            "stdout": "1048576\n"
+          },
+          "order": [
+            "guest",
+            "host"
+          ],
+          "pair": 2,
+          "ratio": 1.4245568562435398
+        },
+        {
+          "guest": {
+            "backend_asserted": "linux/amd64",
+            "seconds": 0.03128257708158344,
+            "stderr": "",
+            "stdout": "1048576\n"
+          },
+          "host": {
+            "seconds": 0.024243626976385713,
+            "stderr": "",
+            "stdout": "1048576\n"
+          },
+          "order": [
+            "host",
+            "guest"
+          ],
+          "pair": 3,
+          "ratio": 1.2903422871525765
+        },
+        {
+          "guest": {
+            "backend_asserted": "linux/amd64",
+            "seconds": 0.032996018999256194,
+            "stderr": "",
+            "stdout": "1048576\n"
+          },
+          "host": {
+            "seconds": 0.02397629409097135,
+            "stderr": "",
+            "stdout": "1048576\n"
+          },
+          "order": [
+            "guest",
+            "host"
+          ],
+          "pair": 4,
+          "ratio": 1.3761934548375998
+        },
+        {
+          "guest": {
+            "backend_asserted": "linux/amd64",
+            "seconds": 0.03255765500944108,
+            "stderr": "",
+            "stdout": "1048576\n"
+          },
+          "host": {
+            "seconds": 0.02425953804049641,
+            "stderr": "",
+            "stdout": "1048576\n"
+          },
+          "order": [
+            "host",
+            "guest"
+          ],
+          "pair": 5,
+          "ratio": 1.3420558526338233
+        }
+      ],
+      "passed": true,
+      "ratio": 1.3543231948101389,
+      "runtime": "python",
+      "sample_count": 5,
+      "scene": "file_1mib",
+      "script": "from pathlib import Path\npath = Path(\"perf.bin\")\ndata = b\"x\" * (1 << 20)\npath.write_bytes(data)\nassert path.read_bytes() == data\nprint(len(data))\n"
+    },
+    "python_integer": {
+      "evaluator_flag": "-c",
+      "expected_stdout": "499999500000\n",
+      "gate": 3.0,
+      "guest_median": 0.10701864201109856,
+      "guest_program": "/usr/bin/python3.12",
+      "guest_samples": [
+        0.10739102202933282,
+        0.1200536279939115,
+        0.10380399494897574,
+        0.10567675798665732,
+        0.10701864201109856
+      ],
+      "host_median": 0.08450022898614407,
+      "host_samples": [
+        0.09178141399752349,
+        0.08758880803361535,
+        0.08450022898614407,
+        0.08246668393258005,
+        0.08094040397554636
+      ],
+      "pairs": [
+        {
+          "guest": {
+            "backend_asserted": "linux/amd64",
+            "seconds": 0.10739102202933282,
+            "stderr": "",
+            "stdout": "499999500000\n"
+          },
+          "host": {
+            "seconds": 0.09178141399752349,
+            "stderr": "",
+            "stdout": "499999500000\n"
+          },
+          "order": [
+            "host",
+            "guest"
+          ],
+          "pair": 1,
+          "ratio": 1.170073736630714
+        },
+        {
+          "guest": {
+            "backend_asserted": "linux/amd64",
+            "seconds": 0.1200536279939115,
+            "stderr": "",
+            "stdout": "499999500000\n"
+          },
+          "host": {
+            "seconds": 0.08758880803361535,
+            "stderr": "",
+            "stdout": "499999500000\n"
+          },
+          "order": [
+            "guest",
+            "host"
+          ],
+          "pair": 2,
+          "ratio": 1.3706503226740636
+        },
+        {
+          "guest": {
+            "backend_asserted": "linux/amd64",
+            "seconds": 0.10380399494897574,
+            "stderr": "",
+            "stdout": "499999500000\n"
+          },
+          "host": {
+            "seconds": 0.08450022898614407,
+            "stderr": "",
+            "stdout": "499999500000\n"
+          },
+          "order": [
+            "host",
+            "guest"
+          ],
+          "pair": 3,
+          "ratio": 1.228446315405808
+        },
+        {
+          "guest": {
+            "backend_asserted": "linux/amd64",
+            "seconds": 0.10567675798665732,
+            "stderr": "",
+            "stdout": "499999500000\n"
+          },
+          "host": {
+            "seconds": 0.08246668393258005,
+            "stderr": "",
+            "stdout": "499999500000\n"
+          },
+          "order": [
+            "guest",
+            "host"
+          ],
+          "pair": 4,
+          "ratio": 1.2814478883745644
+        },
+        {
+          "guest": {
+            "backend_asserted": "linux/amd64",
+            "seconds": 0.10701864201109856,
+            "stderr": "",
+            "stdout": "499999500000\n"
+          },
+          "host": {
+            "seconds": 0.08094040397554636,
+            "stderr": "",
+            "stdout": "499999500000\n"
+          },
+          "order": [
+            "host",
+            "guest"
+          ],
+          "pair": 5,
+          "ratio": 1.3221906088265996
+        }
+      ],
+      "passed": true,
+      "ratio": 1.2664893728116045,
+      "runtime": "python",
+      "sample_count": 5,
+      "scene": "integer",
+      "script": "x = 0\nfor i in range(1000000):\n    x += i\nprint(x)\n"
+    },
+    "python_startup": {
+      "evaluator_flag": "-c",
+      "expected_stdout": "42\n",
+      "gate": 3.0,
+      "guest_median": 0.016315124928951263,
+      "guest_program": "/usr/bin/python3.12",
+      "guest_samples": [
+        0.01734851999208331,
+        0.02059288101736456,
+        0.015293775009922683,
+        0.016315124928951263,
+        0.014293182990513742
+      ],
+      "host_median": 0.024770599091425538,
+      "host_samples": [
+        0.021404667990282178,
+        0.026848787092603743,
+        0.023186148959212005,
+        0.024770599091425538,
+        0.027939838939346373
+      ],
+      "pairs": [
+        {
+          "guest": {
+            "backend_asserted": "linux/amd64",
+            "seconds": 0.01734851999208331,
+            "stderr": "",
+            "stdout": "42\n"
+          },
+          "host": {
+            "seconds": 0.021404667990282178,
+            "stderr": "",
+            "stdout": "42\n"
+          },
+          "order": [
+            "host",
+            "guest"
+          ],
+          "pair": 1,
+          "ratio": 0.8105017092514409
+        },
+        {
+          "guest": {
+            "backend_asserted": "linux/amd64",
+            "seconds": 0.02059288101736456,
+            "stderr": "",
+            "stdout": "42\n"
+          },
+          "host": {
+            "seconds": 0.026848787092603743,
+            "stderr": "",
+            "stdout": "42\n"
+          },
+          "order": [
+            "guest",
+            "host"
+          ],
+          "pair": 2,
+          "ratio": 0.7669948346768131
+        },
+        {
+          "guest": {
+            "backend_asserted": "linux/amd64",
+            "seconds": 0.015293775009922683,
+            "stderr": "",
+            "stdout": "42\n"
+          },
+          "host": {
+            "seconds": 0.023186148959212005,
+            "stderr": "",
+            "stdout": "42\n"
+          },
+          "order": [
+            "host",
+            "guest"
+          ],
+          "pair": 3,
+          "ratio": 0.6596082444232882
+        },
+        {
+          "guest": {
+            "backend_asserted": "linux/amd64",
+            "seconds": 0.016315124928951263,
+            "stderr": "",
+            "stdout": "42\n"
+          },
+          "host": {
+            "seconds": 0.024770599091425538,
+            "stderr": "",
+            "stdout": "42\n"
+          },
+          "order": [
+            "guest",
+            "host"
+          ],
+          "pair": 4,
+          "ratio": 0.6586487823218947
+        },
+        {
+          "guest": {
+            "backend_asserted": "linux/amd64",
+            "seconds": 0.014293182990513742,
+            "stderr": "",
+            "stdout": "42\n"
+          },
+          "host": {
+            "seconds": 0.027939838939346373,
+            "stderr": "",
+            "stdout": "42\n"
+          },
+          "order": [
+            "host",
+            "guest"
+          ],
+          "pair": 5,
+          "ratio": 0.5115699851220444
+        }
+      ],
+      "passed": true,
+      "ratio": 0.6586487823218947,
+      "runtime": "python",
+      "sample_count": 5,
+      "scene": "startup",
+      "script": "print(42)"
+    }
+  },
+  "metadata": {
+    "binary": "/home/ge/Projects/assistant-sandbox/assistant-sandbox",
+    "binary_sha256": "abe3ef5e86f3a207db4281c1eccdfa834ce73d69343c53f2b3ffeec51bc0e9c3",
+    "commit": "4410716f08124d56bd624ad506078c291247504d",
+    "execArgv": {
+      "guest_node": [],
+      "host_node": []
+    },
+    "go": "go version go1.27.0 linux/amd64",
+    "hardware": {
+      "cpu_model": "AMD Ryzen 7 5700G with Radeon Graphics",
+      "logical_cpus": 16,
+      "machine": "x86_64",
+      "memory_bytes": 132174266368,
+      "physical_cores": 8,
+      "system": "Linux"
+    },
+    "kernel": "7.0.0-43-generic",
+    "kernel_version": "#43-Ubuntu SMP PREEMPT_DYNAMIC Fri Oct 23 13:25:25 UTC 2026",
+    "node": {
+      "expected_version": "v22.23.5",
+      "guest_arch": "x64",
+      "guest_backend": "linux/amd64",
+      "guest_exec_path": "/usr/bin/node",
+      "guest_path": "/usr/bin/node",
+      "guest_version": "v22.23.5",
+      "host_arch": "x64",
+      "host_exec_path": "/tmp/opencode/node-v22.23.5-linux-x64/bin/node",
+      "host_path": "/tmp/opencode/node-v22.23.5-linux-x64/bin/node",
+      "host_version": "v22.23.5"
+    },
+    "python": {
+      "guest_path": "/usr/bin/python3.12",
+      "guest_version": "3.12.16",
+      "harness_executable": "/usr/bin/python3",
+      "harness_implementation": "CPython",
+      "harness_version": "3.14.4",
+      "host_path": "/home/ge/.local/share/uv/python/cpython-3.12.16-linux-x86_64-gnu/bin/python3.12",
+      "host_version": "Python 3.12.16"
+    },
+    "started_at_unix": 1795812917.91777
+  },
+  "node_repl": {
+    "bench": {
+      "gate": 3.0,
+      "guest_median": 0.778717,
+      "guest_samples": [
+        0.697107,
+        0.7865270000000001,
+        0.778717,
+        0.822039,
+        0.746522
+      ],
+      "host_median": 0.703236,
+      "host_samples": [
+        0.6088680000000001,
+        0.7326480000000001,
+        0.7872490000000001,
+        0.703236,
+        0.683177
+      ],
+      "passed": true,
+      "ratio": 1.1073338111245727,
+      "sample_count": 5
+    },
+    "gate": 3.0,
+    "pairs": [
+      {
+        "guest": {
+          "bench_raw": "697.107ms",
+          "bench_seconds": 0.697107,
+          "node": {
+            "arch": "x64",
+            "backend": "linux/amd64",
+            "execArgv": [],
+            "execPath": "/usr/bin/node",
+            "version": "v22.23.5"
+          },
+          "result": "666666661666.567",
+          "s_readback": "666666661666.567",
+          "startup_seconds": 1.2935466789640486
+        },
+        "host": {
+          "bench_raw": "608.868ms",
+          "bench_seconds": 0.6088680000000001,
+          "node": {
+            "arch": "x64",
+            "backend": null,
+            "execArgv": [],
+            "execPath": "/tmp/opencode/node-v22.23.5-linux-x64/bin/node",
+            "version": "v22.23.5"
+          },
+          "result": "666666661666.567",
+          "s_readback": "666666661666.567",
+          "startup_seconds": 0.027283885050565004
+        },
+        "order": [
+          "host",
+          "guest"
+        ],
+        "pair": 1,
+        "ratio": 1.1449230375056663
+      },
+      {
+        "guest": {
+          "bench_raw": "786.527ms",
+          "bench_seconds": 0.7865270000000001,
+          "node": {
+            "arch": "x64",
+            "backend": "linux/amd64",
+            "execArgv": [],
+            "execPath": "/usr/bin/node",
+            "version": "v22.23.5"
+          },
+          "result": "666666661666.567",
+          "s_readback": "666666661666.567",
+          "startup_seconds": 1.4088924209354445
+        },
+        "host": {
+          "bench_raw": "732.648ms",
+          "bench_seconds": 0.7326480000000001,
+          "node": {
+            "arch": "x64",
+            "backend": null,
+            "execArgv": [],
+            "execPath": "/tmp/opencode/node-v22.23.5-linux-x64/bin/node",
+            "version": "v22.23.5"
+          },
+          "result": "666666661666.567",
+          "s_readback": "666666661666.567",
+          "startup_seconds": 0.029708966962061822
+        },
+        "order": [
+          "guest",
+          "host"
+        ],
+        "pair": 2,
+        "ratio": 1.0735400901933807
+      },
+      {
+        "guest": {
+          "bench_raw": "778.717ms",
+          "bench_seconds": 0.778717,
+          "node": {
+            "arch": "x64",
+            "backend": "linux/amd64",
+            "execArgv": [],
+            "execPath": "/usr/bin/node",
+            "version": "v22.23.5"
+          },
+          "result": "666666661666.567",
+          "s_readback": "666666661666.567",
+          "startup_seconds": 1.4237526999786496
+        },
+        "host": {
+          "bench_raw": "787.249ms",
+          "bench_seconds": 0.7872490000000001,
+          "node": {
+            "arch": "x64",
+            "backend": null,
+            "execArgv": [],
+            "execPath": "/tmp/opencode/node-v22.23.5-linux-x64/bin/node",
+            "version": "v22.23.5"
+          },
+          "result": "666666661666.567",
+          "s_readback": "666666661666.567",
+          "startup_seconds": 0.05107274802867323
+        },
+        "order": [
+          "host",
+          "guest"
+        ],
+        "pair": 3,
+        "ratio": 0.9891622599711145
+      },
+      {
+        "guest": {
+          "bench_raw": "822.039ms",
+          "bench_seconds": 0.822039,
+          "node": {
+            "arch": "x64",
+            "backend": "linux/amd64",
+            "execArgv": [],
+            "execPath": "/usr/bin/node",
+            "version": "v22.23.5"
+          },
+          "result": "666666661666.567",
+          "s_readback": "666666661666.567",
+          "startup_seconds": 1.43796969903633
+        },
+        "host": {
+          "bench_raw": "703.236ms",
+          "bench_seconds": 0.703236,
+          "node": {
+            "arch": "x64",
+            "backend": null,
+            "execArgv": [],
+            "execPath": "/tmp/opencode/node-v22.23.5-linux-x64/bin/node",
+            "version": "v22.23.5"
+          },
+          "result": "666666661666.567",
+          "s_readback": "666666661666.567",
+          "startup_seconds": 0.028136880020610988
+        },
+        "order": [
+          "guest",
+          "host"
+        ],
+        "pair": 4,
+        "ratio": 1.1689375970513456
+      },
+      {
+        "guest": {
+          "bench_raw": "746.522ms",
+          "bench_seconds": 0.746522,
+          "node": {
+            "arch": "x64",
+            "backend": "linux/amd64",
+            "execArgv": [],
+            "execPath": "/usr/bin/node",
+            "version": "v22.23.5"
+          },
+          "result": "666666661666.567",
+          "s_readback": "666666661666.567",
+          "startup_seconds": 1.3114336479920894
+        },
+        "host": {
+          "bench_raw": "683.177ms",
+          "bench_seconds": 0.683177,
+          "node": {
+            "arch": "x64",
+            "backend": null,
+            "execArgv": [],
+            "execPath": "/tmp/opencode/node-v22.23.5-linux-x64/bin/node",
+            "version": "v22.23.5"
+          },
+          "result": "666666661666.567",
+          "s_readback": "666666661666.567",
+          "startup_seconds": 0.03212645405437797
+        },
+        "order": [
+          "host",
+          "guest"
+        ],
+        "pair": 5,
+        "ratio": 1.0927212128042951
+      }
+    ],
+    "passed": true,
+    "ratio": 1.1073338111245727,
+    "startup": {
+      "gate": 3.0,
+      "guest_median": 1.4088924209354445,
+      "guest_samples": [
+        1.2935466789640486,
+        1.4088924209354445,
+        1.4237526999786496,
+        1.43796969903633,
+        1.3114336479920894
+      ],
+      "host_median": 0.029708966962061822,
+      "host_samples": [
+        0.027283885050565004,
+        0.029708966962061822,
+        0.05107274802867323,
+        0.028136880020610988,
+        0.03212645405437797
+      ],
+      "passed": false,
+      "ratio": 47.42313735562034,
+      "sample_count": 5
+    }
+  },
+  "pair_count": 5,
+  "passed": true,
+  "schema_version": 1,
+  "status": "complete"
+}
