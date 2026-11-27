@@ -22,6 +22,19 @@ import (
 
 var version = "dev"
 
+type nativeCLIConfig struct {
+	shell          nativeshell.Shell
+	environment    map[string]string
+	command        string
+	session        bool
+	interactive    bool
+	workspace      string
+	mountWorkspace bool
+	stdin          io.Reader
+	stdout         io.Writer
+	stderr         io.Writer
+}
+
 // run 只调用公开 VM API(instance/guest native):单次执行在同一
 // VM 内核中运行真实客体 shell,不再创建第二套运行时。
 func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
@@ -43,6 +56,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	dryRun := flags.Bool("dry-run", false, "显示执行配置")
 	debug := flags.Bool("debug", false, "输出调试信息")
 	verbose := flags.Bool("verbose", false, "显示执行信息")
+	backendName := flags.String("backend", "auto", "执行后端: auto、riscv64 或 linux/amd64")
 	showVersion := flags.BoolP("version", "V", false, "显示版本")
 	help := flags.BoolP("help", "h", false, "显示帮助")
 	if err := flags.Parse(args); err != nil {
@@ -64,6 +78,16 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	}
 	if *tools != "dev" && *tools != "minimal" {
 		return 1, fmt.Errorf("不支持的开发工具包 %q（可用: dev, minimal）", *tools)
+	}
+	requestedBackend := instance.BackendAuto
+	switch *backendName {
+	case "auto":
+	case "riscv64":
+		requestedBackend = instance.BackendRISC64
+	case "linux/amd64":
+		requestedBackend = instance.BackendNativeAMD64
+	default:
+		return 1, fmt.Errorf("不支持的后端 %q（可用: auto, riscv64, linux/amd64）", *backendName)
 	}
 	memoryBytes, err := parseMemory(*memory)
 	if err != nil {
@@ -111,7 +135,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 			terminalName = "xterm-256color"
 		}
 	}
-	options := instance.Options{}
+	options := instance.Options{Backend: requestedBackend}
 	options.MemoryBytes = memoryBytes
 	options.CPUs = *cpus
 	options.AllowGuestRWX = *allowGuestRWX && (*tools == "dev" || flags.Changed("allow-guest-rwx"))
@@ -120,18 +144,52 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		options.Process = resources.Limits{Memory: memoryBytes, Work: 1 << 38}
 	}
 	started := time.Now()
-	machine, err := instance.New(ctx, options)
+	selection, err := instance.Open(ctx, options)
+	if errors.Is(err, instance.ErrNativeWorkBudgetUnsupported) && requestedBackend != instance.BackendRISC64 {
+		// CLI 的 RISC-V 退休指令预算在原生后端转换为 cgroup CPU 配额；
+		// 自动选择若回退 RISC-V，上一尝试仍保留原预算。
+		options.Session.Work = 0
+		options.Process.Work = 0
+		selection, err = instance.Open(ctx, options)
+	}
 	if err != nil {
 		return 1, err
-	}
-	if *debug {
-		_, _ = fmt.Fprintf(stderr, "debug: 创建 VM 用时 %s\n", time.Since(started))
 	}
 	defer func() {
 		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = machine.Close(closeCtx)
+		_ = selection.Close(closeCtx)
 	}()
+	if *debug {
+		_, _ = fmt.Fprintf(stderr, "debug: 创建 VM 用时 %s backend=%s\n", time.Since(started), selection.Backend)
+	}
+	environmentMap := map[string]string{
+		"HOME": instance.WorkRoot, "PATH": "/usr/local/bin:/usr/bin:/bin",
+		"LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "USER": "sandbox",
+		"LOGNAME": "sandbox", "TMPDIR": "/tmp", "SHELL": selectedShell.Program(),
+		"TERM": terminalName, "ASSISTANT_SANDBOX_BACKEND": string(selection.Backend),
+	}
+	if selectedShell == nativeshell.Bash {
+		environmentMap["PS1"] = `sandbox:${PWD}\$ `
+	}
+	if *tools == "dev" {
+		environmentMap["PYTHONHOME"] = "/usr"
+		environmentMap["NODE_ICU_DATA"] = "/usr/share/icu/76.1"
+	}
+	if options.AllowGuestRWX {
+		environmentMap["ASSISTANT_SANDBOX_NODE_STANDARD"] = "1"
+	}
+	if handled, code, nativeErr := runNativeCLI(ctx, selection.Instance, nativeCLIConfig{
+		shell: selectedShell, environment: environmentMap, command: *command,
+		session: *session, interactive: interactive, workspace: workspace,
+		mountWorkspace: mountWorkspace, stdin: stdin, stdout: stdout, stderr: stderr,
+	}); handled {
+		return code, nativeErr
+	}
+	machine, ok := selection.Instance.(*instance.VM)
+	if !ok {
+		return 1, fmt.Errorf("unsupported backend instance %T", selection.Instance)
+	}
 	if err := nativeshell.Install(ctx, machine.Filesystem()); err != nil {
 		return 1, err
 	}
@@ -150,22 +208,6 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		if err := machine.Mounts().Mount(instance.WorkRoot, filesystem.NewMountFilesystem(workspace)); err != nil {
 			return 1, err
 		}
-	}
-	environmentMap := map[string]string{
-		"HOME": instance.WorkRoot, "PATH": "/usr/local/bin:/usr/bin:/bin",
-		"LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "USER": "sandbox",
-		"LOGNAME": "sandbox", "TMPDIR": "/tmp", "SHELL": selectedShell.Program(),
-		"TERM": terminalName,
-	}
-	if selectedShell == nativeshell.Bash {
-		environmentMap["PS1"] = `sandbox:${PWD}\$ `
-	}
-	if *tools == "dev" {
-		environmentMap["PYTHONHOME"] = "/usr"
-		environmentMap["NODE_ICU_DATA"] = "/usr/share/icu/76.1"
-	}
-	if options.AllowGuestRWX {
-		environmentMap["ASSISTANT_SANDBOX_NODE_STANDARD"] = "1"
 	}
 	connection, err := machine.Connect(ctx)
 	if err != nil {

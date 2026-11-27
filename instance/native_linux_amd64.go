@@ -60,7 +60,11 @@ type nativeBackendFactory struct{}
 func (nativeBackendFactory) Backend() Backend { return BackendNativeAMD64 }
 
 func (nativeBackendFactory) New(ctx context.Context, opts Options) (BackendInstance, error) {
-	return newNativeVM(ctx, opts)
+	machine, err := newNativeVM(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+	return machine, nil
 }
 
 func newNativeVM(ctx context.Context, opts Options) (*NativeVM, error) {

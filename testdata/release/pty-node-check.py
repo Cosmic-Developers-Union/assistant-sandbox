@@ -57,7 +57,7 @@ class PTYSession:
 
     def expect(self, needle: bytes, timeout: float, description: str) -> bytes:
         deadline = time.monotonic() + timeout
-        start = len(self.pending)
+        start = 0
         while time.monotonic() < deadline:
             found = self.pending.find(needle, start)
             if found >= 0:
@@ -83,7 +83,7 @@ class PTYSession:
         raise RuntimeError("CLI did not exit after shell exit")
 
 
-def run_case(binary: Path, transcript: Path, strict: bool) -> None:
+def run_case(binary: Path, transcript: Path, strict: bool, expect_backend: str | None = None, expect_arch: str | None = None) -> None:
     command = [str(binary)]
     if strict:
         command.append("--allow-guest-rwx=false")
@@ -101,6 +101,14 @@ def run_case(binary: Path, transcript: Path, strict: bool) -> None:
             session.send("process.version\n")
             session.expect(b"v22.", 30, "guest Node version")
             session.expect(b"> ", 10, "Node prompt after version")
+            if expect_arch is not None:
+                session.send("process.arch\n")
+                session.expect(expect_arch.encode(), 30, "guest Node architecture")
+                session.expect(b"> ", 10, "Node prompt after architecture")
+            if expect_backend is not None:
+                session.send("process.env.ASSISTANT_SANDBOX_BACKEND\n")
+                session.expect(expect_backend.encode(), 30, "actual guest backend")
+                session.expect(b"> ", 10, "Node prompt after backend")
             session.send(BENCHMARK + "\n")
             session.expect(b"bench:", 600, "benchmark timing")
             session.expect(RESULT.encode(), 60, "benchmark result")
@@ -126,10 +134,12 @@ def main() -> None:
     parser.add_argument("binary", type=Path)
     parser.add_argument("transcript", type=Path)
     parser.add_argument("--strict", action="store_true")
+    parser.add_argument("--expect-backend")
+    parser.add_argument("--expect-arch")
     args = parser.parse_args()
     args.transcript.parent.mkdir(parents=True, exist_ok=True)
     args.transcript.write_bytes(b"")
-    run_case(args.binary.resolve(), args.transcript, args.strict)
+    run_case(args.binary.resolve(), args.transcript, args.strict, args.expect_backend, args.expect_arch)
     print(f"PTY acceptance passed: {'strict' if args.strict else 'default'}; transcript={args.transcript}")
 
 

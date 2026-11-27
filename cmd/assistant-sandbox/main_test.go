@@ -134,7 +134,7 @@ cc -o /work/dev /work/dev.c
 /work/dev
 printf 'tools-ok\n'`
 	output, diagnostic := &bytes.Buffer{}, &bytes.Buffer{}
-	code, err := run(ctx, []string{"--dir", dir, "-c", script}, strings.NewReader(""), output, diagnostic)
+	code, err := run(ctx, []string{"--backend=riscv64", "--dir", dir, "-c", script}, strings.NewReader(""), output, diagnostic)
 	if err != nil || code != 0 ||
 		output.String() != "python-ok\nnode-ok\ntools-ok\n" {
 		t.Fatalf("dev tools: code=%d err=%v stdout=%q stderr=%q",

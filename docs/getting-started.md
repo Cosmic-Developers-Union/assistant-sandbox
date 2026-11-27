@@ -21,9 +21,13 @@ make toolchain
 make build
 ```
 
-产物为 `assistant-sandbox`。CLI 使用 Linux ABI VM 内核,自身内嵌真实
-riscv64 GNU Bash 5.2.37 与 BusyBox 1.37.0 sh,不依赖宿主 shell,
-也不加载外部 WASM 客体。
+产物为 `assistant-sandbox`。CLI 默认 `--backend=auto`：在具备
+user/mount/PID/net/IPC/UTS/cgroup namespace、seccomp 与可写 cgroup v2
+委派的 linux/amd64 宿主上，自动选择原生 amd64 后端并使用镜像内
+ELF64/x86-64 Bash、Node 与 Python；其他平台或能力缺失时回退到内嵌
+riscv64 Linux ABI VM。`--backend=riscv64` 可显式保留兼容入口，
+`--backend=linux/amd64` 在能力缺失时明确失败。实际后端可通过
+`--debug` 或客体环境变量 `ASSISTANT_SANDBOX_BACKEND` 查询。
 
 `make build` 在 Linux 上生成静态链接的 C++ 加速 CLI;`CGO_ENABLED=0`
 构建不带 C++ 快速路径,适合无可移植 C++ 工具链的环境。

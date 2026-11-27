@@ -38,16 +38,46 @@ type NativeSession struct {
 	screen  *tty.Terminal
 	done    chan struct{}
 
-	runMu  sync.Mutex
-	mu     sync.Mutex
-	closed bool
-	rows   uint16
-	cols   uint16
+	runMu         sync.Mutex
+	mu            sync.Mutex
+	closed        bool
+	echo          bool
+	pendingOutput []byte
+	rows          uint16
+	cols          uint16
 }
 
-// StartSession 启动持久 Bash PTY 会话。
+// NativeSessionSpec 描述原生 PTY 会话的客体 shell 与终端参数。
+type NativeSessionSpec struct {
+	Program string
+	Args    []string
+	Env     map[string]string
+	Rows    uint16
+	Cols    uint16
+	Echo    bool
+}
+
+// StartSession 启动供 model.VM 使用的安静 Bash PTY 会话。
 func (v *NativeVM) StartSession(ctx context.Context, environment map[string]string) (*NativeSession, error) {
-	master, slave, err := openNativePTY(24, 100)
+	return v.StartSessionSpec(ctx, NativeSessionSpec{
+		Program: "/bin/bash", Args: []string{"--noprofile", "--norc", "--noediting", "-i"},
+		Env: environment, Rows: 24, Cols: 100,
+	})
+}
+
+// StartSessionSpec 启动持久客体 shell PTY 会话。
+func (v *NativeVM) StartSessionSpec(ctx context.Context, spec NativeSessionSpec) (*NativeSession, error) {
+	if spec.Program == "" || !strings.HasPrefix(spec.Program, "/") {
+		return nil, fmt.Errorf("native session program must be absolute: %w", errno.Invalid)
+	}
+	rows, cols := spec.Rows, spec.Cols
+	if rows == 0 {
+		rows = 24
+	}
+	if cols == 0 {
+		cols = 80
+	}
+	master, slave, err := openNativePTY(rows, cols, spec.Echo)
 	if err != nil {
 		return nil, err
 	}
@@ -56,13 +86,13 @@ func (v *NativeVM) StartSession(ctx context.Context, environment map[string]stri
 		"LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "TERM": "xterm-256color",
 		"PS1": "", "PS2": "", "USER": "sandbox", "LOGNAME": "sandbox",
 	}
-	maps.Copy(env, environment)
+	maps.Copy(env, spec.Env)
 	if v.egress != nil {
 		maps.Copy(env, v.egress.environment())
 		env["ASSISTANT_SANDBOX_EGRESS_PROXY"] = "1"
 	}
 	process, err := v.Exec(ctx, NativeExecSpec{
-		Program: "/bin/bash", Args: []string{"--noprofile", "--norc", "--noediting", "-i"},
+		Program: spec.Program, Args: spec.Args,
 		Dir: "/work", Env: env, Stdin: slave, Stdout: slave, Stderr: slave,
 	})
 	_ = slave.Close()
@@ -70,7 +100,7 @@ func (v *NativeVM) StartSession(ctx context.Context, environment map[string]stri
 		_ = master.Close()
 		return nil, err
 	}
-	screen, err := tty.New(tty.Flags{}, tty.Size{Rows: 24, Cols: 100}, 64<<20, nil)
+	screen, err := tty.New(tty.Flags{}, tty.Size{Rows: rows, Cols: cols}, 64<<20, nil)
 	if err != nil {
 		_ = process.Cancel()
 		_ = master.Close()
@@ -78,7 +108,7 @@ func (v *NativeVM) StartSession(ctx context.Context, environment map[string]stri
 	}
 	session := &NativeSession{
 		vm: v, master: master, process: process, screen: screen,
-		done: make(chan struct{}), rows: 24, cols: 100,
+		done: make(chan struct{}), rows: rows, cols: cols, echo: spec.Echo,
 	}
 	v.mu.Lock()
 	if v.closed {
@@ -99,7 +129,7 @@ func (v *NativeVM) StartSession(ctx context.Context, environment map[string]stri
 	return session, nil
 }
 
-func openNativePTY(rows, cols uint16) (*os.File, *os.File, error) {
+func openNativePTY(rows, cols uint16, echo bool) (*os.File, *os.File, error) {
 	master, err := os.OpenFile("/dev/ptmx", os.O_RDWR|unix.O_NOCTTY|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, nil, fmt.Errorf("open PTY master: %w", err)
@@ -130,7 +160,11 @@ func openNativePTY(rows, cols uint16) (*os.File, *os.File, error) {
 		_ = master.Close()
 		return nil, nil, fmt.Errorf("read PTY termios: %w", err)
 	}
-	termios.Lflag &^= unix.ECHO | unix.ECHONL
+	if echo {
+		termios.Lflag |= unix.ECHO
+	} else {
+		termios.Lflag &^= unix.ECHO | unix.ECHONL
+	}
 	if err := unix.IoctlSetTermios(int(slave.Fd()), unix.TCSETS, termios); err != nil {
 		_ = slave.Close()
 		_ = master.Close()
@@ -172,7 +206,11 @@ func (s *NativeSession) pumpOutput() {
 }
 
 func (s *NativeSession) initialize(ctx context.Context) error {
-	command := "stty -echo; printf '\\033[2J\\033[H\\033]8;;assistant-ready\\007'\n"
+	echo := "stty -echo"
+	if s.echo {
+		echo = "stty echo"
+	}
+	command := echo + "; printf '\\033[2J\\033[H\\033]8;;assistant-ready\\007'\n"
 	if err := s.Write([]byte(command)); err != nil {
 		return err
 	}
@@ -216,7 +254,24 @@ func writeNativePTY(file *os.File, data []byte) error {
 
 // DrainContext 读取客体输出增量。
 func (s *NativeSession) DrainContext(ctx context.Context) ([]byte, error) {
+	s.mu.Lock()
+	if len(s.pendingOutput) > 0 {
+		pending := s.pendingOutput
+		s.pendingOutput = nil
+		s.mu.Unlock()
+		return pending, nil
+	}
+	s.mu.Unlock()
 	return s.screen.DrainContext(ctx)
+}
+
+func (s *NativeSession) keepPendingOutput(data []byte) {
+	if len(data) == 0 {
+		return
+	}
+	s.mu.Lock()
+	s.pendingOutput = append(s.pendingOutput, data...)
+	s.mu.Unlock()
 }
 
 // WaitOutput 累积输出直到出现 marker 或上下文结束。
@@ -232,7 +287,10 @@ func (s *NativeSession) WaitOutput(ctx context.Context, marker string) (string, 
 			return output.String(), fmt.Errorf("native session output exceeds 4 MiB: %w", errno.NoSpace)
 		}
 		if bytes.Contains(output.Bytes(), []byte(marker)) {
-			return output.String(), nil
+			markerAt := bytes.Index(output.Bytes(), []byte(marker))
+			end := markerAt + len(marker)
+			s.keepPendingOutput(output.Bytes()[end:])
+			return output.String()[:end], nil
 		}
 	}
 }

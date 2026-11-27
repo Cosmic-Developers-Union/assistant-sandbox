@@ -1,0 +1,19 @@
+进入交互会话；输入命令后回车，Ctrl-D 退出
+sandbox:/work# node
+Welcome to Node.js v22.23.5.
+Type ".help" for more information.
+[1G[0J> [3Gprocess.version
+[32m'v22.23.5'[39m
+[1G[0J> [3Gprocess.arch
+[32m'x64'[39m
+[1G[0J> [3Gprocess.env.ASSISTANT_SANDBOX_BACKEND
+[32m'linux/amd64'[39m
+[1G[0J> [3Gconsole.time('bench'); let s = 0; for (let i = 0; i < 1e8; i++) s += Math.sqrt(i); console.timeEnd('bench'); console.log(s);
+bench: 644.688ms
+[33m666666661666.567[39m
+[90mundefined[39m
+[1G[0J> [3Gs
+[33m666666661666.567[39m
+[1G[0J> [3G.exit
+sandbox:/work# exit
+exit

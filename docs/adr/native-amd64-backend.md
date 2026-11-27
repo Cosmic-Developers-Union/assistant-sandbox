@@ -4,6 +4,20 @@
 [VM 架构 ADR](vm-architecture.md) 的原生执行后端补充。取代本决策须新增 ADR，
 并同步 `TODO.md` 的 X 组与发布矩阵。
 
+## 默认 CLI 选择（X11）
+
+CLI 新增 `--backend=auto|riscv64|linux/amd64`，默认 `auto`。`instance.Open`
+在 linux/amd64 上探测 namespace、seccomp 与 cgroup v2 委派；全部可用时选择
+原生后端，否则回退 RISC-V。显式 `riscv64` 跳过原生探测，显式
+`linux/amd64` 在架构或能力缺失时返回具名错误。CLI 把开发模式的 RISC-V
+`Work` 预算在原生后端转换为 cgroup CPU 配额；若自动选择实际回退 RISC-V，
+则保留原指令预算。
+
+客体环境变量 `ASSISTANT_SANDBOX_BACKEND` 与 `--debug` 输出报告实际后端。
+原生路径跳过 RISC-V 资产安装，直接使用镜像内 Bash/Node/Python；`--dir`
+只注册一个授权 bind mount。交互终端使用真实宿主 PTY 桥接，`--no-pty`
+和内存流路径使用显式文件适配器。
+
 ## 决策
 
 在现有 RV64GC Linux ABI VM 旁增加一个**显式 linux/amd64 原生后端**：

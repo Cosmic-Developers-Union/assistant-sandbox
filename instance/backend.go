@@ -154,5 +154,9 @@ type riscvBackendFactory struct{}
 func (riscvBackendFactory) Backend() Backend { return BackendRISC64 }
 
 func (riscvBackendFactory) New(ctx context.Context, opts Options) (BackendInstance, error) {
-	return New(ctx, opts)
+	machine, err := New(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+	return machine, nil
 }
