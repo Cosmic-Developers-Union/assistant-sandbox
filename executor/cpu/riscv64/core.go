@@ -32,11 +32,11 @@ type Core struct {
 	jitIdentity  uint64
 	// 512 个译码页槽覆盖约 2 MiB 代码工作集;Python/解释器/共享库
 	// 的活跃代码页远超 256 页,过小会导致每批重新译码。
-	batchPages      [512]decodedInstructionPage
-	batchBases      [512]uint64
-	batchDecodedAt  [512]uintptr
-	batchVersions   [512]uint64
-	batchStartSlots [512]uint64
+	batchPages      [4096]decodedInstructionPage
+	batchBases      [4096]uint64
+	batchDecodedAt  [4096]uintptr
+	batchVersions   [4096]uint64
+	batchStartSlots [4096]uint64
 }
 
 var jitIdentityCounter atomic.Uint64

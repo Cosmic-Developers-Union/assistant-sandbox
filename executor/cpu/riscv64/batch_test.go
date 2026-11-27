@@ -216,6 +216,104 @@ func TestStepBatchFollowsCachedCodePages(t *testing.T) {
 	}
 }
 
+// TestStepBatchJITLinksCrossPageLoop 覆盖热点 JIT 的跨页直接链接与
+// JALR 目标缓存。循环每轮都跨越两个代码页，必须与 Go 单步语义一致。
+func TestStepBatchJITLinksCrossPageLoop(t *testing.T) {
+	if !hotBatchSupported {
+		t.Skip("当前构建未启用 C++ 批量执行")
+	}
+	const iterations = 1000
+	target := batchCodeBase + memory.PageSize + 4
+	tests := []struct {
+		name string
+		jump uint32
+	}{
+		{name: "jal", jump: encodeJAL(0, int32(memory.PageSize-4))},
+		{name: "jalr", jump: encodeJALR(0, 7, 0)},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			ctx := context.Background()
+			table := memory.New(0)
+			if err := table.Map(ctx, memory.Region{
+				Start: batchCodeBase, End: batchCodeBase + 2*memory.PageSize,
+				Prot: memory.ProtRead | memory.ProtExec, Name: "code",
+			}); err != nil {
+				t.Fatal(err)
+			}
+			code := make([]byte, 2*memory.PageSize)
+			binary.LittleEndian.PutUint32(code[4:], encodeOpImm(0x0, 5, 5, 1))
+			binary.LittleEndian.PutUint32(code[8:], testCase.jump)
+			binary.LittleEndian.PutUint32(code[memory.PageSize+4:], encodeBranch(0x4, 5, 6, -4096))
+			if err := table.Load(ctx, batchCodeBase, code); err != nil {
+				t.Fatal(err)
+			}
+			clone, err := table.Clone()
+			if err != nil {
+				t.Fatal(err)
+			}
+			state := cpu.Machine{
+				PC:        batchCodeBase + 4,
+				Registers: make([]uint64, numRegs),
+				Floats:    make([]uint64, numFPRegs),
+			}
+			state.Registers[6] = iterations
+			state.Registers[7] = target
+			batchCore, err := New(cpu.Config{Memory: table, Entry: state.PC})
+			if err != nil {
+				t.Fatal(err)
+			}
+			stepCore, err := New(cpu.Config{Memory: clone, Entry: state.PC})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := batchCore.Reset(ctx, state); err != nil {
+				t.Fatal(err)
+			}
+			if err := stepCore.Reset(ctx, state); err != nil {
+				t.Fatal(err)
+			}
+			const retired = iterations * 3
+			var steps uint64
+			for steps < retired {
+				count, _, err := batchCore.StepBatch(ctx, retired-steps)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if count == 0 {
+					t.Fatal("批量执行没有推进")
+				}
+				steps += count
+			}
+			if steps != retired {
+				t.Fatalf("steps=%d want %d", steps, retired)
+			}
+			for range retired {
+				if _, err := stepCore.Step(ctx); err != nil {
+					t.Fatal(err)
+				}
+			}
+			batchState, err := batchCore.State(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stepState, err := stepCore.State(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if batchState.PC != stepState.PC {
+				t.Fatalf("PC batch=%#x step=%#x", batchState.PC, stepState.PC)
+			}
+			for index := range stepState.Registers {
+				if batchState.Registers[index] != stepState.Registers[index] {
+					t.Fatalf("x%d batch=%#x step=%#x", index,
+						batchState.Registers[index], stepState.Registers[index])
+				}
+			}
+		})
+	}
+}
+
 // TestStepBatchJITMatchesSingleStep 让原生翻译路径跨越多个基本块和
 // 真实数据访存,再与逐指令语义基准比较完整机器状态。
 func TestStepBatchJITMatchesSingleStep(t *testing.T) {

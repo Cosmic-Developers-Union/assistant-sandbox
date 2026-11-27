@@ -37,9 +37,14 @@ func TestNode22WorkerThreads(t *testing.T) {
   const waiter = new Worker(` + "`" + `
     const { parentPort, workerData } = require("node:worker_threads");
     const view = new Int32Array(workerData);
-    parentPort.postMessage({ type: "waiting" });
-    const status = Atomics.wait(view, 0, 0, 20000);
-    parentPort.postMessage({ type: "woke", status, value: Atomics.load(view, 0) });
+    (async () => {
+      // 先注册 waiter 再通知主线程，避免 postMessage 与 Atomics.wait 之间
+      // 的合法竞态把结果变成 not-equal。
+      const pending = Atomics.waitAsync(view, 0, 0, 20000);
+      parentPort.postMessage({ type: "waiting" });
+      const status = pending.async ? await pending.value : pending.value;
+      parentPort.postMessage({ type: "woke", status, value: Atomics.load(view, 0) });
+    })();
   ` + "`" + `, { eval: true, workerData: shared });
   result.waiting = await new Promise((resolve, reject) => {
     waiter.once("message", resolve);

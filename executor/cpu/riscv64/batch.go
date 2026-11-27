@@ -24,7 +24,7 @@ type decodedInstructionPage struct {
 }
 
 func decodedPageSlot(page uint64) uint64 {
-	return (page ^ (page >> 7)) & 511
+	return (page ^ (page >> 7)) & 4095
 }
 
 // BatchEnabled 报告当前配置能否进入 C++ 批量整数执行路径。

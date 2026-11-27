@@ -245,7 +245,10 @@ constexpr uint64_t jit_max_straight_run = 2048;
 constexpr size_t jit_max_code_bytes = 4u << 20;
 constexpr size_t jit_max_pages = 1024;
 constexpr uint32_t jit_tlb_entries = 512;
+constexpr uint32_t jit_inline_tlb_entries = 32;
+constexpr uint32_t jit_link_entries = 256;
 constexpr uint64_t jit_tlb_zero_page = 1 << 9;
+constexpr uint64_t jit_tlb_write_ok = 1 << 10;
 constexpr uint32_t jit_page_hotness = 32;
 
 struct JitTLBEntry {
@@ -262,6 +265,9 @@ struct JitCall {
 	MemoryView *memory;
 	const uint64_t *entries;
 	uint64_t threshold;
+	// steps 由页函数在入口装入 r15、在出口写回；跨页 tail-jump 时
+	// 目标页从同一字段继续累计，避免只返回最后一页的条数。
+	uint64_t steps;
 	uint64_t scratch;
 	uint64_t status;
 	uint64_t *reservation;
@@ -274,6 +280,14 @@ struct JitCall {
 	uint8_t *second_pointer;
 	uint64_t second_flags;
 	uint64_t last_address;
+	uint64_t inline_pages[jit_inline_tlb_entries];
+	uint64_t inline_flags[jit_inline_tlb_entries];
+	uint8_t *inline_pointers[jit_inline_tlb_entries];
+	// 跨页目标缓存按目标 PC 直接映射。三个数组分开存放，生成的
+	// 代码可以直接用 scale=8 索引；JitCall 每次 jit_run 重置。
+	uint64_t link_targets[jit_link_entries];
+	uint64_t link_functions[jit_link_entries];
+	uint64_t link_entries[jit_link_entries];
 	JitTLBEntry tlb[jit_tlb_entries];
 };
 
@@ -359,6 +373,11 @@ public:
 
 	void modrm_index(int reg, int base, int index, int scale) {
 		emit8(static_cast<uint8_t>(0x04 | ((reg & 7) << 3)));
+		emit8(static_cast<uint8_t>(((scale & 3) << 6) | ((index & 7) << 3) | (base & 7)));
+	}
+
+	void modrm_index_disp32(int reg, int base, int index, int scale) {
+		emit8(static_cast<uint8_t>(0x84 | ((reg & 7) << 3)));
 		emit8(static_cast<uint8_t>(((scale & 3) << 6) | ((index & 7) << 3) | (base & 7)));
 	}
 
@@ -607,6 +626,28 @@ public:
 		modrm_index(4, base, index, scale);
 	}
 
+	void mov_rm_indexed(int destination, int base, int index, int scale, int32_t displacement) {
+		rex(true, destination, index, base);
+		emit8(0x8B);
+		modrm_index_disp32(destination, base, index, scale);
+		emit32(static_cast<uint32_t>(displacement));
+	}
+
+	void cmp_rm_indexed(int left, int base, int index, int scale, int32_t displacement) {
+		rex(true, left, index, base);
+		emit8(0x3B);
+		modrm_index_disp32(left, base, index, scale);
+		emit32(static_cast<uint32_t>(displacement));
+	}
+
+	void test_mi_indexed32(int base, int index, int scale, int32_t displacement, int32_t value) {
+		rex(true, 0, index, base);
+		emit8(0xF7);
+		modrm_index_disp32(0, base, index, scale);
+		emit32(static_cast<uint32_t>(displacement));
+		emit32(static_cast<uint32_t>(value));
+	}
+
 	void push(int reg) {
 		rex(false, 0, 0, reg);
 		emit8(static_cast<uint8_t>(0x50 + (reg & 7)));
@@ -782,12 +823,20 @@ static uint8_t *jit_tlb_resolve(JitCall *call, uint64_t address, uint32_t width,
 	     (flags & prot_exec) != 0)) {
 		return nullptr;
 	}
+	if ((flags & prot_write) != 0 && (flags & jit_tlb_zero_page) == 0 &&
+	    (flags & prot_exec) == 0) {
+		flags |= jit_tlb_write_ok;
+	}
 	call->second_page = call->last_page;
 	call->second_pointer = call->last_pointer;
 	call->second_flags = call->last_flags;
 	call->last_page = page;
 	call->last_pointer = pointer;
 	call->last_flags = flags;
+	const uint32_t inline_slot = slot & (jit_inline_tlb_entries - 1);
+	call->inline_pages[inline_slot] = page;
+	call->inline_pointers[inline_slot] = pointer;
+	call->inline_flags[inline_slot] = flags;
 	return pointer;
 }
 
@@ -883,6 +932,20 @@ struct JitPage {
 	size_t mapping_size = 0;
 };
 
+static uint32_t jit_link_slot(uint64_t pc) {
+	return static_cast<uint32_t>((pc ^ (pc >> 7)) & (jit_link_entries - 1));
+}
+
+static void jit_link_fill(JitCall *call, uint64_t pc, JitPage *page) {
+	if (call == nullptr || page == nullptr || page->function == nullptr || page->entries == nullptr) {
+		return;
+	}
+	const uint32_t slot = jit_link_slot(pc);
+	call->link_targets[slot] = pc;
+	call->link_functions[slot] = reinterpret_cast<uint64_t>(page->function);
+	call->link_entries[slot] = reinterpret_cast<uint64_t>(page->entries);
+}
+
 struct JitPageHint {
 	JitPageKey key{};
 	JitPage *page = nullptr;
@@ -945,6 +1008,11 @@ static bool jit_disabled() {
 	return disabled;
 }
 
+static bool jit_links_disabled() {
+	static const bool disabled = std::getenv("ASSISTANT_SANDBOX_DISABLE_JIT_LINK") != nullptr;
+	return disabled;
+}
+
 class JitCompiler {
 public:
 	JitCompiler(uint64_t base_value, uint32_t slots_value,
@@ -981,6 +1049,8 @@ private:
 	JitLabel exit_clean;
 	JitLabel exit_fallback;
 	JitLabel exit_budget;
+	JitLabel link_stub;
+	JitLabel link_miss;
 	JitLabel epilogue;
 	uint32_t mapped_count = 0;
 	bool compiling_primary = true;
@@ -990,6 +1060,8 @@ private:
 	void emitPrologue();
 	void emitInstruction(uint32_t slot, const DecodedInstruction &instruction);
 	void emitEpilogue();
+	void emitEpilogueBody(bool with_return);
+	void emitLinkStub();
 	void emitExit(JitLabel &target);
 	void emitNextPC(uint32_t slot);
 	void emitBranch(JitLabel &taken, int left, int right, uint32_t condition,
@@ -1160,47 +1232,55 @@ void JitCompiler::emitTLBLookup(uint8_t rs1, int32_t immediate, uint32_t width,
 	if (immediate != 0) {
 		emitter.add_imm(x64_rax, immediate);
 	}
-	emitter.mov_rr(x64_rsi, x64_rax);
-	emitter.mov_rr(x64_rdx, x64_rax);
-	emitter.and_imm32(x64_rdx, 4095);
-	emitter.cmp_imm(x64_rdx, static_cast<int32_t>(4096 - width));
-	JitLabel slow;
-	emitter.jcc(slow, 7); // ja
 	emitter.mov_rr(x64_rdx, x64_rax);
 	emitter.shr_imm(x64_rdx, 12);
+	emitter.mov_rr(x64_r10, x64_rax);
+	emitter.and_imm32(x64_r10, 4095);
+	emitter.cmp_imm(x64_r10, static_cast<int32_t>(4096 - width));
+	JitLabel slow;
+	emitter.jcc(slow, 7); // ja
 	JitLabel check_second;
+	JitLabel check_inline;
 	emitter.cmp_rm(x64_rdx, x64_rbp, static_cast<int32_t>(offsetof(JitCall, last_page)));
 	emitter.jcc(check_second, x64_ne);
 	emitter.mov_rm(x64_r11, x64_rbp, static_cast<int32_t>(offsetof(JitCall, last_pointer)));
 	if (write_access) {
 		emitter.test_m_imm32(x64_rbp, static_cast<int32_t>(offsetof(JitCall, last_flags)),
-		                     static_cast<int32_t>(prot_write));
+		                     static_cast<int32_t>(jit_tlb_write_ok));
 		emitter.jcc(addFailureStub(pc), x64_e);
-		emitter.test_m_imm32(x64_rbp, static_cast<int32_t>(offsetof(JitCall, last_flags)),
-		                     static_cast<int32_t>(jit_tlb_zero_page));
-		emitter.jcc(addFailureStub(pc), x64_ne);
-		emitter.test_m_imm32(x64_rbp, static_cast<int32_t>(offsetof(JitCall, last_flags)),
-		                     static_cast<int32_t>(prot_exec));
-		emitter.jcc(addFailureStub(pc), x64_ne);
 	}
 	emitter.jmp(access);
 	emitter.bind(check_second);
 	emitter.cmp_rm(x64_rdx, x64_rbp, static_cast<int32_t>(offsetof(JitCall, second_page)));
-	emitter.jcc(slow, x64_ne);
+	emitter.jcc(check_inline, x64_ne);
 	emitter.mov_rm(x64_r11, x64_rbp, static_cast<int32_t>(offsetof(JitCall, second_pointer)));
 	if (write_access) {
 		emitter.test_m_imm32(x64_rbp, static_cast<int32_t>(offsetof(JitCall, second_flags)),
-		                     static_cast<int32_t>(prot_write));
+		                     static_cast<int32_t>(jit_tlb_write_ok));
 		emitter.jcc(addFailureStub(pc), x64_e);
-		emitter.test_m_imm32(x64_rbp, static_cast<int32_t>(offsetof(JitCall, second_flags)),
-		                     static_cast<int32_t>(jit_tlb_zero_page));
-		emitter.jcc(addFailureStub(pc), x64_ne);
-		emitter.test_m_imm32(x64_rbp, static_cast<int32_t>(offsetof(JitCall, second_flags)),
-		                     static_cast<int32_t>(prot_exec));
-		emitter.jcc(addFailureStub(pc), x64_ne);
 	}
 	emitter.jmp(access);
+	emitter.bind(check_inline);
+	emitter.mov_rr(x64_rcx, x64_rdx);
+	emitter.shr_imm(x64_rcx, 7);
+	emitter.xor_rr(x64_rcx, x64_rdx);
+	emitter.and_imm(x64_rcx, jit_inline_tlb_entries - 1);
+	emitter.cmp_rm_indexed(x64_rdx, x64_rbp, x64_rcx, 3,
+	                       static_cast<int32_t>(offsetof(JitCall, inline_pages)));
+	emitter.jcc(slow, x64_ne);
+	if (write_access) {
+		JitLabel &failure = addFailureStub(pc);
+		emitter.test_mi_indexed32(
+		    x64_rbp, x64_rcx, 3,
+		    static_cast<int32_t>(offsetof(JitCall, inline_flags)),
+		    static_cast<int32_t>(jit_tlb_write_ok));
+		emitter.jcc(failure, x64_e);
+	}
+	emitter.mov_rm_indexed(x64_r11, x64_rbp, x64_rcx, 3,
+	                       static_cast<int32_t>(offsetof(JitCall, inline_pointers)));
+	emitter.jmp(access);
 	emitter.bind(slow);
+	emitter.mov_rr(x64_rsi, x64_rax);
 	emitter.mov_mr(x64_rbp, static_cast<int32_t>(offsetof(JitCall, last_address)), x64_rax);
 	emitter.mov_rr(x64_rdi, x64_rbp);
 	emitter.mov_ri32_sign(x64_rdx, static_cast<int32_t>(width));
@@ -1210,6 +1290,8 @@ void JitCompiler::emitTLBLookup(uint8_t rs1, int32_t immediate, uint32_t width,
 	emitter.jcc(addFailureStub(pc), x64_e);
 	emitter.mov_rr(x64_r11, x64_rax);
 	emitter.mov_rm(x64_rax, x64_rbp, static_cast<int32_t>(offsetof(JitCall, last_address)));
+	emitter.mov_rr(x64_r10, x64_rax);
+	emitter.and_imm32(x64_r10, 4095);
 	emitter.jmp(access);
 }
 
@@ -1224,7 +1306,12 @@ void JitCompiler::emitJumpToPC(uint64_t pc, bool local, bool fallback) {
 		return;
 	}
 	emitConst(pc);
-	emitter.jmp(fallback ? exit_fallback : exit_clean);
+	if (fallback) {
+		emitter.jmp(exit_fallback);
+		return;
+	}
+	emitter.mov_mr(x64_rbp, static_cast<int32_t>(offsetof(JitCall, pc)), x64_rax);
+	emitter.jmp(link_stub);
 }
 
 void JitCompiler::emitBudgetCheckThenJump(uint64_t pc, bool local, bool fallback) {
@@ -1242,8 +1329,7 @@ void JitCompiler::emitNextPC(uint32_t slot) {
 	const uint32_t next_slot = slot + instruction.length / 2;
 	const uint64_t pc = base + static_cast<uint64_t>(next_slot) * 2;
 	if (next_slot >= slots) {
-		emitConst(pc);
-		emitter.jmp(exit_clean);
+		emitBudgetCheckThenJump(pc, false, false);
 		return;
 	}
 	if (starts[next_slot]) {
@@ -1346,8 +1432,8 @@ void JitCompiler::emitInstruction(uint32_t slot, const DecodedInstruction &instr
 		emitter.mov_rm(x64_rcx, x64_rbp, static_cast<int32_t>(offsetof(JitCall, entries)));
 		emitter.jmp_indexed(x64_rcx, x64_rdx, 3);
 		emitter.bind(external);
-		emitter.mov_rr(x64_rax, x64_r10);
-		emitter.jmp(exit_clean);
+		emitter.mov_mr(x64_rbp, static_cast<int32_t>(offsetof(JitCall, pc)), x64_r10);
+		emitter.jmp(link_stub);
 		emitter.bind(budget);
 		emitter.mov_mr(x64_rbp, static_cast<int32_t>(offsetof(JitCall, pc)), x64_r10);
 		emitter.mov_rr(x64_rax, x64_r10);
@@ -1426,9 +1512,7 @@ void JitCompiler::emitInstruction(uint32_t slot, const DecodedInstruction &instr
 		JitLabel access;
 		emitTLBLookup(rs1, static_cast<int32_t>(immediate), width, false, pc, access);
 		emitter.bind(access);
-		emitter.mov_rr(x64_rdx, x64_rax);
-		emitter.and_imm32(x64_rdx, 4095);
-		emitter.add_rr(x64_r11, x64_rdx);
+		emitter.add_rr(x64_r11, x64_r10);
 		switch (width) {
 		case 1:
 			if (is_signed != 0) {
@@ -1480,15 +1564,12 @@ void JitCompiler::emitInstruction(uint32_t slot, const DecodedInstruction &instr
 		}
 		emitter.mov_rm(x64_r9, x64_rbp,
 		               static_cast<int32_t>(offsetof(JitCall, reservation)));
-		emitter.mov_rm(x64_rdx, x64_r9, 24);
-		emitter.test_rr(x64_rdx, x64_rdx);
+		emitter.test_m_imm32(x64_r9, 24, -1);
 		emitter.jcc(addFailureStub(pc), x64_ne);
 		JitLabel access;
 		emitTLBLookup(rs1, static_cast<int32_t>(immediate), width, true, pc, access);
 		emitter.bind(access);
-		emitter.mov_rr(x64_rdx, x64_rax);
-		emitter.and_imm32(x64_rdx, 4095);
-		emitter.add_rr(x64_r11, x64_rdx);
+		emitter.add_rr(x64_r11, x64_r10);
 		loadInto(x64_r10, rs2);
 		switch (width) {
 		case 1:
@@ -1925,7 +2006,7 @@ void JitCompiler::emitPrologue() {
 	if ((mapped_count & 1) != 0) {
 		emitter.sub_imm(x64_rsp, 8);
 	}
-	emitter.xor_rr(x64_r15, x64_r15);
+	emitter.mov_rm(x64_r15, x64_rbp, static_cast<int32_t>(offsetof(JitCall, steps)));
 	emitter.mov_rm(x64_r14, x64_rbp, static_cast<int32_t>(offsetof(JitCall, registers)));
 	for (uint8_t guest = 1; guest < 32; guest++) {
 		if (host_map[guest] >= 0) {
@@ -1941,7 +2022,7 @@ void JitCompiler::emitPrologue() {
 	emitter.jmp_indexed(x64_rcx, x64_rdx, 3);
 }
 
-void JitCompiler::emitEpilogue() {
+void JitCompiler::emitEpilogueBody(bool with_return) {
 	if ((mapped_count & 1) != 0) {
 		emitter.add_imm(x64_rsp, 8);
 	}
@@ -1953,7 +2034,51 @@ void JitCompiler::emitEpilogue() {
 	emitter.pop(x64_r14);
 	emitter.pop(x64_r15);
 	emitter.pop(x64_rbp);
-	emitter.ret();
+	if (with_return) {
+		emitter.ret();
+	}
+}
+
+void JitCompiler::emitEpilogue() {
+	emitEpilogueBody(true);
+}
+
+void JitCompiler::emitLinkStub() {
+	emitter.bind(link_stub);
+	if (jit_links_disabled()) {
+		emitter.mov_rm(x64_rax, x64_rbp, static_cast<int32_t>(offsetof(JitCall, pc)));
+		emitter.jmp(exit_clean);
+		return;
+	}
+	// 命中时当前页的寄存器已写回 JitCall，展开当前栈帧后直接进入
+	// 目标页函数；目标函数会用自己的 prologue 重新装载寄存器映射。
+	emitter.mov_rm(x64_rdx, x64_rbp, static_cast<int32_t>(offsetof(JitCall, pc)));
+	emitter.mov_rr(x64_rcx, x64_rdx);
+	emitter.shr_imm(x64_rcx, 7);
+	emitter.xor_rr(x64_rcx, x64_rdx);
+	emitter.and_imm(x64_rcx, jit_link_entries - 1);
+	emitter.cmp_rm_indexed(x64_rdx, x64_rbp, x64_rcx, 3,
+	                       static_cast<int32_t>(offsetof(JitCall, link_targets)));
+	emitter.jcc(link_miss, x64_ne);
+	emitter.mov_rm_indexed(x64_r10, x64_rbp, x64_rcx, 3,
+	                       static_cast<int32_t>(offsetof(JitCall, link_entries)));
+	emitter.mov_rm_indexed(x64_r11, x64_rbp, x64_rcx, 3,
+	                       static_cast<int32_t>(offsetof(JitCall, link_functions)));
+	emitter.mov_mi32(x64_rbp, static_cast<int32_t>(offsetof(JitCall, status)),
+	                 jit_status_clean);
+	emitter.mov_mr(x64_rbp, static_cast<int32_t>(offsetof(JitCall, steps)), x64_r15);
+	emitter.mov_mr(x64_rbp, static_cast<int32_t>(offsetof(JitCall, entries)), x64_r10);
+	for (uint8_t guest = 1; guest < 32; guest++) {
+		if (host_map[guest] >= 0 && dirty[guest]) {
+			emitter.mov_mr(x64_r14, static_cast<int32_t>(guest) * 8, host_map[guest]);
+		}
+	}
+	emitter.mov_rr(x64_rdi, x64_rbp);
+	emitEpilogueBody(false);
+	emitter.jmp_reg(x64_r11);
+	emitter.bind(link_miss);
+	emitter.mov_rm(x64_rax, x64_rbp, static_cast<int32_t>(offsetof(JitCall, pc)));
+	emitter.jmp(exit_clean);
 }
 
 JitPage *JitCompiler::compile() {
@@ -1975,6 +2100,7 @@ JitPage *JitCompiler::compile() {
 		emitConst(stub.pc);
 		emitter.jmp(exit_fallback);
 	}
+	emitLinkStub();
 
 	emitter.bind(entry_fallback);
 	emitter.mov_rm(x64_rax, x64_rbp, static_cast<int32_t>(offsetof(JitCall, pc)));
@@ -1992,6 +2118,7 @@ JitPage *JitCompiler::compile() {
 
 	emitter.bind(epilogue);
 	emitter.mov_mr(x64_rbp, static_cast<int32_t>(offsetof(JitCall, pc)), x64_rax);
+	emitter.mov_mr(x64_rbp, static_cast<int32_t>(offsetof(JitCall, steps)), x64_r15);
 	emitter.mov_rr(x64_rax, x64_r15);
 	for (uint8_t guest = 1; guest < 32; guest++) {
 		if (host_map[guest] >= 0 && dirty[guest]) {
@@ -2078,6 +2205,12 @@ static uint64_t jit_run(MemoryView &memory, CodeView &code, uint64_t identity,
 	for (JitTLBEntry &entry : call.tlb) {
 		entry.page = UINT64_MAX;
 	}
+	for (uint64_t &page : call.inline_pages) {
+		page = UINT64_MAX;
+	}
+	for (uint64_t &target : call.link_targets) {
+		target = UINT64_MAX;
+	}
 	call.registers = registers;
 	call.retired_base = retired_base;
 	call.memory = &memory;
@@ -2113,14 +2246,16 @@ static uint64_t jit_run(MemoryView &memory, CodeView &code, uint64_t identity,
 		if (compiled == nullptr) {
 			break;
 		}
+		jit_link_fill(&call, current, compiled);
+		call.steps = 0;
 		call.pc = current;
 		call.entries = compiled->entries;
 		call.threshold = remaining - jit_max_straight_run + 1;
 		const uint64_t steps = compiled->function(&call);
-		if (steps == 0) {
+		if (steps == 0 || call.steps == 0) {
 			break;
 		}
-		retired += steps;
+		retired += call.steps;
 		current = call.pc;
 		if (call.status != jit_status_clean) {
 			break;
