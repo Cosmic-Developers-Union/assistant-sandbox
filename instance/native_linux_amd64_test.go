@@ -498,8 +498,11 @@ func TestNativeResourceLimitsAndStatus(t *testing.T) {
 
 	memoryState, err := machine.Run(t.Context(), NativeExecSpec{
 		Program: "/usr/bin/python3.12",
-		Args:    []string{"-c", `x = bytearray(128 * 1024 * 1024); print(len(x))`},
-		Dir:     "/work",
+		Args: []string{"-c", `x = bytearray(128 * 1024 * 1024)
+for offset in range(0, len(x), 4096):
+    x[offset] = 1
+print(len(x))`},
+		Dir: "/work",
 	})
 	if err != nil {
 		t.Fatal(err)
