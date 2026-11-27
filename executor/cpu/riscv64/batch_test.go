@@ -314,6 +314,250 @@ func TestStepBatchJITLinksCrossPageLoop(t *testing.T) {
 	}
 }
 
+func compareBatchAndStepFP(t *testing.T, instructions []uint32,
+	registers map[int]uint64, floats map[int]uint64, fcsr uint32) {
+	t.Helper()
+	ctx := context.Background()
+	table := memory.New(0)
+	if err := table.Map(ctx, memory.Region{
+		Start: batchCodeBase, End: batchCodeBase + memory.PageSize,
+		Prot: memory.ProtRead | memory.ProtExec, Name: "code",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	program := make([]byte, memory.PageSize)
+	for index, instruction := range instructions {
+		binary.LittleEndian.PutUint32(program[index*4:], instruction)
+	}
+	if err := table.Load(ctx, batchCodeBase, program); err != nil {
+		t.Fatal(err)
+	}
+	clone, err := table.Clone()
+	if err != nil {
+		t.Fatal(err)
+	}
+	batchCore, err := New(cpu.Config{Memory: table, Entry: batchCodeBase})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stepCore, err := New(cpu.Config{Memory: clone, Entry: batchCodeBase})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := cpu.Machine{
+		PC:        batchCodeBase,
+		Registers: make([]uint64, numRegs),
+		Floats:    make([]uint64, numFPRegs),
+		FCSR:      fcsr,
+	}
+	for index, value := range registers {
+		state.Registers[index] = value
+	}
+	for index, value := range floats {
+		state.Floats[index] = value
+	}
+	if err := batchCore.Reset(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	if err := stepCore.Reset(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	steps, _, err := batchCore.StepBatch(ctx, uint64(len(instructions)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if steps != uint64(len(instructions)) {
+		t.Fatalf("steps=%d want %d", steps, len(instructions))
+	}
+	for range instructions {
+		if _, err := stepCore.Step(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	batchState, err := batchCore.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stepState, err := stepCore.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if batchState.PC != stepState.PC || batchState.FCSR != stepState.FCSR {
+		t.Fatalf("PC/FCSR batch=%#x/%#x step=%#x/%#x",
+			batchState.PC, batchState.FCSR, stepState.PC, stepState.FCSR)
+	}
+	for index := range stepState.Registers {
+		if batchState.Registers[index] != stepState.Registers[index] {
+			t.Fatalf("x%d batch=%#x step=%#x", index,
+				batchState.Registers[index], stepState.Registers[index])
+		}
+	}
+	for index := range stepState.Floats {
+		if batchState.Floats[index] != stepState.Floats[index] {
+			t.Fatalf("f%d batch=%#x step=%#x", index,
+				batchState.Floats[index], stepState.Floats[index])
+		}
+	}
+}
+
+// TestStepBatchFPRawMatchesSingleStep 覆盖 V8/Node 热路径使用的
+// FSGNJ、FCVT、FMV、FMA 与 fcsr CSR 的批量语义。
+func TestStepBatchFPRawMatchesSingleStep(t *testing.T) {
+	if !hotBatchSupported {
+		t.Skip("当前构建未启用 C++ 批量执行")
+	}
+	oneAndHalf := math.Float64bits(1.5)
+	negativeTwo := math.Float64bits(-2)
+	tests := []struct {
+		name   string
+		code   uint32
+		regs   map[int]uint64
+		floats map[int]uint64
+		fcsr   uint32
+	}{
+		{
+			name:   "fsgnj.d",
+			code:   encodeFP3(0x11, 0, 1, 2, 3),
+			floats: map[int]uint64{2: oneAndHalf, 3: negativeTwo},
+		},
+		{
+			name:   "fcvt.d.s",
+			code:   encodeFPCvtInt(0x21, 0, 1, 2, 0),
+			floats: map[int]uint64{2: f32bits(1.5)},
+		},
+		{
+			name:   "fcvt.s.d",
+			code:   encodeFPCvtInt(0x20, 0, 1, 2, 0),
+			floats: map[int]uint64{2: oneAndHalf},
+		},
+		{
+			name:   "fcvt.w.d",
+			code:   encodeFPCvtInt(0x61, 1, 1, 2, 0),
+			floats: map[int]uint64{2: math.Float64bits(3.75)},
+		},
+		{
+			name:   "fcvt.d.w",
+			code:   encodeFPCvtInt(0x71, 0, 1, 2, 0),
+			regs:   map[int]uint64{2: 7},
+			floats: nil,
+		},
+		{
+			name:   "fmv.x.d",
+			code:   encodeFP3(0x71, 0, 1, 2, 0),
+			floats: map[int]uint64{2: oneAndHalf},
+		},
+		{
+			name:   "fmv.d.x",
+			code:   encodeFP3(0x79, 0, 1, 2, 0),
+			regs:   map[int]uint64{2: math.Float64bits(2.5)},
+			floats: nil,
+		},
+		{
+			name:   "fscsr",
+			code:   uint32(0x003<<20 | 2<<15 | 0x1<<12 | 1<<7 | 0x73),
+			regs:   map[int]uint64{2: 0x2A},
+			floats: nil,
+			fcsr:   0x11,
+		},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			compareBatchAndStepFP(t, []uint32{testCase.code},
+				testCase.regs, testCase.floats, testCase.fcsr)
+		})
+	}
+}
+
+// TestStepBatchJITFPRawLoop 确认热点 JIT 直接发射的 raw FP 路径与
+// Go 单步语义一致，而不是只在 C++ 解释器中通过。
+func TestStepBatchJITFPRawLoop(t *testing.T) {
+	if !hotBatchSupported {
+		t.Skip("当前构建未启用 C++ 批量执行")
+	}
+	ctx := context.Background()
+	table := memory.New(0)
+	if err := table.Map(ctx, memory.Region{
+		Start: batchCodeBase, End: batchCodeBase + memory.PageSize,
+		Prot: memory.ProtRead | memory.ProtExec, Name: "code",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	program := make([]byte, memory.PageSize)
+	binary.LittleEndian.PutUint32(program[0:], encodeFP3(0x11, 0, 1, 2, 3))
+	binary.LittleEndian.PutUint32(program[4:], encodeOpImm(0x0, 5, 5, 1))
+	binary.LittleEndian.PutUint32(program[8:], encodeBranch(0x1, 5, 6, -8))
+	if err := table.Load(ctx, batchCodeBase, program); err != nil {
+		t.Fatal(err)
+	}
+	clone, err := table.Clone()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := cpu.Machine{
+		PC:        batchCodeBase,
+		Registers: make([]uint64, numRegs),
+		Floats:    make([]uint64, numFPRegs),
+	}
+	state.Registers[6] = 1000
+	state.Floats[2] = math.Float64bits(1.5)
+	state.Floats[3] = math.Float64bits(-2)
+	batchCore, err := New(cpu.Config{Memory: table, Entry: batchCodeBase})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stepCore, err := New(cpu.Config{Memory: clone, Entry: batchCodeBase})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := batchCore.Reset(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	if err := stepCore.Reset(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	const retired = 3000
+	var steps uint64
+	for steps < retired {
+		count, _, err := batchCore.StepBatch(ctx, retired-steps)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if count == 0 {
+			t.Fatal("批量执行没有推进")
+		}
+		steps += count
+	}
+	for range retired {
+		if _, err := stepCore.Step(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	batchState, err := batchCore.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stepState, err := stepCore.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if batchState.PC != stepState.PC || batchState.FCSR != stepState.FCSR {
+		t.Fatalf("PC/FCSR batch=%#x/%#x step=%#x/%#x",
+			batchState.PC, batchState.FCSR, stepState.PC, stepState.FCSR)
+	}
+	for index := range stepState.Registers {
+		if batchState.Registers[index] != stepState.Registers[index] {
+			t.Fatalf("x%d batch=%#x step=%#x", index,
+				batchState.Registers[index], stepState.Registers[index])
+		}
+	}
+	for index := range stepState.Floats {
+		if batchState.Floats[index] != stepState.Floats[index] {
+			t.Fatalf("f%d batch=%#x step=%#x", index,
+				batchState.Floats[index], stepState.Floats[index])
+		}
+	}
+}
+
 // TestStepBatchJITMatchesSingleStep 让原生翻译路径跨越多个基本块和
 // 真实数据访存,再与逐指令语义基准比较完整机器状态。
 func TestStepBatchJITMatchesSingleStep(t *testing.T) {

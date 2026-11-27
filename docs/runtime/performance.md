@@ -105,6 +105,34 @@ JIT 相对 Go 单步约快 38–43 倍。页级 JIT 的执行上限由宿主代�
 因此下一步不应继续扩大页缓存，而应做一个两页 superblock 原型：
 统一跨页寄存器映射、消除页入口/出口、记录 JALR 目标并直接链接。
 
+## Node/libm FP 指令覆盖
+
+Node 的 `Math.sqrt` 负载暴露出比页边界更直接的阻塞：V8/libm 热路径大量
+使用 FSGNJ、FCVT、FMV 和 fcsr CSR，而原批量译码器只覆盖部分 OP-FP。
+每条未覆盖指令都会让 JIT 停止、回退 C++ 解释器或 Go 单步，再重新进入
+批量执行。
+
+已补充：
+
+- `FSGNJ/FSGNJN/FSGNJX`
+- `FCVT.S.D`、`FCVT.D.S`
+- `FCVT.W/WU/L/LU.S/D`
+- `FCVT.S/D.W/WU/L/LU`
+- `FMV.X.W/D`、`FMV.W/D.X`、`FCLASS`
+- fflags/frm/fcsr 的 CSR 读写
+
+FMA 仍回退 Go 单步，以避免当前 libm 对精确零和异常标志的差异；它不再是
+主要阻塞。本机同一 Node 22 jitless 负载：
+
+| 场景 | 优化前 | 优化后 |
+| --- | ---: | ---: |
+| Node 1M 次 `Math.sqrt` 循环（`console.time`） | 5.69 s | 2.00–2.13 s |
+| 推算 100M 次循环 | 约 9.5 min | 约 3.3 min |
+
+1M 次循环约提升 **2.7–2.8 倍**；相对宿主 Node 仍约 50 倍差距，说明
+剩余成本主要是 V8 jitless 解释器本身和大量客体指令，而不是单一 syscall。
+Python 1M 整数循环仍约 4.6 s，Python/Node 的常规回归测试保持通过。
+
 ## 10× 目标评估
 
 页级 JIT 已消除逐指令分派、寄存器数组往返和大部分 TLB 慢查,

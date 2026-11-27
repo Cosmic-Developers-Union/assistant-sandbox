@@ -234,6 +234,366 @@ static bool fp_execute(uint64_t *registers, uint64_t *floats, uint64_t *fcsr,
 	return true;
 }
 
+static float fp_read_single(const uint64_t *floats, uint32_t index) {
+	const uint32_t bits = static_cast<uint32_t>(floats[index]);
+	float value = 0;
+	std::memcpy(&value, &bits, sizeof(value));
+	return value;
+}
+
+static double fp_read_double(const uint64_t *floats, uint32_t index) {
+	double value = 0;
+	std::memcpy(&value, &floats[index], sizeof(value));
+	return value;
+}
+
+static void fp_write_single(uint64_t *floats, uint32_t index, float value) {
+	uint32_t bits = 0;
+	std::memcpy(&bits, &value, sizeof(bits));
+	floats[index] = UINT64_C(0xFFFFFFFF00000000) | bits;
+}
+
+static void fp_write_double(uint64_t *floats, uint32_t index, double value) {
+	std::memcpy(&floats[index], &value, sizeof(value));
+}
+
+static bool fp_raw_rounding_mode(uint32_t rm, const uint64_t *fcsr, int *mode) {
+	if (rm == 7) {
+		if (fcsr == nullptr) {
+			return false;
+		}
+		rm = static_cast<uint32_t>((*fcsr >> 5) & 0x7);
+	}
+	switch (rm) {
+	case 0:
+		*mode = FE_TONEAREST;
+		return true;
+	case 1:
+		*mode = FE_TOWARDZERO;
+		return true;
+	case 2:
+		*mode = FE_DOWNWARD;
+		return true;
+	case 3:
+		*mode = FE_UPWARD;
+		return true;
+	default:
+		return false;
+	}
+}
+
+static uint64_t fp_classify_bits(uint64_t bits, bool single) {
+	const uint32_t exponent_bits = single ? 8 : 11;
+	const uint32_t fraction_bits = single ? 23 : 52;
+	const uint32_t sign_shift = single ? 31 : 63;
+	const uint64_t fraction_mask = (UINT64_C(1) << fraction_bits) - 1;
+	const uint64_t exponent_mask = (UINT64_C(1) << exponent_bits) - 1;
+	const bool negative = ((bits >> sign_shift) & 1) != 0;
+	const uint64_t exponent = (bits >> fraction_bits) & exponent_mask;
+	const uint64_t fraction = bits & fraction_mask;
+	if (exponent == exponent_mask) {
+		if (fraction == 0) {
+			return UINT64_C(1) << (negative ? 0 : 7);
+		}
+		if ((fraction >> (fraction_bits - 1)) & 1) {
+			return UINT64_C(1) << 9;
+		}
+		return UINT64_C(1) << 8;
+	}
+	if (exponent == 0) {
+		if (fraction == 0) {
+			return UINT64_C(1) << (negative ? 3 : 4);
+		}
+		return UINT64_C(1) << (negative ? 2 : 5);
+	}
+	return UINT64_C(1) << (negative ? 1 : 6);
+}
+
+static uint64_t fp_integer_result(bool signed_value, uint32_t bits, bool negative) {
+	if (signed_value) {
+		if (bits == 32) {
+			return negative ? static_cast<uint64_t>(std::numeric_limits<int32_t>::min())
+			                : static_cast<uint64_t>(std::numeric_limits<int32_t>::max());
+		}
+		return negative ? static_cast<uint64_t>(std::numeric_limits<int64_t>::min())
+		                : static_cast<uint64_t>(std::numeric_limits<int64_t>::max());
+	}
+	if (negative) {
+		return 0;
+	}
+	return bits == 32 ? static_cast<uint64_t>(std::numeric_limits<uint32_t>::max())
+	                  : std::numeric_limits<uint64_t>::max();
+}
+
+static bool fp_convert_to_integer(double value, uint32_t rm, const uint64_t *fcsr,
+                                  bool signed_value, uint32_t bits, uint64_t *result,
+                                  bool *invalid) {
+	int mode = FE_TONEAREST;
+	if (!fp_raw_rounding_mode(rm, fcsr, &mode)) {
+		return false;
+	}
+	*invalid = false;
+	if (!std::isfinite(value)) {
+		*invalid = true;
+		*result = fp_integer_result(signed_value, bits, value < 0);
+		return true;
+	}
+	double rounded = 0;
+	switch (mode) {
+	case FE_TONEAREST:
+		rounded = std::nearbyint(value);
+		break;
+	case FE_TOWARDZERO:
+		rounded = std::trunc(value);
+		break;
+	case FE_DOWNWARD:
+		rounded = std::floor(value);
+		break;
+	default:
+		rounded = std::ceil(value);
+		break;
+	}
+	if (signed_value) {
+		const double minimum = bits == 32
+		                           ? static_cast<double>(std::numeric_limits<int32_t>::min())
+		                           : static_cast<double>(std::numeric_limits<int64_t>::min());
+		const double maximum = bits == 32
+		                           ? static_cast<double>(std::numeric_limits<int32_t>::max())
+		                           : static_cast<double>(std::numeric_limits<int64_t>::max());
+		if (rounded < minimum || rounded > maximum) {
+			*invalid = true;
+			*result = fp_integer_result(true, bits, rounded < 0);
+			return true;
+		}
+		*result = bits == 32 ? static_cast<uint64_t>(static_cast<int64_t>(static_cast<int32_t>(rounded)))
+		                     : static_cast<uint64_t>(static_cast<int64_t>(rounded));
+		return true;
+	}
+	const double maximum = bits == 32
+	                           ? static_cast<double>(std::numeric_limits<uint32_t>::max())
+	                           : static_cast<double>(std::numeric_limits<uint64_t>::max());
+	if (rounded < 0 || rounded > maximum) {
+		*invalid = true;
+		*result = fp_integer_result(false, bits, rounded < 0);
+		return true;
+	}
+	*result = bits == 32 ? static_cast<uint64_t>(static_cast<uint32_t>(rounded))
+	                     : static_cast<uint64_t>(rounded);
+	return true;
+}
+
+static bool fp_execute_raw(uint64_t *registers, uint64_t *floats, uint64_t *fcsr,
+                           uint32_t raw) {
+	if (registers == nullptr || floats == nullptr || fcsr == nullptr) {
+		return false;
+	}
+	const uint32_t opcode = raw & 0x7F;
+	const uint32_t rd = (raw >> 7) & 0x1F;
+	const uint32_t funct3 = (raw >> 12) & 0x7;
+	const uint32_t rs1 = (raw >> 15) & 0x1F;
+	const uint32_t rs2 = (raw >> 20) & 0x1F;
+	const uint32_t funct7 = raw >> 25;
+	if (opcode == 0x43 || opcode == 0x47 || opcode == 0x4B || opcode == 0x4F) {
+		// 融合乘加继续走 Go 单步语义，避免与 libm 的精确零/异常
+		// 规则产生差异；其余 FSGNJ/FCVT/FMV 已在批量路径覆盖。
+		return false;
+	}
+	if (opcode != 0x53) {
+		return false;
+	}
+	const bool single = (funct7 & 1) == 0;
+	switch (funct7 >> 1) {
+	case 0x08: { // FSGNJ/FSGNJN/FSGNJX
+		const uint32_t shift = single ? 31 : 63;
+		const uint64_t mask = UINT64_C(1) << shift;
+		const uint64_t left = floats[rs1];
+		const uint64_t right = floats[rs2];
+		uint64_t result = 0;
+		switch (funct3) {
+		case 0:
+			result = (left & ~mask) | (right & mask);
+			break;
+		case 1:
+			result = (left & ~mask) | (~right & mask);
+			break;
+		case 2:
+			result = (left & ~mask) | ((left ^ right) & mask);
+			break;
+		default:
+			return false;
+		}
+		if (single) {
+			floats[rd] = UINT64_C(0xFFFFFFFF00000000) | static_cast<uint32_t>(result);
+		} else {
+			floats[rd] = result;
+		}
+		return true;
+	}
+	case 0x10: { // FCVT.S.D / FCVT.D.S
+		if (rs2 != 0) {
+			return false;
+		}
+		const int previous_round = std::fegetround();
+		if (previous_round != FE_TONEAREST) {
+			std::fesetround(FE_TONEAREST);
+		}
+		std::feclearexcept(FE_ALL_EXCEPT);
+		if (single) {
+			fp_write_single(floats, rd, static_cast<float>(fp_read_double(floats, rs1)));
+		} else {
+			fp_write_double(floats, rd, static_cast<double>(fp_read_single(floats, rs1)));
+		}
+		*fcsr |= fp_flags_from_host(std::fetestexcept(FE_ALL_EXCEPT));
+		if (previous_round != FE_TONEAREST) {
+			std::fesetround(previous_round);
+		}
+		return true;
+	}
+	case 0x38: { // FMV.X.W/D 与 FCLASS.S/D
+		if (rs2 == 1) {
+			registers[rd] = fp_classify_bits(floats[rs1], single);
+			return true;
+		}
+		if (rs2 != 0) {
+			return false;
+		}
+		if (single) {
+			registers[rd] = static_cast<uint64_t>(
+			    static_cast<int64_t>(static_cast<int32_t>(static_cast<uint32_t>(floats[rs1]))));
+		} else {
+			registers[rd] = floats[rs1];
+		}
+		return true;
+	}
+	case 0x3C: { // FMV.W.X / FMV.D.X
+		if (rs2 != 0) {
+			return false;
+		}
+		floats[rd] = single
+		                 ? UINT64_C(0xFFFFFFFF00000000) | static_cast<uint32_t>(registers[rs1])
+		                 : registers[rs1];
+		return true;
+	}
+	case 0x30: { // FCVT.W/WU/L/LU.S 或 .D
+		if (rs2 > 3) {
+			return false;
+		}
+		const double value = single ? static_cast<double>(fp_read_single(floats, rs1))
+		                            : fp_read_double(floats, rs1);
+		const bool signed_value = rs2 == 0 || rs2 == 2;
+		const uint32_t bits = rs2 >= 2 ? 64 : 32;
+		bool invalid = false;
+		if (!fp_convert_to_integer(value, funct3, fcsr, signed_value, bits,
+		                           &registers[rd], &invalid)) {
+			return false;
+		}
+		if (invalid) {
+			*fcsr |= 1;
+		}
+		return true;
+	}
+	case 0x34: { // FCVT.S/D.W/WU/L/LU
+		if (rs2 > 3) {
+			return false;
+		}
+		int mode = FE_TONEAREST;
+		if (!fp_raw_rounding_mode(funct3, fcsr, &mode)) {
+			return false;
+		}
+		const int previous_round = std::fegetround();
+		if (previous_round != mode) {
+			std::fesetround(mode);
+		}
+		std::feclearexcept(FE_ALL_EXCEPT);
+		double value = 0;
+		switch (rs2) {
+		case 0:
+			value = static_cast<double>(static_cast<int32_t>(registers[rs1]));
+			break;
+		case 1:
+			value = static_cast<double>(static_cast<uint32_t>(registers[rs1]));
+			break;
+		case 2:
+			value = static_cast<double>(static_cast<int64_t>(registers[rs1]));
+			break;
+		default:
+			value = static_cast<double>(registers[rs1]);
+			break;
+		}
+		if (single) {
+			fp_write_single(floats, rd, static_cast<float>(value));
+		} else {
+			fp_write_double(floats, rd, value);
+		}
+		*fcsr |= fp_flags_from_host(std::fetestexcept(FE_ALL_EXCEPT));
+		if (previous_round != mode) {
+			std::fesetround(previous_round);
+		}
+		return true;
+	}
+	default:
+		return false;
+	}
+}
+
+static bool fp_execute_csr(uint64_t *registers, uint64_t *fcsr, uint32_t raw) {
+	if (registers == nullptr || fcsr == nullptr) {
+		return false;
+	}
+	const uint32_t csr = raw >> 20;
+	const uint32_t funct3 = (raw >> 12) & 0x7;
+	const uint32_t rd = (raw >> 7) & 0x1F;
+	const uint32_t rs1 = (raw >> 15) & 0x1F;
+	if (csr != 0x001 && csr != 0x002 && csr != 0x003) {
+		return false;
+	}
+	const uint64_t source = funct3 < 0x5 ? registers[rs1] : rs1;
+	uint64_t old = *fcsr;
+	if (csr == 0x001) {
+		old &= 0x1F;
+	} else if (csr == 0x002) {
+		old = (*fcsr >> 5) & 0x7;
+	} else {
+		old &= 0xFF;
+	}
+	if (rd != 0) {
+		registers[rd] = old;
+	}
+	const bool writes = funct3 == 0x1 || funct3 == 0x5 ||
+	                    (source != 0 && (funct3 == 0x2 || funct3 == 0x3 || funct3 == 0x6 || funct3 == 0x7));
+	if (!writes) {
+		return true;
+	}
+	uint64_t updated = *fcsr;
+	if (csr == 0x001) {
+		if (funct3 == 0x1 || funct3 == 0x5) {
+			updated = (updated & ~UINT64_C(0x1F)) | (source & 0x1F);
+		} else if (funct3 == 0x2 || funct3 == 0x6) {
+			updated |= source & 0x1F;
+		} else {
+			updated &= ~(source & 0x1F);
+		}
+	} else if (csr == 0x002) {
+		if (funct3 == 0x1 || funct3 == 0x5) {
+			updated = (updated & ~UINT64_C(0xE0)) | ((source & 0x7) << 5);
+		} else if (funct3 == 0x2 || funct3 == 0x6) {
+			updated |= (source & 0x7) << 5;
+		} else {
+			updated &= ~((source & 0x7) << 5);
+		}
+	} else {
+		if (funct3 == 0x1 || funct3 == 0x5) {
+			updated = (updated & ~UINT64_C(0xFF)) | (source & 0xFF);
+		} else if (funct3 == 0x2 || funct3 == 0x6) {
+			updated |= source & 0xFF;
+		} else {
+			updated &= ~(source & 0xFF);
+		}
+	}
+	*fcsr = updated;
+	return true;
+}
+
 #if defined(__x86_64__)
 
 namespace {
@@ -890,6 +1250,21 @@ static bool jit_execute_fp(JitCall *call, uint64_t encoded) {
 	}
 	return fp_execute(call->registers, call->floats, call->fcsr, encoded,
 	                  &call->scratch);
+}
+
+static bool jit_execute_fp_raw(JitCall *call, uint64_t raw) {
+	if (call == nullptr) {
+		return false;
+	}
+	return fp_execute_raw(call->registers, call->floats, call->fcsr,
+	                      static_cast<uint32_t>(raw));
+}
+
+static bool jit_execute_fp_csr(JitCall *call, uint64_t raw) {
+	if (call == nullptr) {
+		return false;
+	}
+	return fp_execute_csr(call->registers, call->fcsr, static_cast<uint32_t>(raw));
 }
 
 static uint64_t jit_mix(uint64_t value) {
@@ -1950,6 +2325,24 @@ void JitCompiler::emitInstruction(uint32_t slot, const DecodedInstruction &instr
 		emitter.mov_rr(x64_rdi, x64_rbp);
 		emitter.mov_ri64(x64_rsi, spec);
 		emitCallHelper(reinterpret_cast<uint64_t>(&jit_execute_fp));
+		emitMemoryFail(pc);
+		emitStep();
+		emitNextPC(slot);
+		return;
+	}
+	case op_fp_raw: {
+		emitter.mov_rr(x64_rdi, x64_rbp);
+		emitter.mov_ri64(x64_rsi, static_cast<uint32_t>(instruction.imm));
+		emitCallHelper(reinterpret_cast<uint64_t>(&jit_execute_fp_raw));
+		emitMemoryFail(pc);
+		emitStep();
+		emitNextPC(slot);
+		return;
+	}
+	case op_fp_csr: {
+		emitter.mov_rr(x64_rdi, x64_rbp);
+		emitter.mov_ri64(x64_rsi, static_cast<uint32_t>(instruction.imm));
+		emitCallHelper(reinterpret_cast<uint64_t>(&jit_execute_fp_csr));
 		emitMemoryFail(pc);
 		emitStep();
 		emitNextPC(slot);

@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <mutex>
 #include <sys/mman.h>
 #include <unistd.h>
@@ -437,6 +438,8 @@ enum Op : uint32_t {
 	op_fle,
 	op_fence,
 	op_rdtime,
+	op_fp_raw,
+	op_fp_csr,
 	op_count
 };
 
@@ -888,6 +891,16 @@ extern "C" uint64_t rv64_hot_run(uint64_t *registers, uint64_t *pc, uint64_t pag
 			}
 			break;
 		}
+		case op_fp_raw:
+			if (!fp_execute_raw(registers, floats, fcsr, static_cast<uint32_t>(decoded.imm))) {
+				stop = true;
+			}
+			break;
+		case op_fp_csr:
+			if (!fp_execute_csr(registers, fcsr, static_cast<uint32_t>(decoded.imm))) {
+				stop = true;
+			}
+			break;
 		case op_lrsc: {
 			const uint32_t width = static_cast<uint32_t>(decoded.imm) & 0xFF;
 			const bool store_conditional =

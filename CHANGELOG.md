@@ -42,6 +42,10 @@
 
 ### 优化
 
+- 扩展 Node/libm 热路径的 FP 指令覆盖：FSGNJ、FCVT、FMV、FCLASS
+  与 fcsr CSR 进入 C++ 批量/JIT 路径，避免每条 FP 指令触发解释器
+  或 Go 单步回退。Node 22 jitless 的 1M 次 `Math.sqrt` 从 5.69 s
+  降到约 2.0 s，约 2.7–2.8×。
 - JIT 增加跨页块链接与 256 项 JALR 目标缓存：跨页 JAL、分支和顺序
   落页命中后直接进入目标页，不再返回 C++ 页调度器。两页热循环从
   70–76 MIPS 提升到 415–481 MIPS；Python 1M 循环从关闭链接的

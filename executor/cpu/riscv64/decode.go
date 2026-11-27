@@ -92,6 +92,8 @@ const (
 	batchOpFLE
 	batchOpFENCE
 	batchOpRDTIME
+	batchOpFPRaw
+	batchOpFPCSR
 	batchOpCount
 )
 
@@ -387,12 +389,24 @@ func decodeBatchInstruction(instruction uint32, length uint8) decodedBatchInstru
 			decoded.imm = int32(instruction>>20&0x1F) | single<<3 | fpMode<<4
 			decoded.op = batchOpFCVTFromInt
 		}
+		if decoded.op == batchOpUnsupported {
+			decoded.op = batchOpFPRaw
+			decoded.imm = int32(instruction)
+		}
+	case 0x43, 0x47, 0x4B, 0x4F: // 融合乘加
+		decoded.op = batchOpFPRaw
+		decoded.imm = int32(instruction)
 	case 0x0F: // FENCE
 		if funct3 == 0 {
 			decoded.op = batchOpFENCE
 		}
 	case 0x73: // SYSTEM
 		csr := instruction >> 20
+		if csr == 0x001 || csr == 0x002 || csr == 0x003 {
+			decoded.op = batchOpFPCSR
+			decoded.imm = int32(instruction)
+			break
+		}
 		if csr != 0xC00 && csr != 0xC01 && csr != 0xC02 {
 			break
 		}
