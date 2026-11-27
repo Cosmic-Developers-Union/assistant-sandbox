@@ -149,9 +149,10 @@ func createNativeCgroup(base string, opts Options) (string, string, error) {
 		pids = defaultMaxProcesses
 	}
 	limits := map[string]string{
-		"memory.max": strconv.FormatUint(memory, 10),
-		"cpu.max":    fmt.Sprintf("%d 100000", cpus*100000),
-		"pids.max":   strconv.Itoa(pids),
+		"memory.max":      strconv.FormatUint(memory, 10),
+		"memory.swap.max": "0",
+		"cpu.max":         fmt.Sprintf("%d 100000", cpus*100000),
+		"pids.max":        strconv.Itoa(pids),
 	}
 	for name, value := range limits {
 		if err := os.WriteFile(filepath.Join(leaf, name), []byte(value), 0o600); err != nil { //nolint:gosec // leaf is the per-VM cgroup

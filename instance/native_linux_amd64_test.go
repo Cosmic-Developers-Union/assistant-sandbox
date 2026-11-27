@@ -468,6 +468,13 @@ func TestNativeResourceLimitsAndStatus(t *testing.T) {
 		status.CPUPeriodMicros != 100000 || status.PidsMax != 8 {
 		t.Fatalf("unexpected native status: %+v", status)
 	}
+	swapMax, err := readNativeUint(filepath.Join(machine.cgroup, "memory.swap.max"))
+	if err != nil {
+		t.Fatalf("read memory.swap.max: %v", err)
+	}
+	if swapMax != 0 {
+		t.Fatalf("memory.swap.max=%d, want 0 so memory.max includes anonymous pages", swapMax)
+	}
 	runNativeShell(t, machine, `printf within-limit`, nil)
 
 	spin, err := machine.Exec(t.Context(), NativeExecSpec{

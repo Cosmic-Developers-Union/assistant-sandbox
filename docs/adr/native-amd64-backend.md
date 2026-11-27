@@ -37,10 +37,10 @@ CLI 新增 `--backend=auto|riscv64|linux/amd64`，默认 `auto`。`instance.Open
    进程能力由 namespace 与授权挂载限定。客体不能取得宿主文件描述符、
    环境或父进程控制端口。
 5. **预算执行方**：使用委派目录下的 per-VM cgroup v2 实施
-   `memory.max`、`cpu.max` 与 `pids.max`，关闭时以 cgroup kill 回收整个
-   进程树。CPU/内存计量读取 `cpu.stat`、`memory.current` 与
-   `pids.current`。不能取得可写 cgroup v2 委派时，原生后端创建失败并
-   返回具名错误，**不得退回宿主无隔离执行**。
+   `memory.max`、`memory.swap.max=0`、`cpu.max` 与 `pids.max`，关闭时以
+   cgroup kill 回收整个进程树。CPU/内存计量读取 `cpu.stat`、
+   `memory.current` 与 `pids.current`。不能取得可写 cgroup v2 委派时，
+   原生后端创建失败并返回具名错误，**不得退回宿主无隔离执行**。
 6. **执行与生命周期**：父进程是控制面，负责创建 cgroup、启动隔离子进程、
    等待与投递信号；子进程完成 namespace/根文件系统/seccomp 初始化后
    才 `execve` 客体 init。任何初始化步骤失败都关闭子进程并删除 cgroup，
@@ -203,9 +203,11 @@ Bash 的标准输入/输出/错误。init 在 `setsid` 后通过 `TIOCSCTTY` 获
 ## 资源限制与计量（X07）
 
 每台 VM 在可写 cgroup v2 委派目录下创建独立父/叶两层 cgroup，启用
-`cpu`、`memory`、`pids` 控制器并设置 `memory.max`、`cpu.max`、
-`pids.max`。子进程启动后先被写入 `cgroup.procs`，再通过独立 gate
-管道放行；因此客体 init 与所有后代从第一次执行起就受配额约束。
+`cpu`、`memory`、`pids` 控制器并设置 `memory.max`、`memory.swap.max=0`、
+`cpu.max`、`pids.max`。禁用 swap 使 `memory.max` 在任何宿主机上都包含
+匿名内存，避免超限夹具因匿名页被换出而未触发 OOM。子进程启动后先被写入
+`cgroup.procs`，再通过独立 gate 管道放行；因此客体 init 与所有后代从第一次
+执行起就受配额约束。
 
 `NativeVM.Status` 读取 `memory.current/max`、`cpu.stat usage_usec`、
 `cpu.max` 与 `pids.current/max`。显式非零 RISC-V `Work` 返回
